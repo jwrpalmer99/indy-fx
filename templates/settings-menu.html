@@ -1,0 +1,27 @@
+<form class="indy-fx-settings">
+  {{#each fields}}
+  <div class="form-group">
+    <label>{{name}}</label>
+    <div class="form-fields">
+      {{#if isBoolean}}
+        <input type="checkbox" name="{{key}}" {{checked value}} />
+      {{else if choices}}
+        <select name="{{key}}">
+          {{#each choices}}
+            <option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}}</option>
+          {{/each}}
+        </select>
+      {{else}}
+        <input type="{{inputType}}" name="{{key}}" value="{{value}}"
+          {{#if min}}min="{{min}}"{{/if}}
+          {{#if max}}max="{{max}}"{{/if}}
+          {{#if step}}step="{{step}}"{{/if}} />
+      {{/if}}
+    </div>
+    {{#if hint}}<p class="notes">{{hint}}</p>{{/if}}
+  </div>
+  {{/each}}
+  <footer class="sheet-footer flexrow">
+    <button type="submit">Save</button>
+  </footer>
+</form>

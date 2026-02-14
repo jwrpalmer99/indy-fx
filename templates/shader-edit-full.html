@@ -1,0 +1,299 @@
+<style>
+.indy-fx-shader-edit-full .form-fields { margin-top: 2px; }
+</style>
+<form class="indy-fx-shader-edit-full" style="display:flex;flex-direction:column;gap:0.65rem;min-height:0;">
+  <section style="display:grid;grid-template-columns:minmax(320px,0.95fr) minmax(440px,1.05fr);gap:0.75rem;align-items:start;">
+    <div data-editor-options style="max-height:78vh;overflow-y:auto;padding:0.5rem 0.6rem;border:1px solid var(--color-border-light-primary,#666);border-radius:8px;background:rgba(0,0,0,0.08);">
+      <div class="form-group">
+        <label>Shader ID</label>
+        <div class="form-fields">
+          <input type="text" name="editId" value="{{shader.id}}" readonly />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Name</label>
+        <div class="form-fields">
+          <input type="text" name="editName" value="{{shader.name}}" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Label</label>
+        <div class="form-fields">
+          <input type="text" name="editLabel" value="{{shader.label}}" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Layer</label>
+        <div class="form-fields">
+          <select name="default_layer">
+            {{#each layerOptions}}
+            <option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}}</option>
+            {{/each}}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Gradient Mask</label>
+        <div class="form-fields">
+          <input type="checkbox" name="default_useGradientMask" {{#if shader.defaults.useGradientMask}}checked{{/if}} />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Gradient Fade Start</label>
+        <div class="form-fields">
+          <input type="number" name="default_gradientMaskFadeStart" min="0" max="1" step="0.01" value="{{shader.defaults.gradientMaskFadeStart}}" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Alpha</label>
+        <div class="form-fields">
+          <input type="number" name="default_alpha" min="0" max="1" step="0.01" value="{{shader.defaults.alpha}}" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Intensity</label>
+        <div class="form-fields">
+          <input type="number" name="default_intensity" min="0" max="50" step="0.05" value="{{shader.defaults.intensity}}" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Speed</label>
+        <div class="form-fields">
+          <input type="number" name="default_speed" min="0" max="10" step="0.05" value="{{shader.defaults.speed}}" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Bloom</label>
+        <div class="form-fields">
+          <input type="checkbox" name="default_bloom" {{#if shader.defaults.bloom}}checked{{/if}} />
+        </div>
+      </div>
+      <details style="margin:0.2rem 0 0.3rem 0;">
+        <summary style="cursor:pointer;user-select:none;">Bloom options</summary>
+        <div class="form-group" style="margin-top:0.35rem;">
+          <label>Bloom Strength</label>
+          <div class="form-fields">
+            <input type="number" name="default_bloomStrength" min="0" max="3" step="0.05" value="{{shader.defaults.bloomStrength}}" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Bloom Blur</label>
+          <div class="form-fields">
+            <input type="number" name="default_bloomBlur" min="0" max="20" step="0.1" value="{{shader.defaults.bloomBlur}}" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Bloom Quality</label>
+          <div class="form-fields">
+            <input type="number" name="default_bloomQuality" min="0" max="8" step="1" value="{{shader.defaults.bloomQuality}}" />
+          </div>
+        </div>
+      </details>
+
+      <div class="form-group">
+        <label>Scale</label>
+        <div class="form-fields">
+          <input type="number" name="default_scale" min="0.1" max="10" step="0.05" value="{{shader.defaults.scale}}" />
+        </div>
+      </div>
+      <details style="margin:0.2rem 0 0.3rem 0;">
+        <summary style="cursor:pointer;user-select:none;">Scale axis options</summary>
+        <div class="form-group" style="margin-top:0.35rem;">
+          <label>Scale X</label>
+          <div class="form-fields">
+            <input type="number" name="default_scaleX" min="0.1" max="10" step="0.05" value="{{shader.defaults.scaleX}}" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Scale Y</label>
+          <div class="form-fields">
+            <input type="number" name="default_scaleY" min="0.1" max="10" step="0.05" value="{{shader.defaults.scaleY}}" />
+          </div>
+        </div>
+      </details>
+
+      <div class="form-group">
+        <label>Flip Horizontal</label>
+        <div class="form-fields">
+          <input type="checkbox" name="default_flipHorizontal" {{#if shader.defaults.flipHorizontal}}checked{{/if}} />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Flip Vertical</label>
+        <div class="form-fields">
+          <input type="checkbox" name="default_flipVertical" {{#if shader.defaults.flipVertical}}checked{{/if}} />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Shader Rotation (deg)</label>
+        <div class="form-fields">
+          <input type="number" name="default_shaderRotationDeg" min="-36000" max="36000" step="0.1" value="{{shader.defaults.shaderRotationDeg}}" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Distance Units</label>
+        <div class="form-fields">
+          <input type="number" name="default_shapeDistanceUnits" min="1" max="500" step="1" value="{{shader.defaults.shapeDistanceUnits}}" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Scale To Token</label>
+        <div class="form-fields">
+          <input type="checkbox" name="default_scaleToToken" {{#if shader.defaults.scaleToToken}}checked{{/if}} />
+        </div>
+      </div>
+      <details style="margin:0.2rem 0 0.3rem 0;" data-parent-toggle="default_scaleToToken" {{#if shader.defaults.scaleToToken}}open{{/if}}>
+        <summary style="cursor:pointer;user-select:none;">Scale-to-token options</summary>
+        <div class="form-group" style="margin-top:0.35rem;">
+          <label>Scale With Token Texture</label>
+          <div class="form-fields">
+            <input type="checkbox" name="default_scaleWithTokenTexture" {{#if shader.defaults.scaleWithTokenTexture}}checked{{/if}} />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Rotate With Token</label>
+          <div class="form-fields">
+            <input type="checkbox" name="default_rotateWithToken" {{#if shader.defaults.rotateWithToken}}checked{{/if}} />
+          </div>
+        </div>
+      </details>
+
+      <div class="form-group">
+        <label>Capture Scale</label>
+        <div class="form-fields">
+          <input type="number" name="default_captureScale" min="0.25" max="4" step="0.05" value="{{shader.defaults.captureScale}}" />
+        </div>
+      </div>
+      <details style="margin:0.2rem 0 0.3rem 0;">
+        <summary style="cursor:pointer;user-select:none;">Capture options</summary>
+        <div class="form-group" style="margin-top:0.35rem;">
+          <label>Capture Rotation (deg)</label>
+          <div class="form-fields">
+            <input type="number" name="default_captureRotationDeg" min="-36000" max="36000" step="0.1" value="{{shader.defaults.captureRotationDeg}}" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Capture Flip Horizontal</label>
+          <div class="form-fields">
+            <input type="checkbox" name="default_captureFlipHorizontal" {{#if shader.defaults.captureFlipHorizontal}}checked{{/if}} />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Capture Flip Vertical</label>
+          <div class="form-fields">
+            <input type="checkbox" name="default_captureFlipVertical" {{#if shader.defaults.captureFlipVertical}}checked{{/if}} />
+          </div>
+        </div>
+      </details>
+
+      <div class="form-group">
+        <label>Display Time (ms)</label>
+        <div class="form-fields">
+          <input type="number" name="default_displayTimeMs" min="0" max="120000" step="50" value="{{shader.defaults.displayTimeMs}}" />
+        </div>
+      </div>
+      <details style="margin:0.2rem 0 0.3rem 0;">
+        <summary style="cursor:pointer;user-select:none;">Display timing options</summary>
+        <div class="form-group" style="margin-top:0.35rem;">
+          <label>Ease In (ms)</label>
+          <div class="form-fields">
+            <input type="number" name="default_easeInMs" min="0" max="60000" step="50" value="{{shader.defaults.easeInMs}}" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Ease Out (ms)</label>
+          <div class="form-fields">
+            <input type="number" name="default_easeOutMs" min="0" max="60000" step="50" value="{{shader.defaults.easeOutMs}}" />
+          </div>
+        </div>
+      </details>
+
+      <div class="form-group">
+        <label>Preload Shader</label>
+        <div class="form-fields">
+          <input type="checkbox" name="default_preloadShader" {{#if shader.defaults.preloadShader}}checked{{/if}} />
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:0.65rem;min-height:0;">
+      <section style="border:1px solid var(--color-border-light-primary,#666);border-radius:8px;padding:0.5rem 0.6rem;background:rgba(0,0,0,0.08);">
+        <h3 style="margin:0 0 0.35rem 0;">Preview</h3>
+        <div data-editor-preview-stage style="position:relative;aspect-ratio:1/1;width:75%;max-width:320px;margin:0 auto;border:1px solid var(--color-border-light-secondary,#555);border-radius:8px;overflow:hidden;background:#000 url('modules/indy-fx/images/indyFX_solid.webp') center/cover no-repeat;">
+          <img
+            data-editor-preview-image
+            src="{{shader.thumbnail}}"
+            alt="Shader preview"
+            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;"
+          />
+          <canvas
+            data-editor-preview-canvas
+            width="320"
+            height="320"
+            style="position:absolute;inset:0;width:100%;height:100%;"
+          ></canvas>
+          <div
+            data-editor-preview-empty
+            style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;text-align:center;padding:0.4rem;background:rgba(0,0,0,0.55);color:#e6e6e6;"
+          >
+            Preview unavailable
+          </div>
+        </div>
+        <div style="display:flex;justify-content:center;gap:0.5rem;flex-wrap:wrap;margin-top:0.45rem;">
+          <button type="button" data-action="update-editor-preview">Update Preview</button>
+          <button type="button" data-action="capture-editor-thumbnail">Capture Thumbnail</button>
+          <button type="button" data-action="edit-shader-variables">Edit Variables</button>
+        </div>
+      </section>
+
+      <section style="border:1px solid var(--color-border-light-primary,#666);border-radius:8px;padding:0.5rem 0.6rem;background:rgba(0,0,0,0.08);min-height:0;">
+        <h3 style="margin:0 0 0.35rem 0;">Shader Source</h3>
+        <div class="form-fields">
+          <textarea name="editSource" rows="13" style="width:100%;font-family:monospace;min-height:16rem;">{{shader.source}}</textarea>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <section style="border:1px solid var(--color-border-light-primary,#666);border-radius:8px;padding:0.35rem 0.6rem;background:rgba(0,0,0,0.08);">
+    <details>
+      <summary style="cursor:pointer;user-select:none;font-weight:700;">Channels</summary>
+      <div style="margin-top:0.45rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:0.5rem;">
+        {{#each channelRows}}
+        <article data-channel-card data-channel-index="{{index}}" style="border:1px solid var(--color-border-light-secondary,#555);border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.03);">
+          <input type="hidden" name="{{modeName}}" value="{{mode}}" />
+          <input type="hidden" name="{{pathName}}" value="{{path}}" />
+          <textarea name="{{sourceName}}" style="display:none;">{{source}}</textarea>
+
+          <button type="button" data-action="edit-channel" data-channel-index="{{index}}" style="all:unset;display:block;cursor:pointer;width:100%;">
+            <div style="position:relative;aspect-ratio:1/1;background:#151515;">
+              <img data-channel-thumb alt="iChannel{{index}}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;" />
+              <video data-channel-thumb-video muted loop playsinline autoplay style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;"></video>
+              <div data-channel-fallback style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;color:#cfcfcf;padding:0.25rem;font-size:0.85rem;"></div>
+            </div>
+            <div style="padding:0.35rem 0.45rem;line-height:1.2;">
+              <div style="font-weight:600;">iChannel{{index}}</div>
+              <div data-channel-mode-label style="font-size:0.8rem;opacity:0.9;"></div>
+              <div data-channel-path-label style="font-size:0.75rem;opacity:0.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+            </div>
+          </button>
+        </article>
+        {{/each}}
+      </div>
+      <p class="notes" style="margin-top:0.4rem;">Click a channel card to change type and configure image/buffer inputs.</p>
+    </details>
+  </section>
+</form>

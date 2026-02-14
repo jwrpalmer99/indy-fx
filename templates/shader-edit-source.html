@@ -1,0 +1,30 @@
+<form class="indy-fx-shader-edit-source">
+  <div class="form-group">
+    <label>Shader ID</label>
+    <div class="form-fields">
+      <input type="text" value="{{shader.id}}" readonly />
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>Shader Name</label>
+    <div class="form-fields">
+      <input type="text" name="editName" value="{{shader.name}}" />
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>ShaderToy Fragment Source</label>
+    <div class="form-fields">
+      <textarea name="editSource" rows="18">{{shader.source}}</textarea>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label>Auto-assign scene capture</label>
+    <div class="form-fields">
+      <input type="checkbox" name="autoAssignCapture" {{#if shader.autoAssignCapture}}checked{{/if}} />
+    </div>
+    <p class="notes">When channels are set to Auto, use clipped scene capture for referenced inputs.</p>
+  </div>
+</form>

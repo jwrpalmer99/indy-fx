@@ -1,0 +1,41 @@
+{
+  "id": "indy-fx",
+  "title": "Indy FX",
+  "description": "Procedural FX (PIXI) synced to all clients via socket. Attach to tokens/tiles/regions/templates.",
+  "version": "#{VERSION}#",
+  "authors": [{ "name": "PinguTwo" }],
+  "compatibility": {
+    "minimum": "13",
+    "verified": "13"
+  },
+  "url": "#{URL}#", 
+  "manifest": "#{MANIFEST}#",
+  "download": "#{DOWNLOAD}#",
+  "socket": true,
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "documentTypes": {
+    "RegionBehavior": {
+      "indyFX": {}
+    }
+  },
+  "esmodules": ["scripts/main.js"], 
+  "packs": [   
+    {
+      "name": "indyfx-macros",
+      "label": "Macros",
+      "path": "packs/indyfx-macros",
+      "type": "Macro",
+      "ownership": {
+        "PLAYER": "OBSERVER",
+        "ASSISTANT": "OWNER"
+      },
+      "flags": {}
+    }
+  ]
+}

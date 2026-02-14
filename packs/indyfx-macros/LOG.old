@@ -1,0 +1,7 @@
+2026/02/14-18:01:59.585 40c4 Recovering log #8
+2026/02/14-18:01:59.594 40c4 Delete type=0 #8
+2026/02/14-18:01:59.594 40c4 Delete type=3 #6
+2026/02/14-18:02:26.411 badc Level-0 table #13: started
+2026/02/14-18:02:26.411 badc Level-0 table #13: 0 bytes OK
+2026/02/14-18:02:26.414 badc Delete type=0 #11
+2026/02/14-18:02:26.423 badc Manual compaction at level-0 from 'undefined' @ 72057594037927935 : 1 .. 'undefined' @ 0 : 0; will stop at (end)
