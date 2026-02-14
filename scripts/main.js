@@ -751,6 +751,7 @@ function getDocumentShaderEditableOptions(target) {
       shaderRotationDeg: defaults.shaderRotationDeg ?? game.settings.get(MODULE_ID, "shaderRotationDeg"),
       shapeDistanceUnits: defaults.shapeDistanceUnits ?? game.settings.get(MODULE_ID, "shaderRadiusUnits"),
       scaleToToken: defaults.scaleToToken ?? false,
+      tokenScaleMultiplier: defaults.tokenScaleMultiplier ?? 1,
       captureScale: defaults.captureScale ?? game.settings.get(MODULE_ID, "shaderCaptureScale"),
       captureRotationDeg: defaults.captureRotationDeg ?? 0,
       captureFlipHorizontal: defaults.captureFlipHorizontal ?? false,
@@ -799,6 +800,7 @@ function parseDocumentShaderForm(root, currentOpts) {
   next.shaderRotationDeg = numVal("shaderRotationDeg", Number(next.shaderRotationDeg ?? 0));
   next.shapeDistanceUnits = numVal("shapeDistanceUnits", Number(next.shapeDistanceUnits ?? game.settings.get(MODULE_ID, "shaderRadiusUnits") ?? 20));
   next.scaleToToken = boolVal("scaleToToken", next.scaleToToken === true);
+  next.tokenScaleMultiplier = numVal("tokenScaleMultiplier", Number(next.tokenScaleMultiplier ?? 1));
   next.captureScale = numVal("captureScale", Number(next.captureScale ?? 1));
   next.captureRotationDeg = numVal("captureRotationDeg", Number(next.captureRotationDeg ?? 0));
   next.captureFlipHorizontal = boolVal("captureFlipHorizontal", next.captureFlipHorizontal === true);
@@ -831,6 +833,23 @@ function runShaderOffTarget(target, { skipPersist = false } = {}) {
   if (target.targetType === "token") shaderOff(target.id, { skipPersist });
   else if (target.targetType === "tile") shaderOffTile(target.id, { skipPersist });
   else if (target.targetType === "template") shaderOffTemplate(target.id, { skipPersist });
+}
+
+function broadcastShaderOnTarget(target, opts, { force = false } = {}) {
+  if (!target?.id) return;
+  if (force) broadcastShaderOffTarget(target);
+  if (target.targetType === "token") broadcastShaderOn({ tokenId: target.id, opts });
+  else if (target.targetType === "tile") broadcastShaderOnTile({ tileId: target.id, opts });
+  else if (target.targetType === "template") broadcastShaderOnTemplate({ templateId: target.id, opts });
+  else runShaderOnTarget(target, opts);
+}
+
+function broadcastShaderOffTarget(target) {
+  if (!target?.id) return;
+  if (target.targetType === "token") broadcastShaderOff({ tokenId: target.id });
+  else if (target.targetType === "tile") broadcastShaderOffTile({ tileId: target.id });
+  else if (target.targetType === "template") broadcastShaderOffTemplate({ templateId: target.id });
+  else runShaderOffTarget(target);
 }
 
 async function openDocumentShaderConfigDialog(app) {
@@ -887,6 +906,7 @@ async function openDocumentShaderConfigDialog(app) {
   <div class="form-group"><label>Shader Rotation (deg)</label><div class="form-fields">${number("shaderRotationDeg", current.shaderRotationDeg ?? 0, 'step="1"')}</div></div>
   <div class="form-group"><label>Distance (units)</label><div class="form-fields">${number("shapeDistanceUnits", current.shapeDistanceUnits ?? game.settings.get(MODULE_ID, "shaderRadiusUnits") ?? 20, 'step="0.1" min="0"')}</div></div>
   <div class="form-group"><label>Scale To Token</label><div class="form-fields">${checkbox("scaleToToken", current.scaleToToken === true)}</div></div>
+  <div class="form-group"><label>Token Scale Multiplier</label><div class="form-fields">${number("tokenScaleMultiplier", current.tokenScaleMultiplier ?? 1, 'step="0.01" min="0.01" max="10"')}</div></div>
   <div class="form-group"><label>Capture Scale</label><div class="form-fields">${number("captureScale", current.captureScale ?? 1, 'step="0.1" min="0.01"')}</div></div>
   <details>
     <summary style="cursor:pointer;user-select:none;">Capture options</summary>
@@ -916,7 +936,7 @@ async function openDocumentShaderConfigDialog(app) {
   );
 
   const restoreOriginalState = async () => {
-    runShaderOffTarget(target, { skipPersist: true });
+    const baselineDisabled = parsePersistDisabled(baselineFlag?._disabled);
 
     if (baselineWasActive) {
       const restoreOpts = foundry.utils.mergeObject(
@@ -925,12 +945,17 @@ async function openDocumentShaderConfigDialog(app) {
         { inplace: false },
       );
       delete restoreOpts._disabled;
-      restoreOpts._skipPersist = true;
-      runShaderOnTarget(target, restoreOpts);
+      delete restoreOpts._skipPersist;
+      broadcastShaderOnTarget(target, restoreOpts);
+    } else {
+      broadcastShaderOffTarget(target);
     }
 
     if (baselineFlag) {
       await writeShaderFlag(target.doc, target.flagKey, foundry.utils.deepClone(baselineFlag));
+      if (baselineDisabled) {
+        broadcastShaderOffTarget(target);
+      }
     } else {
       await clearShaderFlag(target.doc, target.flagKey);
     }
@@ -942,7 +967,7 @@ async function openDocumentShaderConfigDialog(app) {
     const enabledInput = form?.querySelector?.('[name="enabled"]');
 
     if (action === "remove") {
-      runShaderOffTarget(target, { skipPersist: true });
+      broadcastShaderOffTarget(target);
       await clearShaderFlag(target.doc, target.flagKey);
       if (enabledInput instanceof HTMLInputElement) enabledInput.checked = false;
       ui.notifications.info("indyFX effect removed.");
@@ -957,7 +982,7 @@ async function openDocumentShaderConfigDialog(app) {
     const enabledState = checkedEnabled;
 
     if (!enabledState) {
-      runShaderOffTarget(target, { skipPersist: true });
+      broadcastShaderOffTarget(target);
       await writeShaderFlag(target.doc, target.flagKey, {
         ...next,
         _disabled: true
@@ -975,17 +1000,8 @@ async function openDocumentShaderConfigDialog(app) {
     const runOpts = foundry.utils.mergeObject({}, next, { inplace: false });
     delete runOpts._disabled;
 
-    if (shouldPersistDocumentShader(next)) {
-      await writeShaderFlag(target.doc, target.flagKey, {
-        ...next,
-        _disabled: false,
-      });
-    } else {
-      await clearShaderFlag(target.doc, target.flagKey);
-    }
-
-    runShaderOffTarget(target, { skipPersist: true });
-    runShaderOnTarget(target, runOpts);
+    // Force redraw for active effects; shaderOn short-circuits when an entry already exists.
+    broadcastShaderOnTarget(target, runOpts, { force: true });
     debugLog("document shader dialog persisted enabled", {
       targetType: target?.targetType ?? null,
       targetId: target?.id ?? null,
@@ -1970,6 +1986,8 @@ function normalizeShaderMacroOpts(opts = {}) {
   if (next.scaleY === undefined && next.shaderScaleY !== undefined) next.scaleY = next.shaderScaleY;
   if (next.scaleToToken === undefined && next.shaderScaleToToken !== undefined) next.scaleToToken = next.shaderScaleToToken;
   if (next.shaderScaleToToken === undefined && next.scaleToToken !== undefined) next.shaderScaleToToken = next.scaleToToken;
+  if (next.tokenScaleMultiplier === undefined && next.shaderTokenScaleMultiplier !== undefined) next.tokenScaleMultiplier = next.shaderTokenScaleMultiplier;
+  if (next.shaderTokenScaleMultiplier === undefined && next.tokenScaleMultiplier !== undefined) next.shaderTokenScaleMultiplier = next.tokenScaleMultiplier;
   if (next.scaleWithTokenTexture === undefined && next.shaderScaleWithTokenTexture !== undefined) next.scaleWithTokenTexture = next.shaderScaleWithTokenTexture;
   if (next.shaderScaleWithTokenTexture === undefined && next.scaleWithTokenTexture !== undefined) next.shaderScaleWithTokenTexture = next.scaleWithTokenTexture;
   if (next.rotateWithToken === undefined && next.shaderRotateWithToken !== undefined) next.rotateWithToken = next.shaderRotateWithToken;
@@ -2219,6 +2237,7 @@ function shaderOn(tokenId, opts = {}) {
     scaleX: game.settings.get(MODULE_ID, "shaderScaleX"),
     scaleY: game.settings.get(MODULE_ID, "shaderScaleY"),
     scaleToToken: false,
+    tokenScaleMultiplier: 1,
     scaleWithTokenTexture: false,
     rotateWithToken: false,
     radiusUnits: game.settings.get(MODULE_ID, "shaderRadiusUnits"),
@@ -2260,7 +2279,8 @@ function shaderOn(tokenId, opts = {}) {
   const usesTokenTileImage = shaderManager.shaderUsesTokenTileImage?.(selectedShaderId) === true;
   const useTokenTextureScale = usesTokenTileImage || cfg.scaleWithTokenTexture === true;
   const tokenTextureScaleFactor = useTokenTextureScale ? getTokenTextureScaleFactor(tok) : 1;
-  const tokenEffectScaleFactor = useTokenTextureScale ? tokenTextureScaleFactor : 1;
+  const tokenScaleMultiplier = Math.max(0.01, Number(cfg.tokenScaleMultiplier ?? 1));
+  const tokenEffectScaleFactor = (useTokenTextureScale ? tokenTextureScaleFactor : 1) * tokenScaleMultiplier;
 
   const container = new PIXI.Container();
   container.zIndex = 999999;
@@ -2315,6 +2335,7 @@ function shaderOn(tokenId, opts = {}) {
     usesTokenTileImage,
     useTokenTextureScale,
     scaleWithTokenTexture: cfg.scaleWithTokenTexture === true,
+    tokenScaleMultiplier,
     rotateWithToken: cfg.rotateWithToken === true,
     tokenDocTextureScaleX: tok?.document?.texture?.scaleX,
     tokenDocTextureScaleY: tok?.document?.texture?.scaleY,
@@ -3943,6 +3964,7 @@ Hooks.once("ready", async () => {
     }
   };
 });
+
 
 
 

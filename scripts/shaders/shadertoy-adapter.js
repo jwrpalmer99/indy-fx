@@ -12,6 +12,7 @@ const SHADERTOY_UNIFORM_NAMES = [
   "iMouse",
   "iDate"
 ];
+const SHADERTOY_LEGACY_UNIFORM_NAMES = ["resolution"];
 
 function normalizeShaderSource(source) {
   let next = String(source ?? "").replace(/\r\n/g, "\n").trim();
@@ -19,8 +20,11 @@ function normalizeShaderSource(source) {
   next = next.replace(/^\s*precision\s+\w+\s+float\s*;\s*$/gm, "");
   next = next.replace(/^\s*uniform\s+\w+\s+iChannelResolution\s*\[\s*4\s*\]\s*;\s*$/gm, "");
 
-  for (const name of SHADERTOY_UNIFORM_NAMES) {
-    const re = new RegExp(`^\\s*uniform\\s+\\w+\\s+${name}\\s*;\\s*$`, "gm");
+  for (const name of [...SHADERTOY_UNIFORM_NAMES, ...SHADERTOY_LEGACY_UNIFORM_NAMES]) {
+    const re = new RegExp(
+      `^\\s*uniform\\s+(?:(?:lowp|mediump|highp)\\s+)?\\w+\\s+${name}\\s*(?:\\[\\s*\\d+\\s*\\])?\\s*;\\s*$`,
+      "gm"
+    );
     next = next.replace(re, "");
   }
 
@@ -813,8 +817,3 @@ void main() {
   gl_FragColor = shaderColor;
 }`;
 }
-
-
-
-
-

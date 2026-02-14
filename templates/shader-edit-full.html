@@ -158,6 +158,12 @@
       <details style="margin:0.2rem 0 0.3rem 0;" data-parent-toggle="default_scaleToToken" {{#if shader.defaults.scaleToToken}}open{{/if}}>
         <summary style="cursor:pointer;user-select:none;">Scale-to-token options</summary>
         <div class="form-group" style="margin-top:0.35rem;">
+          <label>Token Scale Multiplier</label>
+          <div class="form-fields">
+            <input type="number" name="default_tokenScaleMultiplier" min="0.01" max="10" step="0.01" value="{{shader.defaults.tokenScaleMultiplier}}" />
+          </div>
+        </div>
+        <div class="form-group">
           <label>Scale With Token Texture</label>
           <div class="form-fields">
             <input type="checkbox" name="default_scaleWithTokenTexture" {{#if shader.defaults.scaleWithTokenTexture}}checked{{/if}} />

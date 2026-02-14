@@ -64,6 +64,7 @@ const IMPORTED_SHADER_DEFAULT_KEYS = [
   "scaleX",
   "scaleY",
   "scaleToToken",
+  "tokenScaleMultiplier",
   "scaleWithTokenTexture",
   "rotateWithToken",
   "flipHorizontal",
@@ -581,6 +582,7 @@ export class ShaderManager {
         1.0,
       ),
       scaleToToken: false,
+      tokenScaleMultiplier: 1.0,
       scaleWithTokenTexture: false,
       rotateWithToken: false,
       flipHorizontal: false,
@@ -717,6 +719,13 @@ export class ShaderManager {
         source.scaleToToken === "1" ||
         source.scaleToToken === "true" ||
         source.scaleToToken === "on",
+      tokenScaleMultiplier: Math.max(
+        0.01,
+        Math.min(
+          10,
+          toFiniteNumber(source.tokenScaleMultiplier ?? source.shaderTokenScaleMultiplier, base.tokenScaleMultiplier),
+        ),
+      ),
       scaleWithTokenTexture:
         source.scaleWithTokenTexture === true ||
         source.scaleWithTokenTexture === 1 ||
