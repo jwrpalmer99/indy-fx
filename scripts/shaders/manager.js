@@ -10,6 +10,7 @@ import { torusShaderDefinition } from "./builtin/torus.js";
 import { globeShaderDefinition } from "./builtin/globe.js";
 import { ShaderToyBufferChannel } from "./buffer-channel.js";
 import { PlaceableImageChannel } from "./placeable-image-channel.js";
+import { SceneAreaChannel } from "./scene-channel.js";
 import {
   adaptShaderToyFragment,
   extractReferencedChannels,
@@ -219,6 +220,22 @@ function normalizeChannelInput(raw, depth = 0) {
   };
 }
 
+function channelConfigNeedsLivePreview(config, depth = 0) {
+  if (!config || typeof config !== "object") return false;
+  if (depth > MAX_BUFFER_CHAIN_DEPTH) return false;
+  for (const index of CHANNEL_INDICES) {
+    const key = `iChannel${index}`;
+    const entry = config[key] ?? config[index];
+    if (!entry || typeof entry !== "object") continue;
+    const mode = normalizeChannelMode(entry.mode ?? "auto");
+    if (mode === "sceneCapture" || mode === "tokenTileImage") return true;
+    if (mode === "buffer" && channelConfigNeedsLivePreview(entry.channels, depth + 1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function extractShaderToyId(input) {
   const raw = String(input ?? "").trim();
   if (!raw) return "";
@@ -402,16 +419,62 @@ export class ShaderManager {
       this._invalidateShaderChoiceCaches();
     });
   }
+  _resolvePreviewTarget({ targetType = null, targetId = null } = {}) {
+    const explicitType = String(targetType ?? "").trim().toLowerCase();
+    const explicitId = String(targetId ?? "").trim();
+    if ((explicitType === "token" || explicitType === "tile") && explicitId) {
+      return { targetType: explicitType, targetId: explicitId };
+    }
+    return { targetType: null, targetId: null };
+  }
+
+  _buildLiveScenePreviewChannel(size = THUMBNAIL_SIZE) {
+    const stage = canvas?.stage;
+    const app = canvas?.app;
+    const renderer = app?.renderer;
+    if (!stage || !app?.screen || !renderer) return null;
+
+    const captureSize = Math.max(64, Math.min(2048, Math.round(Number(size) || THUMBNAIL_SIZE)));
+    const zoom = Math.max(0.0001, Math.abs(stage.worldTransform?.a ?? 1));
+    const centerGlobal = new PIXI.Point(app.screen.width * 0.5, app.screen.height * 0.5);
+    const centerWorld = stage.toLocal(centerGlobal);
+    const radiusWorldX = Math.max(1, (app.screen.width * 0.5) / zoom);
+    const radiusWorldY = Math.max(1, (app.screen.height * 0.5) / zoom);
+
+    const channel = new SceneAreaChannel(captureSize);
+    channel.update({
+      centerWorld,
+      radiusWorldX,
+      radiusWorldY,
+    });
+    return channel;
+  }
+
   _getTransformedPreviewCaptureTexture(
-    texturePath,
+    textureInput,
     {
       captureRotationDeg = 0,
       captureFlipHorizontal = false,
       captureFlipVertical = false,
     } = {},
   ) {
-    const path = String(texturePath ?? "").trim();
-    if (!path) return null;
+    let sourceTexture = null;
+    let cacheSourceKey = null;
+
+    if (typeof textureInput === "string") {
+      const path = String(textureInput ?? "").trim();
+      if (!path) return null;
+      sourceTexture = PIXI.Texture.from(path);
+      cacheSourceKey = "url:" + path;
+    } else if (
+      textureInput instanceof PIXI.Texture ||
+      textureInput instanceof PIXI.RenderTexture ||
+      (textureInput && typeof textureInput === "object" && textureInput.baseTexture)
+    ) {
+      sourceTexture = textureInput;
+    }
+
+    if (!sourceTexture) return null;
 
     const rotationDeg = toFiniteNumber(captureRotationDeg, 0);
     const flipH = parseBooleanLike(captureFlipHorizontal);
@@ -419,7 +482,6 @@ export class ShaderManager {
     const needsTransform =
       Math.abs(rotationDeg) > 0.0001 || flipH === true || flipV === true;
 
-    const sourceTexture = PIXI.Texture.from(path);
     const sourceBase = sourceTexture?.baseTexture;
     if (sourceBase) {
       sourceBase.wrapMode = PIXI.WRAP_MODES.CLAMP;
@@ -429,14 +491,17 @@ export class ShaderManager {
     }
     if (!needsTransform) return sourceTexture;
 
-    const cacheKey = [
-      path,
-      Number(rotationDeg).toFixed(4),
-      flipH ? "1" : "0",
-      flipV ? "1" : "0",
-    ].join("|");
-    const cached = this._previewCaptureTextureCache.get(cacheKey);
-    if (cached?.valid) return cached;
+    let cacheKey = null;
+    if (cacheSourceKey) {
+      cacheKey = [
+        cacheSourceKey,
+        Number(rotationDeg).toFixed(4),
+        flipH ? "1" : "0",
+        flipV ? "1" : "0",
+      ].join("|");
+      const cached = this._previewCaptureTextureCache.get(cacheKey);
+      if (cached?.valid) return cached;
+    }
 
     const renderer = canvas?.app?.renderer;
     if (!renderer) return sourceTexture;
@@ -465,7 +530,7 @@ export class ShaderManager {
         base.mipmap = PIXI.MIPMAP_MODES.OFF;
         base.update?.();
       }
-      this._previewCaptureTextureCache.set(cacheKey, target);
+      if (cacheKey) this._previewCaptureTextureCache.set(cacheKey, target);
       return target;
     } catch (_err) {
       target.destroy(true);
@@ -476,6 +541,7 @@ export class ShaderManager {
   }
 
   getDefaultImportedShaderDefaults() {
+
     return {
       layer: String(
         game.settings.get(this.moduleId, "shaderLayer") ?? "inherit",
@@ -551,7 +617,7 @@ export class ShaderManager {
       ),
       captureScale: toFiniteNumber(
         game.settings.get(this.moduleId, "shaderCaptureScale"),
-        2.0,
+        1.0,
       ),
       captureRotationDeg: 0.0,
       captureFlipHorizontal: false,
@@ -800,6 +866,9 @@ export class ShaderManager {
       channels = null,
       autoAssignCapture = null,
       reason = "",
+      targetType = null,
+      targetId = null,
+      useLiveCapturePreview = false,
     } = {},
   ) {
     const perfNow = () => {
@@ -918,6 +987,18 @@ export class ShaderManager {
       0,
       Math.min(1, toFiniteNumber(runtimeDefaults.alpha, 1)),
     );
+    const enableLiveCapturePreview = useLiveCapturePreview === true;
+    const previewTarget = enableLiveCapturePreview
+      ? this._resolvePreviewTarget({ targetType, targetId })
+      : { targetType: null, targetId: null };
+    const needsLiveCapturePreview =
+      enableLiveCapturePreview &&
+      channelConfigNeedsLivePreview(previewDefinition.channelConfig);
+    const previewSceneChannel = needsLiveCapturePreview
+      ? this._buildLiveScenePreviewChannel(size)
+      : null;
+    const previewSceneTexture =
+      previewSceneChannel?.texture ?? PREVIEW_SCENE_CAPTURE_TEXTURE;
     const tMakeShader0 = perfNow();
     const shaderResult = this.makeShader({
       ...runtimeDefaults,
@@ -934,9 +1015,11 @@ export class ShaderManager {
         0.8,
       ),
       alpha: previewAlpha,
-      previewSceneCaptureTexture: PREVIEW_SCENE_CAPTURE_TEXTURE,
-      previewPlaceableTexture: PREVIEW_SCENE_CAPTURE_TEXTURE,
+      previewSceneCaptureTexture: previewSceneTexture,
+      previewPlaceableTexture: previewSceneTexture,
       previewMode: true,
+      targetType: previewTarget.targetType,
+      targetId: previewTarget.targetId,
       debugMode: 0,
       noiseOffset: [0, 0],
       iMouse: [0, 0, 0, 0],
@@ -989,6 +1072,8 @@ export class ShaderManager {
     const runtimeBuffers = (shaderResult.runtimeBufferChannels ?? [])
       .map((entry) => entry?.runtimeBuffer)
       .filter((buffer) => buffer && typeof buffer.update === "function");
+    const runtimeImageChannels = (shaderResult.runtimeImageChannels ?? [])
+      .filter((channel) => channel && typeof channel.destroy === "function");
     phaseMs.bufferSetup = perfNow() - tBuffers0;
 
     let pendingBufferDt = 0;
@@ -1010,6 +1095,10 @@ export class ShaderManager {
         bufferSetup: Number(phaseMs.bufferSetup.toFixed(3)),
       },
       runtimeBufferCount: runtimeBuffers.length,
+      runtimeImageChannelCount: runtimeImageChannels.length,
+      hasPreviewTarget: !!previewTarget.targetId,
+      previewTargetType: previewTarget.targetType ?? null,
+      usedLiveScenePreview: !!previewSceneChannel,
     });
 
     return {
@@ -1034,6 +1123,8 @@ export class ShaderManager {
       },
       destroy: () => {
         for (const runtimeBuffer of runtimeBuffers) runtimeBuffer.destroy?.();
+        for (const runtimeImageChannel of runtimeImageChannels) runtimeImageChannel.destroy?.();
+        previewSceneChannel?.destroy?.();
         container.destroy({ children: true });
         geometry.destroy();
       },
@@ -1798,16 +1889,20 @@ export class ShaderManager {
         options?.captureFlipHorizontal,
       );
       const captureFlipVertical = parseBooleanLike(options?.captureFlipVertical);
-      const previewSceneTexture = String(
-        options?.previewSceneCaptureTexture ?? "",
-      ).trim();
+      const previewSceneTextureInput =
+        options?.previewSceneCaptureTexture ?? "";
+      const previewSceneTexture =
+        this._getTransformedPreviewCaptureTexture(previewSceneTextureInput, {
+          captureRotationDeg,
+          captureFlipHorizontal,
+          captureFlipVertical,
+        }) ??
+        (typeof previewSceneTextureInput === "string" &&
+        String(previewSceneTextureInput).trim()
+          ? PIXI.Texture.from(String(previewSceneTextureInput).trim())
+          : null);
       if (previewSceneTexture) {
-        const texture =
-          this._getTransformedPreviewCaptureTexture(previewSceneTexture, {
-            captureRotationDeg,
-            captureFlipHorizontal,
-            captureFlipVertical,
-          }) ?? PIXI.Texture.from(previewSceneTexture);
+        const texture = previewSceneTexture;
         const base = texture?.baseTexture;
         if (base) {
           base.wrapMode = PIXI.WRAP_MODES.CLAMP;
@@ -1843,11 +1938,14 @@ export class ShaderManager {
         .toLowerCase();
       const targetId = String(options?.targetId ?? "").trim();
       const isPreview = options?.previewMode === true;
-      const previewTexturePath = String(
+      const previewTextureInput =
         options?.previewPlaceableTexture ??
           options?.previewSceneCaptureTexture ??
-          PREVIEW_SCENE_CAPTURE_TEXTURE,
-      ).trim();
+          PREVIEW_SCENE_CAPTURE_TEXTURE;
+      const previewTexturePath =
+        typeof previewTextureInput === "string"
+          ? String(previewTextureInput).trim()
+          : "";
       debugLog(this.moduleId, "resolve tokenTileImage channel", {
         targetType: targetType || null,
         targetId: targetId || null,
@@ -1897,7 +1995,7 @@ export class ShaderManager {
         };
       }
 
-      if (previewTexturePath) {
+      if (previewTextureInput) {
         debugLog(this.moduleId, "tokenTileImage fallback: preview texture", {
           targetType: targetType || null,
           targetId: targetId || null,
@@ -1910,11 +2008,12 @@ export class ShaderManager {
         );
         const captureFlipVertical = parseBooleanLike(options?.captureFlipVertical);
         const texture =
-          this._getTransformedPreviewCaptureTexture(previewTexturePath, {
+          this._getTransformedPreviewCaptureTexture(previewTextureInput, {
             captureRotationDeg,
             captureFlipHorizontal,
             captureFlipVertical,
-          }) ?? PIXI.Texture.from(previewTexturePath);
+          }) ??
+          (previewTexturePath ? PIXI.Texture.from(previewTexturePath) : null);
         const base = texture?.baseTexture;
         if (base) {
           base.wrapMode = PIXI.WRAP_MODES.CLAMP;
@@ -1922,6 +2021,7 @@ export class ShaderManager {
           base.mipmap = PIXI.MIPMAP_MODES.OFF;
           base.update?.();
         }
+        if (!texture) return emptyResult;
         return {
           texture,
           resolution: getTextureSize(texture, PLACEABLE_IMAGE_PREVIEW_SIZE),
@@ -2692,39 +2792,4 @@ export class ShaderManager {
     return true;
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

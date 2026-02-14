@@ -1535,7 +1535,7 @@ export function createMenus({ moduleId, shaderManager }) {
         const avgStep = perfStats.stepSum / Math.max(1, perfStats.stepSamples.length);
         const avgRender = perfStats.renderSum / Math.max(1, perfStats.renderSamples.length);
         previewPerf.textContent =
-          `Tick avg (${count}) total ${avgTotal.toFixed(2)} ms | step ${avgStep.toFixed(2)} ms | render ${avgRender.toFixed(2)} ms`;
+          `Tick avg (${count}) total ${avgTotal.toFixed(4)} ms | step ${avgStep.toFixed(4)} ms | render ${avgRender.toFixed(3)} ms`;
       };
 
       const destroyPreview = () => {
