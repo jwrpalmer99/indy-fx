@@ -2037,17 +2037,24 @@ function getImportedShaderDefaultsForSelection(macroOpts = {}) {
 }
 
 function resolveShaderRotationRad(cfg, shape, shapeDirectionDeg) {
+  const isDirectionalShape =
+    shape === "cone" || shape === "line" || shape === "rectangle";
+  const baseRad = isDirectionalShape
+    ? Number(shapeDirectionDeg || 0) * (Math.PI / 180)
+    : 0;
+
   const explicitRad = Number(cfg?.shaderRotationRad);
-  if (Number.isFinite(explicitRad)) return explicitRad;
-
-  const explicitDeg = Number(cfg?.shaderRotationDeg);
-  if (Number.isFinite(explicitDeg)) return explicitDeg * (Math.PI / 180);
-
-  if (shape === "cone" || shape === "line") {
-    return Number(shapeDirectionDeg || 0) * (Math.PI / 180);
+  if (Number.isFinite(explicitRad)) {
+    return isDirectionalShape ? baseRad + explicitRad : explicitRad;
   }
 
-  return 0;
+  const explicitDeg = Number(cfg?.shaderRotationDeg);
+  if (Number.isFinite(explicitDeg)) {
+    const explicitOffset = explicitDeg * (Math.PI / 180);
+    return isDirectionalShape ? baseRad + explicitOffset : explicitOffset;
+  }
+
+  return baseRad;
 }
 
 function getTokenTextureScaleFactor(token) {

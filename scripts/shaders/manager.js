@@ -163,6 +163,16 @@ function normalizeChannelMode(mode) {
   return "auto";
 }
 
+function parseBooleanLike(value) {
+  return (
+    value === true ||
+    value === 1 ||
+    value === "1" ||
+    value === "true" ||
+    value === "on"
+  );
+}
+
 function getTextureSize(texture, fallback = 256) {
   const w = texture?.baseTexture?.realWidth ?? texture?.width ?? fallback;
   const h = texture?.baseTexture?.realHeight ?? texture?.height ?? fallback;
@@ -360,6 +370,7 @@ export class ShaderManager {
     this._tokenTileUsageCache = null;
     this._backgroundCompilePending = new Set();
     this._backgroundCompileDone = new Set();
+    this._previewCaptureTextureCache = new Map();
   }
 
 
@@ -391,6 +402,79 @@ export class ShaderManager {
       this._invalidateShaderChoiceCaches();
     });
   }
+  _getTransformedPreviewCaptureTexture(
+    texturePath,
+    {
+      captureRotationDeg = 0,
+      captureFlipHorizontal = false,
+      captureFlipVertical = false,
+    } = {},
+  ) {
+    const path = String(texturePath ?? "").trim();
+    if (!path) return null;
+
+    const rotationDeg = toFiniteNumber(captureRotationDeg, 0);
+    const flipH = parseBooleanLike(captureFlipHorizontal);
+    const flipV = parseBooleanLike(captureFlipVertical);
+    const needsTransform =
+      Math.abs(rotationDeg) > 0.0001 || flipH === true || flipV === true;
+
+    const sourceTexture = PIXI.Texture.from(path);
+    const sourceBase = sourceTexture?.baseTexture;
+    if (sourceBase) {
+      sourceBase.wrapMode = PIXI.WRAP_MODES.CLAMP;
+      sourceBase.scaleMode = PIXI.SCALE_MODES.LINEAR;
+      sourceBase.mipmap = PIXI.MIPMAP_MODES.OFF;
+      sourceBase.update?.();
+    }
+    if (!needsTransform) return sourceTexture;
+
+    const cacheKey = [
+      path,
+      Number(rotationDeg).toFixed(4),
+      flipH ? "1" : "0",
+      flipV ? "1" : "0",
+    ].join("|");
+    const cached = this._previewCaptureTextureCache.get(cacheKey);
+    if (cached?.valid) return cached;
+
+    const renderer = canvas?.app?.renderer;
+    if (!renderer) return sourceTexture;
+
+    const [width, height] = getTextureSize(sourceTexture, 1024);
+    const target = PIXI.RenderTexture.create({
+      width,
+      height,
+      resolution: 1,
+      scaleMode: PIXI.SCALE_MODES.LINEAR,
+    });
+    const stage = new PIXI.Container();
+    const sprite = new PIXI.Sprite(sourceTexture);
+    sprite.anchor.set(0.5, 0.5);
+    sprite.x = width * 0.5;
+    sprite.y = height * 0.5;
+    sprite.scale.set(flipH ? -1 : 1, flipV ? -1 : 1);
+    sprite.rotation = (rotationDeg * Math.PI) / 180;
+    stage.addChild(sprite);
+    try {
+      renderer.render(stage, { renderTexture: target, clear: true });
+      const base = target?.baseTexture;
+      if (base) {
+        base.wrapMode = PIXI.WRAP_MODES.CLAMP;
+        base.scaleMode = PIXI.SCALE_MODES.LINEAR;
+        base.mipmap = PIXI.MIPMAP_MODES.OFF;
+        base.update?.();
+      }
+      this._previewCaptureTextureCache.set(cacheKey, target);
+      return target;
+    } catch (_err) {
+      target.destroy(true);
+      return sourceTexture;
+    } finally {
+      stage.destroy({ children: true });
+    }
+  }
+
   getDefaultImportedShaderDefaults() {
     return {
       layer: String(
@@ -1709,11 +1793,21 @@ export class ShaderManager {
     };
 
     if (mode === "sceneCapture") {
+      const captureRotationDeg = toFiniteNumber(options?.captureRotationDeg, 0);
+      const captureFlipHorizontal = parseBooleanLike(
+        options?.captureFlipHorizontal,
+      );
+      const captureFlipVertical = parseBooleanLike(options?.captureFlipVertical);
       const previewSceneTexture = String(
         options?.previewSceneCaptureTexture ?? "",
       ).trim();
       if (previewSceneTexture) {
-        const texture = PIXI.Texture.from(previewSceneTexture);
+        const texture =
+          this._getTransformedPreviewCaptureTexture(previewSceneTexture, {
+            captureRotationDeg,
+            captureFlipHorizontal,
+            captureFlipVertical,
+          }) ?? PIXI.Texture.from(previewSceneTexture);
         const base = texture?.baseTexture;
         if (base) {
           base.wrapMode = PIXI.WRAP_MODES.CLAMP;
@@ -1768,13 +1862,10 @@ export class ShaderManager {
           ? PLACEABLE_IMAGE_PREVIEW_SIZE
           : PLACEABLE_IMAGE_CAPTURE_SIZE;
         const captureRotationDeg = toFiniteNumber(options?.captureRotationDeg, 0);
-        const captureFlipHorizontal =
-          options?.captureFlipHorizontal === true ||
-          options?.captureFlipHorizontal === 1 ||
-          options?.captureFlipHorizontal === "1" ||
-          options?.captureFlipHorizontal === "true" ||
-          options?.captureFlipHorizontal === "on";
-        const captureFlipVertical = options?.captureFlipVertical === true;
+        const captureFlipHorizontal = parseBooleanLike(
+          options?.captureFlipHorizontal,
+        );
+        const captureFlipVertical = parseBooleanLike(options?.captureFlipVertical);
         debugLog(this.moduleId, "create placeable image channel", {
           targetType,
           targetId,
@@ -1813,7 +1904,17 @@ export class ShaderManager {
           isPreview,
           previewTexturePath,
         });
-        const texture = PIXI.Texture.from(previewTexturePath);
+        const captureRotationDeg = toFiniteNumber(options?.captureRotationDeg, 0);
+        const captureFlipHorizontal = parseBooleanLike(
+          options?.captureFlipHorizontal,
+        );
+        const captureFlipVertical = parseBooleanLike(options?.captureFlipVertical);
+        const texture =
+          this._getTransformedPreviewCaptureTexture(previewTexturePath, {
+            captureRotationDeg,
+            captureFlipHorizontal,
+            captureFlipVertical,
+          }) ?? PIXI.Texture.from(previewTexturePath);
         const base = texture?.baseTexture;
         if (base) {
           base.wrapMode = PIXI.WRAP_MODES.CLAMP;

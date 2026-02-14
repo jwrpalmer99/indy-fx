@@ -104,9 +104,107 @@ function rewriteFloatStepLoopsToCountedLoops(source) {
 
   return next;
 }
+function rewriteTopLevelRedeclaredLocals(source) {
+  let next = String(source ?? "");
+
+  const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const findMatchingBrace = (value, openIndex) => {
+    let depth = 0;
+    for (let i = openIndex; i < value.length; i += 1) {
+      const ch = value[i];
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  };
+
+  const getBraceDepth = (value, endExclusive) => {
+    let depth = 0;
+    for (let i = 0; i < endExclusive; i += 1) {
+      const ch = value[i];
+      if (ch === "{") depth += 1;
+      else if (ch === "}") depth -= 1;
+    }
+    return depth;
+  };
+
+  const rewriteFunctionBody = (body) => {
+    let result = String(body ?? "");
+    // Avoid unsafe renames across preprocessor branches (#if/#else) where only one declaration exists at runtime.
+    if (/^\s*#\s*(?:if|ifdef|ifndef|elif|else|endif)\b/m.test(result)) return result;
+    let renamedCount = 0;
+    const seen = new Set();
+    const declRe = /(^|;)\s*((?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(?:float|int|bool|vec[234]|mat[234])\s+)([A-Za-z_]\w*)(?=\s*(?:[=;,\[]))/gm;
+
+    let scanIndex = 0;
+    while (true) {
+      declRe.lastIndex = scanIndex;
+      const match = declRe.exec(result);
+      if (!match) break;
+
+      const depth = getBraceDepth(result, match.index);
+      if (depth !== 0) {
+        scanIndex = declRe.lastIndex;
+        continue;
+      }
+
+      const name = match[3];
+      if (!seen.has(name)) {
+        seen.add(name);
+        scanIndex = declRe.lastIndex;
+        continue;
+      }
+
+      const newName = `${name}_cpfx${renamedCount++}`;
+      const nameStart = match.index + String(match[0] ?? "").lastIndexOf(name);
+      result = `${result.slice(0, nameStart)}${newName}${result.slice(nameStart + name.length)}`;
+
+      const replaceFrom = nameStart + newName.length;
+      const tail = result.slice(replaceFrom).replace(
+        new RegExp(`\\b${escapeRegex(name)}\\b`, "g"),
+        newName,
+      );
+      result = `${result.slice(0, replaceFrom)}${tail}`;
+      scanIndex = replaceFrom;
+    }
+
+    return result;
+  };
+
+  const functionHeadRe = /\b(?:void|float|int|bool|vec[234]|mat[234])\s+[A-Za-z_]\w*\s*\([^;{}]*\)\s*\{/g;
+  const ranges = [];
+  let fnMatch;
+  while ((fnMatch = functionHeadRe.exec(next)) !== null) {
+    const open = next.indexOf("{", fnMatch.index);
+    if (open < 0) continue;
+    const close = findMatchingBrace(next, open);
+    if (close < 0) continue;
+    ranges.push({ open, close });
+    functionHeadRe.lastIndex = close + 1;
+  }
+
+  for (let i = ranges.length - 1; i >= 0; i -= 1) {
+    const { open, close } = ranges[i];
+    const body = next.slice(open + 1, close);
+    const rewrittenBody = rewriteFunctionBody(body);
+    if (rewrittenBody !== body) {
+      next = `${next.slice(0, open + 1)}${rewrittenBody}${next.slice(close)}`;
+    }
+  }
+
+  return next;
+}
 function applyCompatibilityRewrites(source) {
   let next = String(source ?? "");
   next = rewriteFloatStepLoopsToCountedLoops(next);
+  next = rewriteTopLevelRedeclaredLocals(next);
+
+  // GLSL ES 1.00 accepts mat2/mat3/mat4 but not mat2x2/mat3x3/mat4x4 aliases.
+  next = next.replace(/\bmat([234])x\1\b/g, "mat$1");
 
   // Common Twigl shorthand in some ShaderToy ports.
   // Rewritten to ANGLE/WebGL-friendly canonical loop form.
@@ -309,6 +407,11 @@ function applyCompatibilityRewrites(source) {
     /\btexelFetch\s*\(\s*iChannel([0-3])\s*,/g,
     "cpfx_texelFetch(iChannel$1, $1,"
   );
+  // textureSize is GLSL ES 3.00; remap channel lookups.
+  next = next.replace(
+    /\btextureSize\s*\(\s*iChannel([0-3])\s*,/g,
+    "cpfx_textureSize(iChannel$1, $1,"
+  );
 
   // GLSL ES 1.00 has no mat4x3; rewrite common multiplication form.
   const mat4x3MulRe = /mat4x3\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)\s*\*\s*(\([^;\n]+\)|[A-Za-z_]\w*)/g;
@@ -381,7 +484,7 @@ uniform vec2 resolution;
 vec2 cpfxFragCoord;
 #define gl_FragCoord vec4(cpfxFragCoord, 0.0, 1.0)
 
-const float PI = 3.14159265359;
+const float cpfx_PI = 3.14159265359;
 
 vec2 cpfx_rotate(vec2 p, float a) {
   float c = cos(a);
@@ -451,9 +554,15 @@ vec4 textureCompat(sampler2D s, vec2 uv) {
 
 vec4 textureCompat(sampler2D s, vec3 dir) {
   vec3 n = normalize(dir);
-  float u = atan(n.z, n.x) / (2.0 * PI) + 0.5;
-  float v = asin(clamp(n.y, -1.0, 1.0)) / PI + 0.5;
+  float u = atan(n.z, n.x) / (2.0 * cpfx_PI) + 0.5;
+  float v = asin(clamp(n.y, -1.0, 1.0)) / cpfx_PI + 0.5;
   return texture2D(s, vec2(u, v));
+}
+vec4 textureCompat(sampler2D s, vec2 uv, float bias) {
+  return textureCompat(s, uv);
+}
+vec4 textureCompat(sampler2D s, vec3 dir, float bias) {
+  return textureCompat(s, dir);
 }
 
 vec4 cpfx_textureLod(sampler2D s, vec2 uv, float lod) {
@@ -475,6 +584,17 @@ vec4 cpfx_texelFetch(sampler2D s, int channelIndex, ivec2 p, int lod) {
   res = max(res, vec2(1.0));
   vec2 uv = (vec2(p) + 0.5) / res;
   return textureCompat(s, uv);
+}
+ivec2 cpfx_textureSize(sampler2D s, int channelIndex, int lod) {
+  int idx = channelIndex;
+  if (idx < 0) idx = 0;
+  else if (idx > 3) idx = 3;
+  vec2 res = vec2(
+    idx == 0 ? iChannelResolution[0].x : (idx == 1 ? iChannelResolution[1].x : (idx == 2 ? iChannelResolution[2].x : iChannelResolution[3].x)),
+    idx == 0 ? iChannelResolution[0].y : (idx == 1 ? iChannelResolution[1].y : (idx == 2 ? iChannelResolution[2].y : iChannelResolution[3].y))
+  );
+  res = max(res, vec2(1.0));
+  return ivec2(res);
 }
 
 vec3 cpfx_mul_mat4x3_vec4(vec3 c0, vec3 c1, vec3 c2, vec3 c3, vec4 v) {
@@ -553,7 +673,7 @@ uniform vec2 resolution;
 vec2 cpfxFragCoord;
 #define gl_FragCoord vec4(cpfxFragCoord, 0.0, 1.0)
 
-const float PI = 3.14159265359;
+const float cpfx_PI = 3.14159265359;
 
 vec2 cpfx_rotate(vec2 p, float a) {
   float c = cos(a);
@@ -623,9 +743,15 @@ vec4 textureCompat(sampler2D s, vec2 uv) {
 
 vec4 textureCompat(sampler2D s, vec3 dir) {
   vec3 n = normalize(dir);
-  float u = atan(n.z, n.x) / (2.0 * PI) + 0.5;
-  float v = asin(clamp(n.y, -1.0, 1.0)) / PI + 0.5;
+  float u = atan(n.z, n.x) / (2.0 * cpfx_PI) + 0.5;
+  float v = asin(clamp(n.y, -1.0, 1.0)) / cpfx_PI + 0.5;
   return texture2D(s, vec2(u, v));
+}
+vec4 textureCompat(sampler2D s, vec2 uv, float bias) {
+  return textureCompat(s, uv);
+}
+vec4 textureCompat(sampler2D s, vec3 dir, float bias) {
+  return textureCompat(s, dir);
 }
 
 vec4 cpfx_textureLod(sampler2D s, vec2 uv, float lod) {
@@ -647,6 +773,17 @@ vec4 cpfx_texelFetch(sampler2D s, int channelIndex, ivec2 p, int lod) {
   res = max(res, vec2(1.0));
   vec2 uv = (vec2(p) + 0.5) / res;
   return textureCompat(s, uv);
+}
+ivec2 cpfx_textureSize(sampler2D s, int channelIndex, int lod) {
+  int idx = channelIndex;
+  if (idx < 0) idx = 0;
+  else if (idx > 3) idx = 3;
+  vec2 res = vec2(
+    idx == 0 ? iChannelResolution[0].x : (idx == 1 ? iChannelResolution[1].x : (idx == 2 ? iChannelResolution[2].x : iChannelResolution[3].x)),
+    idx == 0 ? iChannelResolution[0].y : (idx == 1 ? iChannelResolution[1].y : (idx == 2 ? iChannelResolution[2].y : iChannelResolution[3].y))
+  );
+  res = max(res, vec2(1.0));
+  return ivec2(res);
 }
 
 vec3 cpfx_mul_mat4x3_vec4(vec3 c0, vec3 c1, vec3 c2, vec3 c3, vec4 v) {
@@ -676,7 +813,6 @@ void main() {
   gl_FragColor = shaderColor;
 }`;
 }
-
 
 
 

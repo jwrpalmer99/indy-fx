@@ -1328,6 +1328,23 @@ export function createMenus({ moduleId, shaderManager }) {
             }
           });
         }
+
+        const applyButton = dialogRoot.querySelector('[data-action="apply"]');
+        if (applyButton instanceof HTMLElement) {
+          if (applyButton.dataset.indyFxNoCloseApplyBound !== "1") {
+            applyButton.dataset.indyFxNoCloseApplyBound = "1";
+            applyButton.addEventListener(
+              "click",
+              (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation?.();
+                applyFromDialog(dialogRoot);
+              },
+              { capture: true },
+            );
+          }
+        }
       };
 
       const dialog = new foundry.applications.api.DialogV2({
@@ -1407,6 +1424,7 @@ export function createMenus({ moduleId, shaderManager }) {
       const previewImage = root.querySelector("[data-editor-preview-image]");
       const previewEmpty = root.querySelector("[data-editor-preview-empty]");
       const previewStage = root.querySelector("[data-editor-preview-stage]");
+      const previewPerf = root.querySelector("[data-editor-preview-perf]");
       if (!(previewStage instanceof HTMLElement)) {
         return { refresh: () => {}, destroy: () => {}, capture: () => "" };
       }
@@ -1465,10 +1483,65 @@ export function createMenus({ moduleId, shaderManager }) {
       let refreshTimer = 0;
       let lastMs = performance.now();
       let destroyed = false;
+      const tickWindowSize = 60;
+      let tickUiCounter = 0;
+      const perfStats = {
+        stepSamples: [],
+        stepSum: 0,
+        renderSamples: [],
+        renderSum: 0,
+        totalSamples: [],
+        totalSum: 0,
+      };
+
+      const pushPerfSample = (samplesKey, sumKey, value) => {
+        if (!Number.isFinite(value) || value < 0) return;
+        const samples = perfStats[samplesKey];
+        perfStats[sumKey] += value;
+        samples.push(value);
+        if (samples.length > tickWindowSize) {
+          perfStats[sumKey] -= samples.shift();
+        }
+      };
+
+      const resetPerfStats = () => {
+        perfStats.stepSamples.length = 0;
+        perfStats.renderSamples.length = 0;
+        perfStats.totalSamples.length = 0;
+        perfStats.stepSum = 0;
+        perfStats.renderSum = 0;
+        perfStats.totalSum = 0;
+        tickUiCounter = 0;
+        if (previewPerf instanceof HTMLElement) {
+          previewPerf.textContent = "Tick avg: -- ms";
+        }
+      };
+
+      const addTickSample = ({ stepMs = 0, renderMs = 0, totalMs = 0 } = {}) => {
+        pushPerfSample("stepSamples", "stepSum", stepMs);
+        pushPerfSample("renderSamples", "renderSum", renderMs);
+        pushPerfSample("totalSamples", "totalSum", totalMs);
+      };
+
+      const updatePerfLabel = (force = false) => {
+        if (!(previewPerf instanceof HTMLElement)) return;
+        const count = perfStats.totalSamples.length;
+        if (!count) {
+          previewPerf.textContent = "Tick avg: -- ms";
+          return;
+        }
+        if (!force && (tickUiCounter % 6) !== 0) return;
+        const avgTotal = perfStats.totalSum / count;
+        const avgStep = perfStats.stepSum / Math.max(1, perfStats.stepSamples.length);
+        const avgRender = perfStats.renderSum / Math.max(1, perfStats.renderSamples.length);
+        previewPerf.textContent =
+          `Tick avg (${count}) total ${avgTotal.toFixed(2)} ms | step ${avgStep.toFixed(2)} ms | render ${avgRender.toFixed(2)} ms`;
+      };
 
       const destroyPreview = () => {
         preview?.destroy?.();
         preview = null;
+        resetPerfStats();
         if (previewImage instanceof HTMLElement) {
           previewImage.style.opacity = "1";
           previewImage.style.display = "";
@@ -1479,19 +1552,31 @@ export function createMenus({ moduleId, shaderManager }) {
         destroyPreview();
         if (previewEmpty instanceof HTMLElement) previewEmpty.style.display = "none";
         const defaults = this._collectDefaultsFromElement(root);
+        const sourceText = String(
+          root?.querySelector?.('[name="editSource"]')?.value ?? "",
+        ).trim();
+        const { channels, autoAssignCapture } =
+          this._collectChannelsFromElement(root);
         preview = shaderManager.createImportedShaderPreview(shaderId, {
           size,
           defaults,
+          source: sourceText,
+          channels,
+          autoAssignCapture,
           reason: "editor-preview"
         });
         if (!preview) {
           if (previewEmpty instanceof HTMLElement) previewEmpty.style.display = "";
+          if (previewPerf instanceof HTMLElement) {
+            previewPerf.textContent = "Tick avg: -- ms (preview unavailable)";
+          }
           return;
         }
         if (previewImage instanceof HTMLElement) {
           previewImage.style.opacity = "0";
           previewImage.style.display = "none";
         }
+        resetPerfStats();
         lastMs = performance.now();
       };
 
@@ -1500,10 +1585,18 @@ export function createMenus({ moduleId, shaderManager }) {
         const nowMs = performance.now();
         const dt = Math.min(0.1, Math.max(0, (nowMs - lastMs) / 1000));
         lastMs = nowMs;
+        let stepElapsedMs = 0;
+        let renderElapsedMs = 0;
+        const tickStartMs = performance.now();
         if (preview && renderer) {
           try {
+            const stepStart = performance.now();
             preview.step(dt);
+            stepElapsedMs = Math.max(0, performance.now() - stepStart);
+
+            const renderStart = performance.now();
             preview.render(renderer);
+            renderElapsedMs = Math.max(0, performance.now() - renderStart);
           } catch (err) {
             console.error(`${MODULE_ID} | editor preview tick failed`, {
               shaderId,
@@ -1511,6 +1604,14 @@ export function createMenus({ moduleId, shaderManager }) {
             });
           }
         }
+        const tickElapsedMs = Math.max(0, performance.now() - tickStartMs);
+        tickUiCounter += 1;
+        addTickSample({
+          stepMs: stepElapsedMs,
+          renderMs: renderElapsedMs,
+          totalMs: tickElapsedMs,
+        });
+        updatePerfLabel();
         raf = requestAnimationFrame(tick);
       };
 
@@ -2765,25 +2866,4 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
     ShaderLibraryMenu,
   };
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
