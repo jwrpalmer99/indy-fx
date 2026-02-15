@@ -32,6 +32,11 @@ function getPlaceableImageSrc(placeable, targetType) {
   }
   return "";
 }
+function usesIndyPlaceableFallbackTexture(path) {
+  const src = String(path ?? "").trim();
+  if (!src) return false;
+  return /(?:^|[\\/])indyfx\.webp(?:$|[?#])/i.test(src);
+}
 
 function getPlaceableDrawProps(placeable, targetType, sourceW, sourceH) {
   const srcW = Math.max(1, Number(sourceW) || 1);
@@ -555,7 +560,7 @@ export class PlaceableImageChannel {
     return false;
   }
 
-  _renderTextureToSquare(texture, placeable = null, { verifyContent = false } = {}) {
+  _renderTextureToSquare(texture, placeable = null, { verifyContent = false, sourcePath = "" } = {}) {
     if (this._destroyed || !texture) return;
     const renderer = canvas?.app?.renderer;
     if (!renderer || !this.renderTexture) return false;
@@ -605,9 +610,32 @@ export class PlaceableImageChannel {
     sprite.anchor.set(0.5, 0.5);
     sprite.x = this.size * 0.5;
     sprite.y = this.size * 0.5;
-    const captureFlipX = this.captureFlipHorizontal ? -1 : 1;
-    const captureFlipY = this.captureFlipVertical ? -1 : 1;
-    const captureRotationRad = (this.captureRotationDeg * Math.PI) / 180;
+
+    const applyIndyFallbackTransform = usesIndyPlaceableFallbackTexture(sourcePath);
+    const effectiveCaptureRotationDeg =
+      this.captureRotationDeg + (applyIndyFallbackTransform ? 180 : 0);
+    const effectiveCaptureFlipHorizontal = applyIndyFallbackTransform
+      ? !this.captureFlipHorizontal
+      : this.captureFlipHorizontal;
+    const effectiveCaptureFlipVertical = applyIndyFallbackTransform
+      ? !this.captureFlipVertical
+      : this.captureFlipVertical;
+
+    this._debugLog("render-effective-transform", {
+      sourcePath: sourcePath || null,
+      applyIndyFallbackTransform,
+      configuredCaptureRotationDeg: this.captureRotationDeg,
+      configuredCaptureFlipHorizontal: this.captureFlipHorizontal === true,
+      configuredCaptureFlipVertical: this.captureFlipVertical === true,
+      effectiveCaptureRotationDeg,
+      effectiveCaptureFlipHorizontal,
+      effectiveCaptureFlipVertical,
+      placeableRotationDeg: Number((draw.rotationRad * 180) / Math.PI),
+    });
+
+    const captureFlipX = effectiveCaptureFlipHorizontal ? -1 : 1;
+    const captureFlipY = effectiveCaptureFlipVertical ? -1 : 1;
+    const captureRotationRad = (effectiveCaptureRotationDeg * Math.PI) / 180;
     sprite.scale.set(
       fit * (draw.width / sourceW) * draw.scaleX * captureFlipX,
       fit * (draw.height / sourceH) * draw.scaleY * captureFlipY,
@@ -672,6 +700,7 @@ export class PlaceableImageChannel {
       if (this._destroyed) return;
       const rendered = this._renderTextureToSquare(texture, placeable, {
         verifyContent: remember === true,
+        sourcePath: src,
       });
       if (remember) {
         if (rendered) {
@@ -759,6 +788,4 @@ export class PlaceableImageChannel {
     }
   }
 }
-
-
 

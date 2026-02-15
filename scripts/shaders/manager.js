@@ -753,10 +753,23 @@ export class ShaderManager {
       source: getTextureDebugInfo(sourceTexture, 1024),
     });
 
+    const sourcePath =
+      typeof textureInput === "string" ? String(textureInput ?? "").trim() : "";
     const rotationDeg = toFiniteNumber(captureRotationDeg, 0);
     const flipH = parseBooleanLike(captureFlipHorizontal);
     const flipV = parseBooleanLike(captureFlipVertical);
     const forceOpaque = parseBooleanLike(forceOpaqueAlpha);
+
+    debugLog(this.moduleId, "preview capture texture: effective transform", {
+      sourcePath: sourcePath || null,
+      forceOpaque,
+      effective: {
+        captureRotationDeg: rotationDeg,
+        captureFlipHorizontal: flipH,
+        captureFlipVertical: flipV,
+      },
+    });
+
     const needsTransform =
       Math.abs(rotationDeg) > 0.0001 ||
       flipH === true ||
@@ -795,6 +808,7 @@ export class ShaderManager {
     let cacheKey = null;
     if (cacheSourceKey) {
       cacheKey = [
+        "v3",
         cacheSourceKey,
         Number(rotationDeg).toFixed(4),
         flipH ? "1" : "0",
@@ -834,8 +848,9 @@ export class ShaderManager {
           ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
           ctx.save();
           ctx.translate(canvasEl.width * 0.5, canvasEl.height * 0.5);
-          ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+          // Match PIXI sprite transform order used by live token/tile capture: R then S.
           ctx.rotate((rotationDeg * Math.PI) / 180);
+          ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
           ctx.drawImage(
             sourceElement,
             -canvasEl.width * 0.5,
@@ -1444,7 +1459,7 @@ export class ShaderManager {
     const previewCaptureMaskTextureCandidate =
       previewUseGradientMask !== true && previewTokenTileFallback
         ? this._getTransformedPreviewCaptureTexture(previewPlaceableTexture, {
-                        captureRotationDeg: effectiveCaptureRotationDeg,
+            captureRotationDeg: effectiveCaptureRotationDeg,
             captureFlipHorizontal: effectiveCaptureFlipHorizontal,
             captureFlipVertical: effectiveCaptureFlipVertical,
             forceOpaqueAlpha: false,
@@ -1456,7 +1471,7 @@ export class ShaderManager {
         : null;
     const tMakeShader0 = perfNow();
     const shaderResult = this.makeShader({
-            ...runtimeDefaults,
+      ...runtimeDefaults,
       captureRotationDeg: effectiveCaptureRotationDeg,
       captureFlipHorizontal: effectiveCaptureFlipHorizontal,
       captureFlipVertical: effectiveCaptureFlipVertical,
@@ -2651,7 +2666,7 @@ export class ShaderManager {
           (targetType === "token" || targetType === "tile") && !!targetId,
       });
 
-      if ((targetType === "token" || targetType === "tile") && targetId) {
+      if ((targetType === "token" || targetType === "tile") && targetId && !isPreview) {
         const captureSize = isPreview
           ? PLACEABLE_IMAGE_PREVIEW_SIZE
           : PLACEABLE_IMAGE_CAPTURE_SIZE;
@@ -2675,7 +2690,7 @@ export class ShaderManager {
           targetId,
           size: captureSize,
           liveUpdates: !isPreview,
-          previewTexturePath,
+          previewTexturePath: "",
           captureRotationDeg,
           captureFlipHorizontal,
           captureFlipVertical,
@@ -3556,18 +3571,6 @@ export class ShaderManager {
     return true;
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
