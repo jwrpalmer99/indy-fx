@@ -467,20 +467,29 @@ export class ShaderManager {
     return fallback;
   }
 
+  _getConfiguredPreviewTexturePath(settingKey, relativePath, fallbackPath) {
+    const configured = String(
+      game?.settings?.get?.(this.moduleId, settingKey) ?? "",
+    ).trim();
+    if (configured) return configured;
+    return this._getModuleAssetPath(relativePath, fallbackPath);
+  }
+
   _getPreviewSceneCaptureTexturePath() {
-    return this._getModuleAssetPath(
+    return this._getConfiguredPreviewTexturePath(
+      "previewSceneCaptureBackground",
       "images/indyFX_solid.webp",
       PREVIEW_SCENE_CAPTURE_TEXTURE,
     );
   }
 
   _getPreviewPlaceableCaptureTexturePath() {
-    return this._getModuleAssetPath(
+    return this._getConfiguredPreviewTexturePath(
+      "previewPlaceableCaptureBackground",
       "images/indyFX.webp",
       PREVIEW_PLACEABLE_CAPTURE_TEXTURE,
     );
   }
-
   _ensurePreviewReferenceTexturesLoaded() {
     this._ensurePreviewTextureLoaded(this._getPreviewSceneCaptureTexturePath());
     this._ensurePreviewTextureLoaded(this._getPreviewPlaceableCaptureTexturePath());

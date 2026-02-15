@@ -20,6 +20,8 @@ export const SHADER_SETTINGS_KEYS = [
   "shaderColorA",
   "shaderColorB",
   "shaderCaptureScale",
+  "previewSceneCaptureBackground",
+  "previewPlaceableCaptureBackground",
   "shaderDisplayTimeMs",
   "shaderEaseInMs",
   "shaderEaseOutMs"
@@ -299,6 +301,24 @@ game.settings.register(moduleId, "shaderRadiusUnits", {
     type: Number,
     default: 1.0,
     range: { min: 0.25, max: 4.0, step: 0.05 }
+  });
+
+  game.settings.register(moduleId, "previewSceneCaptureBackground", {
+    name: "Preview scene background",
+    hint: "Image/video path used for scene-capture channels in shader previews.",
+    scope: "world",
+    config: false,
+    type: String,
+    default: "modules/indy-fx/images/indyFX_solid.webp"
+  });
+
+  game.settings.register(moduleId, "previewPlaceableCaptureBackground", {
+    name: "Preview token/tile capture background",
+    hint: "Image/video path used for token/tile capture channels in shader previews.",
+    scope: "world",
+    config: false,
+    type: String,
+    default: "modules/indy-fx/images/indyFX.webp"
   });
 
   game.settings.register(moduleId, "shaderDisplayTimeMs", {

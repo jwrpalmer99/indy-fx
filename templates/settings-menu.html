@@ -16,6 +16,9 @@
           {{#if min}}min="{{min}}"{{/if}}
           {{#if max}}max="{{max}}"{{/if}}
           {{#if step}}step="{{step}}"{{/if}} />
+        {{#if filePickerType}}
+          <button type="button" data-action="browse-file" data-input="{{key}}" data-file-picker="{{filePickerType}}">Browse</button>
+        {{/if}}
       {{/if}}
     </div>
     {{#if hint}}<p class="notes">{{hint}}</p>{{/if}}

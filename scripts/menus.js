@@ -496,6 +496,12 @@ export function createMenus({ moduleId, shaderManager }) {
             selected: String(valueKey) === String(value),
           }))
         : null;
+      const filePickerType =
+        typeof override.filePicker === "string"
+          ? override.filePicker
+          : typeof override.filePickerType === "string"
+            ? override.filePickerType
+            : null;
       return {
         key,
         name: setting.name,
@@ -508,6 +514,7 @@ export function createMenus({ moduleId, shaderManager }) {
         max: setting.range?.max,
         step: setting.range?.step,
         choices,
+        filePickerType,
       };
     });
   }
@@ -580,6 +587,37 @@ export function createMenus({ moduleId, shaderManager }) {
         event.preventDefault();
         void this._onSubmitForm(form);
       });
+
+      for (const button of form.querySelectorAll('button[data-action="browse-file"]')) {
+        if (!(button instanceof HTMLButtonElement)) continue;
+        if (button.dataset.indyFxBrowseBound === "1") continue;
+        button.dataset.indyFxBrowseBound = "1";
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          const inputKey = String(button.dataset.input ?? "").trim();
+          if (!inputKey) return;
+          const named = form.elements?.namedItem?.(inputKey);
+          const input =
+            named instanceof RadioNodeList
+              ? named?.[0]
+              : named;
+          if (!(input instanceof HTMLInputElement)) return;
+          const pickerType =
+            String(button.dataset.filePicker ?? "imagevideo").trim() ||
+            "imagevideo";
+          const current = String(input.value ?? "").trim();
+          const picker = new FilePicker({
+            type: pickerType,
+            current,
+            callback: (path) => {
+              input.value = String(path ?? "");
+              input.dispatchEvent(new Event("change", { bubbles: true }));
+            },
+          });
+          if (typeof picker?.browse === "function") picker.browse(current);
+          else picker.render(true);
+        });
+      }
     }
     async _onSubmitForm(form) {
       const formData = new FormDataExtended(form, {}).object;
@@ -600,7 +638,11 @@ export function createMenus({ moduleId, shaderManager }) {
       return SHADER_SETTINGS_KEYS;
     }
     get settingsOverrides() {
-      return { shaderPreset: { choices: shaderManager.getShaderChoices() } };
+      return {
+        shaderPreset: { choices: shaderManager.getShaderChoices() },
+        previewSceneCaptureBackground: { filePicker: "imagevideo" },
+        previewPlaceableCaptureBackground: { filePicker: "imagevideo" },
+      };
     }
   }
   class DebugSettingsMenu extends SettingsMenuV2 {
