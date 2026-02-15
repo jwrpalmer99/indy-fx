@@ -1547,7 +1547,88 @@ export function createMenus({ moduleId, shaderManager }) {
         console.error(`${MODULE_ID} | Shader library import failed`, err);
         ui.notifications.error(err?.message ?? "Shader library import failed.");
       }
-    }    _startEditorShaderPreview(root, shaderId) {
+    }
+
+    _maybePromptExampleImportOnEmpty() {
+      if (this._emptyImportPromptChecked === true) return;
+      this._emptyImportPromptChecked = true;
+      if (shaderManager.getImportedEntries().length > 0) return;
+      void this._promptImportExampleShaders();
+    }
+
+    async _promptImportExampleShaders() {
+      if (this._emptyImportPromptInFlight === true) return;
+      this._emptyImportPromptInFlight = true;
+      try {
+        const wantsImport = await new Promise((resolve) => {
+          let done = false;
+          const finish = (value) => {
+            if (done) return;
+            done = true;
+            resolve(value === true);
+          };
+
+          const dlg = new foundry.applications.api.DialogV2({
+            window: { title: "Import Example Shaders" },
+            content:
+              "<p>No imported shaders were found in your library.</p><p>Import bundled examples from <code>scripts/shaders.json</code> now?</p>",
+            buttons: [
+              {
+                action: "import",
+                label: "Import Examples",
+                icon: "fas fa-file-import",
+                default: true,
+                callback: () => finish(true),
+              },
+              {
+                action: "cancel",
+                label: "Not Now",
+                icon: "fas fa-times",
+                callback: () => finish(false),
+              },
+            ],
+          });
+
+          const close = dlg.close.bind(dlg);
+          dlg.close = async (...args) => {
+            finish(false);
+            return close(...args);
+          };
+          void dlg.render(true);
+        });
+
+        if (!wantsImport) return;
+        const response = await fetch(`modules/${MODULE_ID}/scripts/shaders.json`, {
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          throw new Error(
+            `Failed to load example shaders: ${response.status} ${response.statusText}`,
+          );
+        }
+        const payload = await response.json();
+        const result = await shaderManager.importImportedShadersPayload(payload, {
+          replace: false,
+        });
+        await shaderManager.enforceValidSelection();
+        const importedCount = Number(result?.importedCount ?? 0);
+        if (importedCount > 0) {
+          ui.notifications.info(`Imported ${importedCount} example shader(s).`);
+        } else {
+          ui.notifications.warn(
+            "Example shader file loaded, but no valid shaders were imported.",
+          );
+        }
+        this.render();
+      } catch (err) {
+        console.error(`${MODULE_ID} | Example shader import failed`, err);
+        ui.notifications.error(err?.message ?? "Failed to import example shaders.");
+      } finally {
+        this._emptyImportPromptInFlight = false;
+      }
+    }
+
+    _startEditorShaderPreview(root, shaderId) {
       const previewImage = root.querySelector("[data-editor-preview-image]");
       const previewEmpty = root.querySelector("[data-editor-preview-empty]");
       const previewStage = root.querySelector("[data-editor-preview-stage]");
@@ -2795,6 +2876,7 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
       this._bindShaderSearch(root);
       this._applyShaderSearchFilter(root);
       this._queueMissingShaderThumbnails(root);
+      this._maybePromptExampleImportOnEmpty();
 
       for (const exportBtn of root.querySelectorAll("[data-action='export-shader-library']")) {
         if (!(exportBtn instanceof HTMLElement)) continue;

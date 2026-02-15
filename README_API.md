@@ -255,7 +255,7 @@ copy(JSON.stringify(await fetch("/shadertoy", {
 Then paste the clipboard contents into the module's **Import ShaderToy JSON (No Key)** field.
 
 ## Getting the correct imported shader ID
-Imported labels in UI include `(Imported)`, but macros must use the actual ID.
+Macros must use the actual shader ID.
 
 ```js
 const shader = game.indyFX.shaders.list().find((s) => s.label === "flies");

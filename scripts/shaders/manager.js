@@ -1850,7 +1850,7 @@ export class ShaderManager {
       }
 
       const baseIdRaw = String(raw.id ?? "").trim();
-      const fallbackBaseId = `custom-${slugify(name)}`;
+      const fallbackBaseId = slugify(name);
       const preferredId = baseIdRaw && !this.builtinById.has(baseIdRaw)
         ? baseIdRaw
         : fallbackBaseId;
@@ -2250,7 +2250,7 @@ export class ShaderManager {
       entries.push({ id: shader.id, label: shader.label });
     }
     for (const shader of this.getImportedEntries()) {
-      entries.push({ id: shader.id, label: String(shader.label) + " (Imported)" });
+      entries.push({ id: shader.id, label: String(shader.label) });
     }
 
     entries.sort((a, b) => {
@@ -3136,7 +3136,7 @@ export class ShaderManager {
 
     const records = this.getImportedRecords();
     const used = new Set(records.map((entry) => entry.id));
-    const base = `custom-${slugify(normalizedName)}`;
+    const base = slugify(normalizedName);
     let id = base;
     let i = 2;
     while (used.has(id) || this.builtinById.has(id)) {
@@ -3524,7 +3524,7 @@ export class ShaderManager {
 
     const records = this.getImportedRecords();
     const used = new Set(records.map((entry) => entry.id));
-    const base = `custom-${slugify(nextName)}`;
+    const base = slugify(nextName);
     let id = base;
     let i = 2;
     while (used.has(id) || this.builtinById.has(id)) {
