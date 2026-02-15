@@ -1,9 +1,6 @@
 # Indy FX
 
-Indy FX adds two effect systems for Foundry:
-
-- `Sparks` (particle bursts)
-- `Shaders` (animated fullscreen/area effects)
+Indy FX adds shader effects for Foundry.
 
 This README is for GM/player usage. For macro/API details, see `README_API.md`.
 
@@ -22,7 +19,7 @@ This README is for GM/player usage. For macro/API details, see `README_API.md`.
   - Right-click for actions like duplicate/delete.
   - Drag-drop a shader card onto canvas placeables.
 - **Module Settings**:
-  - Global defaults for sparks and shader behavior.
+  - Global defaults for shader behavior.
   - Debug options (if needed).
 - **Per-document config** (Token/Tile/Template):
   - Open the document config and use the **indyFX** section/menu.
@@ -47,11 +44,6 @@ This README is for GM/player usage. For macro/API details, see `README_API.md`.
 ### Regions
 - Add a Region Behavior of type **indyFX**.
 - Configure shader and options there.
-
-## Sparks Usage
-- Trigger sparks from UI controls/macros.
-- Supports token-based and point-based placement.
-- Can be local or broadcast depending on settings and permissions.
 
 ## Shader Channels (Practical)
 In shader editor, each `iChannel` can be assigned to sources such as:

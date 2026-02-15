@@ -389,6 +389,10 @@ export class ShaderManager {
     this._backgroundCompilePending = new Set();
     this._backgroundCompileDone = new Set();
     this._previewCaptureTextureCache = new Map();
+    this._pendingThumbnailRegenerations = new Map();
+    this._thumbnailRenderer = null;
+    this._thumbnailRendererCanvas = null;
+    this._thumbnailRendererSize = 0;
   }
 
 
@@ -400,6 +404,67 @@ export class ShaderManager {
       type: Object,
       default: [],
     });
+  }
+  _ensureThumbnailRenderer(size = THUMBNAIL_SIZE) {
+    const nextSize = Math.max(
+      32,
+      Math.min(2048, Math.round(Number(size) || THUMBNAIL_SIZE)),
+    );
+    const needsCreate =
+      !this._thumbnailRenderer || this._thumbnailRenderer.destroyed === true;
+
+    if (needsCreate) {
+      try {
+        this._thumbnailRenderer?.destroy?.(false);
+      } catch (_err) {
+        /* ignore */
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = nextSize;
+      canvas.height = nextSize;
+      let renderer = null;
+      try {
+        renderer = new PIXI.Renderer({
+          canvas,
+          width: nextSize,
+          height: nextSize,
+          antialias: true,
+          autoDensity: false,
+          backgroundAlpha: 0,
+          clearBeforeRender: true,
+          powerPreference: "high-performance",
+        });
+      } catch (_errCanvas) {
+        renderer = new PIXI.Renderer({
+          view: canvas,
+          width: nextSize,
+          height: nextSize,
+          antialias: true,
+          autoDensity: false,
+          backgroundAlpha: 0,
+          clearBeforeRender: true,
+          powerPreference: "high-performance",
+        });
+      }
+      this._thumbnailRenderer = renderer;
+      this._thumbnailRendererCanvas =
+        renderer?.view ?? renderer?.canvas ?? canvas;
+      this._thumbnailRendererSize = nextSize;
+      debugLog(this.moduleId, "thumbnail renderer created", { size: nextSize });
+      return this._thumbnailRenderer;
+    }
+
+    if (this._thumbnailRendererSize !== nextSize) {
+      try {
+        this._thumbnailRenderer.resize(nextSize, nextSize);
+      } catch (_err) {
+        /* ignore */
+      }
+      this._thumbnailRendererSize = nextSize;
+      debugLog(this.moduleId, "thumbnail renderer resized", { size: nextSize });
+    }
+
+    return this._thumbnailRenderer;
   }
 
   _invalidateShaderChoiceCaches() {
@@ -1040,21 +1105,29 @@ export class ShaderManager {
     phaseMs.makeShader = perfNow() - tMakeShader0;
 
     const shader = shaderResult.shader;
-    const previewBloom =
-      defaults && typeof defaults === "object" && defaults.bloom !== undefined
-        ? defaults.bloom === true || Number(defaults.bloom) === 1
-        : true;
+    const previewBloom = parseBooleanLike(
+      defaults?.bloom ?? runtimeDefaults?.bloom ?? true,
+    );
     const previewBloomStrength = Math.max(
       0,
-      toFiniteNumber(defaults?.bloomStrength, 1.0),
+      toFiniteNumber(
+        defaults?.bloomStrength,
+        toFiniteNumber(runtimeDefaults?.bloomStrength, 1.0),
+      ),
     );
     const previewBloomBlur = Math.max(
       0,
-      toFiniteNumber(defaults?.bloomBlur, 7),
+      toFiniteNumber(
+        defaults?.bloomBlur,
+        toFiniteNumber(runtimeDefaults?.bloomBlur, 7),
+      ),
     );
     const previewBloomQuality = Math.max(
       0,
-      toFiniteNumber(defaults?.bloomQuality, 2),
+      toFiniteNumber(
+        defaults?.bloomQuality,
+        toFiniteNumber(runtimeDefaults?.bloomQuality, 2),
+      ),
     );
 
     const tMesh0 = perfNow();
@@ -1393,6 +1466,45 @@ export class ShaderManager {
   }
   async _captureRenderTextureDataUrl(renderer, renderTexture) {
     try {
+      const width = Math.max(1, Number(renderTexture?.width) || 0);
+      const height = Math.max(1, Number(renderTexture?.height) || 0);
+      if (width > 0 && height > 0 && typeof renderer?.extract?.pixels === "function") {
+        const pixels = renderer.extract.pixels(renderTexture);
+        if (pixels && pixels.length >= width * height * 4) {
+          const outCanvas = document.createElement("canvas");
+          outCanvas.width = width;
+          outCanvas.height = height;
+          const outCtx = outCanvas.getContext("2d", { alpha: true });
+          if (outCtx) {
+            const imageData = outCtx.createImageData(width, height);
+            const out = imageData.data;
+            for (let i = 0; i < out.length; i += 4) {
+              const r = pixels[i];
+              const g = pixels[i + 1];
+              const b = pixels[i + 2];
+              const a = pixels[i + 3];
+              if (a > 0 && a < 255 && Math.max(r, g, b) <= a) {
+                const scale = 255 / a;
+                out[i] = Math.min(255, Math.round(r * scale));
+                out[i + 1] = Math.min(255, Math.round(g * scale));
+                out[i + 2] = Math.min(255, Math.round(b * scale));
+              } else if (a === 0) {
+                out[i] = 0;
+                out[i + 1] = 0;
+                out[i + 2] = 0;
+              } else {
+                out[i] = r;
+                out[i + 1] = g;
+                out[i + 2] = b;
+              }
+              out[i + 3] = a;
+            }
+            outCtx.putImageData(imageData, 0, 0);
+            const value = outCanvas.toDataURL("image/png");
+            if (typeof value === "string" && value.trim()) return value;
+          }
+        }
+      }
       if (typeof renderer?.extract?.base64 === "function") {
         const value = await Promise.resolve(
           renderer.extract.base64(renderTexture, "image/png"),
@@ -1414,16 +1526,21 @@ export class ShaderManager {
     shaderId,
     { size = THUMBNAIL_SIZE, captureSeconds = THUMBNAIL_CAPTURE_SECONDS } = {},
   ) {
-    const renderer = canvas?.app?.renderer;
+    const renderer = this._ensureThumbnailRenderer(size);
     if (!renderer) return null;
 
+    const captureStartedAt = Date.now();
+    const targetSize = Math.max(
+      32,
+      Math.min(2048, Math.round(Number(size) || THUMBNAIL_SIZE)),
+    );
+
     const preview = this._createImportedShaderPreview(shaderId, {
-      size,
+      size: targetSize,
       reason: "thumbnail-regenerate",
     });
     if (!preview) return null;
 
-    const target = PIXI.RenderTexture.create({ width: size, height: size });
     try {
       const frames = Math.max(
         1,
@@ -1434,13 +1551,25 @@ export class ShaderManager {
       );
       for (let i = 0; i < frames; i += 1) {
         preview.step(1 / 60);
-        preview.render(renderer, target);
+        preview.render(renderer);
       }
-      const thumbnail = await this._captureRenderTextureDataUrl(
-        renderer,
-        target,
-      );
+
+      const renderedCanvas =
+        this._thumbnailRendererCanvas instanceof HTMLCanvasElement
+          ? this._thumbnailRendererCanvas
+          : (renderer?.view instanceof HTMLCanvasElement ? renderer.view : null);
+      const thumbnail = String(renderedCanvas?.toDataURL?.("image/png") ?? "").trim();
       if (!thumbnail) return null;
+
+      const current = this.getImportedRecord(shaderId);
+      if (Number(current?.thumbnailUpdatedAt ?? 0) > captureStartedAt) {
+        debugLog(this.moduleId, "thumbnail regenerate skipped newer thumbnail", {
+          shaderId,
+          captureStartedAt,
+          thumbnailUpdatedAt: Number(current?.thumbnailUpdatedAt ?? 0),
+        });
+        return current;
+      }
 
       const records = this.getImportedRecords();
       const idx = records.findIndex((entry) => entry.id === shaderId);
@@ -1454,10 +1583,27 @@ export class ShaderManager {
       return records[idx];
     } finally {
       preview.destroy();
-      target.destroy(true);
     }
   }
+  _queueImportedShaderThumbnailRegeneration(shaderId, options = {}) {
+    const id = String(shaderId ?? "").trim();
+    if (!id) return;
+    if (this._pendingThumbnailRegenerations.has(id)) return;
 
+    const pending = Promise.resolve()
+      .then(() => this.regenerateImportedShaderThumbnail(id, options))
+      .catch((err) => {
+        console.warn(`${this.moduleId} | Failed to regenerate thumbnail in background`, {
+          shaderId: id,
+          err,
+        });
+      })
+      .finally(() => {
+        this._pendingThumbnailRegenerations.delete(id);
+      });
+
+    this._pendingThumbnailRegenerations.set(id, pending);
+  }
   getChannelModeChoices() {
     return {
       auto: "Auto",
@@ -2387,7 +2533,7 @@ export class ShaderManager {
 
     records.push(record);
     await this.setImportedRecords(records);
-    await this.regenerateImportedShaderThumbnail(id);
+    this._queueImportedShaderThumbnailRegeneration(id);
     return this.getImportedRecord(id) ?? record;
   }
 
@@ -2700,7 +2846,7 @@ export class ShaderManager {
     };
 
     await this.setImportedRecords(records);
-    await this.regenerateImportedShaderThumbnail(shaderId);
+    this._queueImportedShaderThumbnailRegeneration(shaderId);
     return this.getImportedRecord(shaderId) ?? records[idx];
   }
 
@@ -2732,7 +2878,7 @@ export class ShaderManager {
     };
 
     await this.setImportedRecords(records);
-    await this.regenerateImportedShaderThumbnail(shaderId);
+    this._queueImportedShaderThumbnailRegeneration(shaderId);
     return this.getImportedRecord(shaderId) ?? records[idx];
   }
 
@@ -2765,7 +2911,7 @@ export class ShaderManager {
 
     records.push(clone);
     await this.setImportedRecords(records);
-    await this.regenerateImportedShaderThumbnail(id);
+    this._queueImportedShaderThumbnailRegeneration(id);
     return this.getImportedRecord(id) ?? clone;
   }
 
@@ -2788,6 +2934,11 @@ export class ShaderManager {
     };
 
     await this.setImportedRecords(records);
+    debugLog(this.moduleId, "thumbnail manual save", {
+      shaderId: id,
+      length: dataUrl.length,
+      updatedAt: now,
+    });
     return this.getImportedRecord(id) ?? records[idx];
   }
 

@@ -838,7 +838,7 @@ function registerRegionShaderBehavior({
           id: `${moduleId}-region-shader-behavior-config`,
           window: {
             title: "Region indyFX Behavior",
-            icon: "fa-solid fa-wand-magic-sparkles",
+            icon: "fas fa-wand-magic",
           },
         },
         { inplace: false },
@@ -987,7 +987,7 @@ function registerRegionShaderBehavior({
     cfg.dataModels[REGION_SHADER_BEHAVIOR_TYPE] = IndyFXRegionBehaviorType;
     cfg.typeLabels[REGION_SHADER_BEHAVIOR_TYPE] = "INDYFX.RegionBehaviorLabel";
     cfg.typeIcons[REGION_SHADER_BEHAVIOR_TYPE] =
-      "fa-solid fa-wand-magic-sparkles";
+      "fas fa-wand-magic";
 
     DocumentSheetConfig.registerSheet(
       cfg.documentClass,

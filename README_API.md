@@ -11,15 +11,6 @@ const fx = game.indyFX;
 
 ## Method list
 
-### Sparks
-- `fx.playAtToken(tokenId, opts?)`
-- `fx.playAtPoint(point, opts?)`
-- `fx.startSparksPlacement(opts?)`
-- `fx.cancelSparksPlacement()`
-- `fx.broadcastPlay({ tokenId, opts? })`
-- `fx.broadcastPlayAtPoint({ point, opts? })`
-- `fx.broadcastFromSelection(opts?)`
-
 ### Shader effects on token
 - `fx.shaderOn(tokenId, opts?)`
 - `fx.shaderOff(tokenId)`
@@ -87,36 +78,6 @@ When `displayTimeMs` is `0`, each `shaderOnRegion` call adds a persistent `indyF
 - `fx.shaders.updateImportedShader(shaderId, payload)`
 - `fx.shaders.updateImportedChannels(shaderId, payload)`
 - `fx.shaders.removeImported(shaderId)`
-
-## Sparks options (`opts`)
-Used by `playAtToken`, `playAtPoint`, `broadcastPlay`, `broadcastPlayAtPoint`, `broadcastFromSelection`, and `startSparksPlacement`.
-
-| Option | Type | Default source |
-|---|---|---|
-| `layer` | `"interfacePrimary" \| "interface" \| "effects"` | world setting `layer` |
-| `count` | number | `count` |
-| `lifeMin` | number | `lifeMin` |
-| `lifeMax` | number | `lifeMax` |
-| `speedMin` | number | `speedMin` |
-| `speedMax` | number | `speedMax` |
-| `startAtEdge` | boolean | `startAtEdge` |
-| `edgeFactor` | number | `edgeFactor` |
-| `radiusMin` | number | `radiusMin` |
-| `radiusMax` | number | `radiusMax` |
-| `colorA` | hex number | `colorA` |
-| `colorB` | hex number | `colorB` |
-| `useBloom` | boolean | `useBloom` |
-| `bloomStrength` | number | `bloomStrength` |
-| `bloomBlur` | number | `bloomBlur` |
-| `glowScale` | number | `glowScale` |
-| `glowAlpha` | number | `glowAlpha` |
-| `outlineWidth` | number | `outlineWidth` |
-
-Additional placement-only option:
-
-| Option | Type | Notes |
-|---|---|---|
-| `broadcast` | boolean | `startSparksPlacement` only. If true, sends to all clients (GM-only when enabled). |
 
 ## Shader options (`opts`)
 Used by `shaderOn`, `shaderToggle`, `startShaderPlacement`, and broadcast shader methods.
@@ -304,22 +265,6 @@ game.indyFX.shaderOn(token.id, { shaderId: shader?.id });
 IDs are usually like `custom-flies` or `custom-flies-2`.
 
 ## Macro examples
-
-### Sparks on selected token
-```js
-const t = canvas.tokens.controlled[0];
-if (t) game.indyFX.playAtToken(t.id, { count: 240 });
-```
-
-### Sparks at clicked point
-```js
-game.indyFX.startSparksPlacement({ broadcast: false, count: 220 });
-```
-
-### Broadcast sparks at clicked point (GM)
-```js
-game.indyFX.startSparksPlacement({ broadcast: true, count: 220 });
-```
 
 ### Shader circle
 ```js

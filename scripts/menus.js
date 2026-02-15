@@ -1,6 +1,5 @@
 import {
   SHADER_SETTINGS_KEYS,
-  SPARK_SETTINGS_KEYS,
   DEBUG_SETTINGS_KEYS,
 } from "./settings.js";
 export function createMenus({ moduleId, shaderManager }) {
@@ -588,19 +587,6 @@ export function createMenus({ moduleId, shaderManager }) {
       this.close();
     }
   }
-  class SparksSettingsMenu extends SettingsMenuV2 {
-    static DEFAULT_OPTIONS = foundry.utils.mergeObject(
-      super.DEFAULT_OPTIONS,
-      {
-        id: `${MODULE_ID}-sparks-settings`,
-        window: { title: "Sparks Settings" },
-      },
-      { inplace: false },
-    );
-    get settingsKeys() {
-      return SPARK_SETTINGS_KEYS;
-    }
-  }
   class ShaderSettingsMenu extends SettingsMenuV2 {
     static DEFAULT_OPTIONS = foundry.utils.mergeObject(
       super.DEFAULT_OPTIONS,
@@ -633,6 +619,9 @@ export function createMenus({ moduleId, shaderManager }) {
   let _sharedEditorPreviewRenderer = null;
   let _sharedEditorPreviewCanvas = null;
   let _sharedEditorPreviewSize = 0;
+  let _sharedLibraryPreviewRenderer = null;
+  let _sharedLibraryPreviewCanvas = null;
+  let _sharedLibraryPreviewSize = 0;
   let _activeShaderEditorDialog = null;
 
   function _ensureSharedEditorPreviewRenderer(size = 320) {
@@ -728,6 +717,102 @@ export function createMenus({ moduleId, shaderManager }) {
       renderer: _sharedEditorPreviewRenderer,
       canvas: _sharedEditorPreviewCanvas,
       size: _sharedEditorPreviewSize,
+    };
+  }
+  function _ensureSharedLibraryPreviewRenderer(size = 256) {
+    const nextSize = Math.max(64, Math.round(Number(size) || 256));
+    const needsCreate =
+      !_sharedLibraryPreviewRenderer ||
+      _sharedLibraryPreviewRenderer.destroyed === true ||
+      !(_sharedLibraryPreviewCanvas instanceof HTMLCanvasElement);
+
+    if (needsCreate) {
+      try {
+        _sharedLibraryPreviewRenderer?.destroy?.(false);
+      } catch (_err) {
+        /* ignore */
+      }
+      _sharedLibraryPreviewCanvas = document.createElement("canvas");
+      _sharedLibraryPreviewCanvas.width = nextSize;
+      _sharedLibraryPreviewCanvas.height = nextSize;
+      _sharedLibraryPreviewCanvas.style.position = "absolute";
+      _sharedLibraryPreviewCanvas.style.inset = "0";
+      _sharedLibraryPreviewCanvas.style.width = "100%";
+      _sharedLibraryPreviewCanvas.style.height = "100%";
+      _sharedLibraryPreviewCanvas.style.pointerEvents = "none";
+      _sharedLibraryPreviewCanvas.dataset.libraryPreviewCanvas = "";
+
+      let renderer = null;
+      try {
+        renderer = new PIXI.Renderer({
+          canvas: _sharedLibraryPreviewCanvas,
+          width: nextSize,
+          height: nextSize,
+          antialias: true,
+          autoDensity: false,
+          backgroundAlpha: 0,
+          clearBeforeRender: true,
+          powerPreference: "high-performance",
+        });
+      } catch (_errCanvas) {
+        renderer = new PIXI.Renderer({
+          view: _sharedLibraryPreviewCanvas,
+          width: nextSize,
+          height: nextSize,
+          antialias: true,
+          autoDensity: false,
+          backgroundAlpha: 0,
+          clearBeforeRender: true,
+          powerPreference: "high-performance",
+        });
+      }
+      _sharedLibraryPreviewRenderer = renderer;
+      const rendererCanvas = renderer?.view ?? renderer?.canvas ?? null;
+      if (rendererCanvas instanceof HTMLCanvasElement) {
+        _sharedLibraryPreviewCanvas = rendererCanvas;
+        _sharedLibraryPreviewCanvas.dataset.libraryPreviewCanvas = "";
+        _sharedLibraryPreviewCanvas.style.position = "absolute";
+        _sharedLibraryPreviewCanvas.style.inset = "0";
+        _sharedLibraryPreviewCanvas.style.width = "100%";
+        _sharedLibraryPreviewCanvas.style.height = "100%";
+        _sharedLibraryPreviewCanvas.style.pointerEvents = "none";
+      }
+      _sharedLibraryPreviewSize = nextSize;
+      debugLog("library preview shared renderer created", {
+        size: nextSize,
+      });
+      return {
+        renderer: _sharedLibraryPreviewRenderer,
+        canvas: _sharedLibraryPreviewCanvas,
+        size: _sharedLibraryPreviewSize,
+      };
+    }
+
+    if (_sharedLibraryPreviewSize !== nextSize) {
+      try {
+        _sharedLibraryPreviewRenderer.resize(nextSize, nextSize);
+      } catch (_err) {
+        /* ignore */
+      }
+      const rendererCanvas =
+        _sharedLibraryPreviewRenderer?.view ??
+        _sharedLibraryPreviewRenderer?.canvas ??
+        _sharedLibraryPreviewCanvas;
+      if (rendererCanvas instanceof HTMLCanvasElement) {
+        _sharedLibraryPreviewCanvas = rendererCanvas;
+      }
+      _sharedLibraryPreviewCanvas.width = nextSize;
+      _sharedLibraryPreviewCanvas.height = nextSize;
+      _sharedLibraryPreviewSize = nextSize;
+      debugLog("library preview shared renderer resized", {
+        size: nextSize,
+      });
+    }
+
+    return {
+      renderer: _sharedLibraryPreviewRenderer,
+      canvas: _sharedLibraryPreviewCanvas,
+      size: _sharedLibraryPreviewSize,
     };
   }
   class ShaderLibraryMenu extends HandlebarsV2Mixin(ApplicationV2Base) {
@@ -1623,18 +1708,10 @@ export function createMenus({ moduleId, shaderManager }) {
         }, 120);
       };
 
-      const capture = () => {
+      const capture = async () => {
         try {
-          if (preview && renderer?.extract?.canvas) {
-            const rt = PIXI.RenderTexture.create({ width: size, height: size });
-            try {
-              preview.render(renderer, rt);
-              const extracted = renderer.extract.canvas(rt);
-              const data = extracted?.toDataURL?.("image/png");
-              if (typeof data === "string" && data.trim()) return data.trim();
-            } finally {
-              rt.destroy(true);
-            }
+          if (preview && renderer) {
+            preview.render(renderer);
           }
           return String(canvas.toDataURL("image/png") ?? "").trim();
         } catch (_err) {
@@ -1955,11 +2032,6 @@ export function createMenus({ moduleId, shaderManager }) {
       } catch (_err) {
         // no-op
       }
-      try {
-        resolved.renderTexture?.destroy?.(true);
-      } catch (_err) {
-        // no-op
-      }
       cache.delete(id);
     }
 
@@ -1986,17 +2058,26 @@ export function createMenus({ moduleId, shaderManager }) {
       const active = this._hoverPreview;
       if (!active) return;
       if (active.raf) cancelAnimationFrame(active.raf);
+      if (
+        active.stage instanceof HTMLElement &&
+        active.canvas instanceof HTMLCanvasElement &&
+        active.canvas.parentElement === active.stage
+      ) {
+        try {
+          active.stage.removeChild(active.canvas);
+        } catch (_err) {
+          /* ignore */
+        }
+      }
       if (active.thumbImage && active.thumbImage.getAttribute("src")) {
         active.thumbImage.style.opacity = "1";
       }
       if (destroy || !active.shaderId) {
         active.preview?.destroy?.();
-        active.renderTexture?.destroy?.(true);
       } else {
         const cache = this._ensureHoverPreviewCache();
         cache.set(String(active.shaderId), {
           preview: active.preview,
-          renderTexture: active.renderTexture,
           lastUsed: Date.now(),
         });
         this._trimHoverPreviewCache(8);
@@ -2005,8 +2086,10 @@ export function createMenus({ moduleId, shaderManager }) {
     }
     _startHoverPreview(shaderId, card) {
       this._stopHoverPreview();
-      const renderer = canvas?.app?.renderer;
-      if (!renderer || typeof renderer?.extract?.canvas !== "function") return;
+      const shared = _ensureSharedLibraryPreviewRenderer(256);
+      const renderer = shared?.renderer ?? null;
+      const sharedCanvas = shared?.canvas ?? null;
+      if (!renderer || !(sharedCanvas instanceof HTMLCanvasElement)) return;
       const perfNow = () => {
         try {
           const n = globalThis?.performance?.now?.();
@@ -2016,18 +2099,14 @@ export function createMenus({ moduleId, shaderManager }) {
         }
         return Date.now();
       };
-      const targetCanvas = card.querySelector("[data-thumb-canvas]");
-      if (!(targetCanvas instanceof HTMLCanvasElement)) return;
-      const ctx = targetCanvas.getContext("2d", { alpha: true });
-      if (!ctx) return;
+      const stage = card.querySelector("[data-thumb-stage]");
+      if (!(stage instanceof HTMLElement)) return;
       const cache = this._ensureHoverPreviewCache();
       let preview = null;
-      let renderTexture = null;
       const cached = cache.get(String(shaderId));
       let fromCache = false;
-      if (cached && cached.preview && cached.renderTexture && cached.renderTexture.destroyed !== true) {
+      if (cached && cached.preview) {
         preview = cached.preview;
-        renderTexture = cached.renderTexture;
         cache.delete(String(shaderId));
         fromCache = true;
       } else {
@@ -2037,11 +2116,14 @@ export function createMenus({ moduleId, shaderManager }) {
           reason: "library-hover",
         });
         if (!preview) return;
-        renderTexture = PIXI.RenderTexture.create({
-          width: 256,
-          height: 256,
-        });
       }
+
+      sharedCanvas.style.display = "";
+      sharedCanvas.style.opacity = "1";
+      if (sharedCanvas.parentElement !== stage) {
+        stage.appendChild(sharedCanvas);
+      }
+
       const thumbImage = card.querySelector("[data-thumb-image]");
       if (thumbImage instanceof HTMLElement) thumbImage.style.opacity = "0";
       let lastMs = performance.now();
@@ -2055,24 +2137,8 @@ export function createMenus({ moduleId, shaderManager }) {
         preview.step(dt);
         const stepMs = perfNow() - tStep0;
         const tRender0 = perfNow();
-        preview.render(renderer, renderTexture);
+        preview.render(renderer);
         const renderMs = perfNow() - tRender0;
-        const tExtract0 = perfNow();
-        const extracted = renderer?.extract?.canvas?.(renderTexture);
-        const extractMs = perfNow() - tExtract0;
-        let drawMs = 0;
-        if (extracted) {
-          const tDraw0 = perfNow();
-          ctx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
-          ctx.drawImage(
-            extracted,
-            0,
-            0,
-            targetCanvas.width,
-            targetCanvas.height,
-          );
-          drawMs = perfNow() - tDraw0;
-        }
         if (perfLogFrames < 3) {
           perfLogFrames += 1;
           debugLog("library hover frame timings", {
@@ -2082,18 +2148,17 @@ export function createMenus({ moduleId, shaderManager }) {
             dt: Number(dt.toFixed(4)),
             stepMs: Number(stepMs.toFixed(3)),
             renderMs: Number(renderMs.toFixed(3)),
-            extractMs: Number(extractMs.toFixed(3)),
-            drawMs: Number(drawMs.toFixed(3)),
-            totalMs: Number((stepMs + renderMs + extractMs + drawMs).toFixed(3)),
+            totalMs: Number((stepMs + renderMs).toFixed(3)),
           });
         }
         this._hoverPreview.raf = requestAnimationFrame(tick);
       };
       this._hoverPreview = {
         card,
+        stage,
         shaderId: String(shaderId),
         preview,
-        renderTexture,
+        canvas: sharedCanvas,
         thumbImage,
         raf: requestAnimationFrame(tick),
       };
@@ -2861,7 +2926,6 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
   }
   return {
     ShaderSettingsMenu,
-    SparksSettingsMenu,
     DebugSettingsMenu,
     ShaderLibraryMenu,
   };

@@ -4,8 +4,6 @@ export function createNetworkController({
   resolveTemplateId,
   resolveTileId,
   resolveRegionId,
-  playSparksAtToken,
-  playSparksAtPoint,
   shaderOn,
   shaderOff,
   shaderToggle,
@@ -67,51 +65,6 @@ export function createNetworkController({
       return payloadOrRegionId;
     }
     return { regionId: payloadOrRegionId, behaviorId: maybeBehaviorId };
-  }
-
-  function normalizePointBroadcastPayload(payloadOrPoint, maybeOpts) {
-    if (payloadOrPoint && typeof payloadOrPoint === "object" && Object.prototype.hasOwnProperty.call(payloadOrPoint, "point")) {
-      return payloadOrPoint;
-    }
-    return { point: payloadOrPoint, opts: maybeOpts };
-  }
-
-  function broadcastPlay(payload) {
-    const { tokenId, opts } = payload ?? {};
-    if (!tokenId) return;
-    if (!isGmAllowedToBroadcast()) {
-      return ui.notifications.warn("Only the GM can broadcast this FX.");
-    }
-
-    game.socket.emit(socket, {
-      senderSocketId: game.socket?.id,
-      type: "PLAY_SPARKS",
-      tokenId,
-      opts,
-      userId: game.user.id
-    });
-
-    playSparksAtToken(tokenId, opts);
-  }
-
-  function broadcastPlayAtPoint(payload) {
-    const { point, opts } = payload ?? {};
-    const x = Number(point?.x);
-    const y = Number(point?.y);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    if (!isGmAllowedToBroadcast()) {
-      return ui.notifications.warn("Only the GM can broadcast this FX.");
-    }
-
-    game.socket.emit(socket, {
-      senderSocketId: game.socket?.id,
-      type: "PLAY_SPARKS_POINT",
-      point: { x, y },
-      opts,
-      userId: game.user.id
-    });
-
-    playSparksAtPoint({ x, y }, opts);
   }
 
   function broadcastShaderOn(payload) {
@@ -420,16 +373,7 @@ export function createNetworkController({
     return deleteAllTileFX();
   }
 
-  function broadcastFromSelection(opts = {}) {
-    const tok = canvas.tokens?.controlled?.[0];
-    const target = [...game.user.targets]?.[0];
-    const tokenId = target?.id ?? tok?.id;
-    if (!tokenId) return ui.notifications.warn("Select or target a token first.");
-    broadcastPlay({ tokenId, opts });
-  }
-
   async function handleSocketMessage(msg) {
-    // Sender already applies broadcast actions locally; ignore only this socket echo.
     const senderSocketId = String(msg?.senderSocketId ?? "");
     if (senderSocketId && senderSocketId === String(game.socket?.id ?? "")) return;
     const type = msg?.type;
@@ -441,8 +385,6 @@ export function createNetworkController({
     }
 
     const gmRestrictedTypes = [
-      "PLAY_SPARKS",
-      "PLAY_SPARKS_POINT",
       "SHADER_ON",
       "SHADER_OFF",
       "SHADER_TOGGLE",
@@ -466,12 +408,6 @@ export function createNetworkController({
 
     try {
       switch (type) {
-        case "PLAY_SPARKS":
-          await playSparksAtToken(msg.tokenId, msg.opts ?? {});
-          return;
-        case "PLAY_SPARKS_POINT":
-          await playSparksAtPoint(msg.point, msg.opts ?? {});
-          return;
         case "SHADER_ON":
           shaderOn(msg.tokenId, msg.opts ?? {});
           return;
@@ -525,9 +461,6 @@ export function createNetworkController({
       }
     } catch (err) {
       switch (type) {
-        case "PLAY_SPARKS_POINT":
-          console.error(`${moduleId} point sparks failed:`, err);
-          return;
         case "SHADER_ON":
         case "SHADER_OFF":
         case "SHADER_TOGGLE":
@@ -570,9 +503,6 @@ export function createNetworkController({
     normalizeTileBroadcastPayload,
     normalizeRegionBroadcastPayload,
     normalizeRegionBehaviorBroadcastPayload,
-    normalizePointBroadcastPayload,
-    broadcastPlay,
-    broadcastPlayAtPoint,
     broadcastShaderOn,
     broadcastShaderOff,
     broadcastShaderToggle,
@@ -589,10 +519,6 @@ export function createNetworkController({
     broadcastDeleteAllTokenFX,
     broadcastDeleteAllTemplateFX,
     broadcastDeleteAllTileFX,
-    broadcastFromSelection,
     registerSocketReceiver
   };
 }
-
-
-

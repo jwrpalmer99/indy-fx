@@ -25,26 +25,6 @@ export const SHADER_SETTINGS_KEYS = [
   "shaderEaseOutMs"
 ];
 
-export const SPARK_SETTINGS_KEYS = [
-  "layer",
-  "count",
-  "lifeMin",
-  "lifeMax",
-  "speedMin",
-  "speedMax",
-  "startAtEdge",
-  "edgeFactor",
-  "radiusMin",
-  "radiusMax",
-  "colorA",
-  "colorB",
-  "useBloom",
-  "bloomStrength",
-  "bloomBlur",
-  "glowScale",
-  "glowAlpha",
-  "outlineWidth"
-];
 
 export const DEBUG_SETTINGS_KEYS = [
   "shaderDebug",
@@ -52,7 +32,7 @@ export const DEBUG_SETTINGS_KEYS = [
 ];
 
 export function registerModuleSettings({ moduleId, shaderManager, menus }) {
-  const { ShaderSettingsMenu, SparksSettingsMenu, DebugSettingsMenu, ShaderLibraryMenu } = menus;
+  const { ShaderSettingsMenu, DebugSettingsMenu, ShaderLibraryMenu } = menus;
   shaderManager.registerSettings();
 
   // World (GM config, shared defaults)
@@ -85,15 +65,6 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
     hint: "Shader-specific settings.",
     icon: "fas fa-atom",
     type: ShaderSettingsMenu,
-    restricted: true
-  });
-
-  game.settings.registerMenu(moduleId, "sparksMenu", {
-    name: "Sparks Settings",
-    label: "Configure",
-    hint: "Configure playSparksAtToken defaults.",
-    icon: "fas fa-fire",
-    type: SparksSettingsMenu,
     restricted: true
   });
 
@@ -212,164 +183,6 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
     },
     default: "off"
   });
-
-  game.settings.register(moduleId, "count", {
-    name: "Particle count",
-    hint: "Base number of particles spawned per burst (before client multiplier).",
-    scope: "world",
-    config: false,
-    type: Number,
-    default: 180,
-    range: { min: 10, max: 500, step: 10 }
-  });
-
-  game.settings.register(moduleId, "lifeMin", {
-    name: "Particle lifetime min (s)",
-    scope: "world",
-    config: false,
-    type: Number,
-    default: 0.6,
-    range: { min: 0.1, max: 5.0, step: 0.1 }
-  });
-
-  game.settings.register(moduleId, "lifeMax", {
-    name: "Particle lifetime max (s)",
-    scope: "world",
-    config: false,
-    type: Number,
-    default: 1.8,
-    range: { min: 0.1, max: 6.0, step: 0.1 }
-  });
-
-  game.settings.register(moduleId, "speedMin", {
-    name: "Particle speed min",
-    scope: "world",
-    config: false,
-    type: Number,
-    default: 120,
-    range: { min: 0, max: 2000, step: 10 }
-  });
-
-  game.settings.register(moduleId, "speedMax", {
-    name: "Particle speed max",
-    scope: "world",
-    config: false,
-    type: Number,
-    default: 520,
-    range: { min: 0, max: 3000, step: 10 }
-  });
-
-  game.settings.register(moduleId, "startAtEdge", {
-    name: "Start at token edge",
-    hint: "If enabled, particles begin near token edge rather than center.",
-    scope: "world",
-    config: false,
-    type: Boolean,
-    default: false
-  });
-
-  game.settings.register(moduleId, "edgeFactor", {
-    name: "Edge factor",
-    hint: "Multiplier of token pixel size used to estimate start radius when Start at token edge is enabled.",
-    scope: "world",
-    config: false,
-    type: Number,
-    default: 0.40,
-    range: { min: 0.05, max: 1.5, step: 0.05 }
-  });
-
-  game.settings.register(moduleId, "radiusMin", {
-    name: "Core radius min",
-    scope: "world",
-    config: false,
-    type: Number,
-    default: 3,
-    range: { min: 1, max: 20, step: 1 }
-  });
-
-  game.settings.register(moduleId, "radiusMax", {
-    name: "Core radius max",
-    scope: "world",
-    config: false,
-    type: Number,
-    default: 6,
-    range: { min: 1, max: 30, step: 1 }
-  });
-
-  game.settings.register(moduleId, "colorA", {
-    name: "Color A (hex)",
-    hint: "Start color (orange). Example: FF B1 4A",
-    scope: "world",
-    config: false,
-    type: String,
-    default: "FFB14A"
-  });
-
-  game.settings.register(moduleId, "colorB", {
-    name: "Color B (hex)",
-    hint: "End color (red). Example: FF 2A 2A",
-    scope: "world",
-    config: false,
-    type: String,
-    default: "FF2A2A"
-  });
-
-  game.settings.register(moduleId, "useBloom", {
-    name: "Use bloom (if available)",
-    hint: "Uses PIXI BloomFilter if present. Can look great but may cost FPS on some machines.",
-    scope: "world",
-    config: false,
-    type: Boolean,
-    default: false
-  });
-
-  game.settings.register(moduleId, "bloomStrength", {
-    name: "Bloom strength",
-    scope: "world",
-    config: false,
-    type: Number,
-    default: 1.0,
-    range: { min: 0, max: 3.0, step: 0.1 }
-  });
-
-  game.settings.register(moduleId, "bloomBlur", {
-    name: "Bloom blur",
-    scope: "world",
-    config: false,
-    type: Number,
-    default: 6,
-    range: { min: 0, max: 20, step: 1 }
-  });
-
-  game.settings.register(moduleId, "glowScale", {
-  name: "Glow scale",
-  hint: "Multiplier for the soft glow sprite size (relative to the core radius).",
-  scope: "world",
-  config: false,
-  type: Number,
-  default: 3.2,
-  range: { min: 0.5, max: 10.0, step: 0.1 }
-});
-
-game.settings.register(moduleId, "glowAlpha", {
-  name: "Glow alpha",
-  hint: "Opacity of the soft glow (0 = off).",
-  scope: "world",
-  config: false,
-  type: Number,
-  default: 0.18,
-  range: { min: 0.0, max: 1.0, step: 0.01 }
-});
-
-game.settings.register(moduleId, "outlineWidth", {
-  name: "Outline width",
-  hint: "Stroke width for the hot core outline (helps visibility).",
-  scope: "world",
-  config: false,
-  type: Number,
-  default: 2,
-  range: { min: 0, max: 10, step: 1 }
-});
 
 game.settings.register(moduleId, "shaderRadiusUnits", {
   name: "Shader radius (scene units)",
@@ -517,83 +330,6 @@ game.settings.register(moduleId, "shaderRadiusUnits", {
     default: 250,
     range: { min: 0, max: 60000, step: 50 }
   });
-
-  // Client (each player can reduce load locally)
-  game.settings.register(moduleId, "clientMultiplier", {
-    name: "Client particle multiplier",
-    hint: "Scales particle count locally on this client only. 1.0 = full, 0.5 = half, 0.25 = quarter.",
-    scope: "client",
-    config: true,
-    type: Number,
-    default: 1.0,
-    range: { min: 0.1, max: 1.0, step: 0.05 }
-  });
-
-  game.settings.register(moduleId, "clientDisableBloom", {
-    name: "Disable bloom on this client",
-    hint: "For low-end GPUs, disable bloom locally even if world setting enables it.",
-    scope: "client",
-    config: true,
-    type: Boolean,
-    default: false
-  });
 }
 
-export function getWorldCfg(moduleId) {
-  const toHex = (s) => {
-    const clean = String(s ?? "").replace(/^0x/i, "").replace(/[^0-9a-f]/gi, "");
-    return clean.length ? clean : "FFFFFF";
-  };
-
-  const colorA = parseInt(toHex(game.settings.get(moduleId, "colorA")), 16);
-  const colorB = parseInt(toHex(game.settings.get(moduleId, "colorB")), 16);
-
-  return {
-    layer: game.settings.get(moduleId, "layer"),
-    count: game.settings.get(moduleId, "count"),
-    lifeMin: game.settings.get(moduleId, "lifeMin"),
-    lifeMax: game.settings.get(moduleId, "lifeMax"),
-    speedMin: game.settings.get(moduleId, "speedMin"),
-    speedMax: game.settings.get(moduleId, "speedMax"),
-    startAtEdge: game.settings.get(moduleId, "startAtEdge"),
-    edgeFactor: game.settings.get(moduleId, "edgeFactor"),
-    radiusMin: game.settings.get(moduleId, "radiusMin"),
-    radiusMax: game.settings.get(moduleId, "radiusMax"),
-    colorA,
-    colorB,
-    useBloom: game.settings.get(moduleId, "useBloom"),
-    bloomStrength: game.settings.get(moduleId, "bloomStrength"),
-    bloomBlur: game.settings.get(moduleId, "bloomBlur"),
-    glowScale: game.settings.get(moduleId, "glowScale"),
-    glowAlpha: game.settings.get(moduleId, "glowAlpha"),
-    outlineWidth: game.settings.get(moduleId, "outlineWidth"),
-    shaderAlpha: game.settings.get(moduleId, "shaderAlpha"),
-    shaderIntensity: game.settings.get(moduleId, "shaderIntensity"),
-    shaderSpeed: game.settings.get(moduleId, "shaderSpeed"),
-    shaderScale: game.settings.get(moduleId, "shaderScale"),
-    shaderScaleX: game.settings.get(moduleId, "shaderScaleX"),
-    shaderScaleY: game.settings.get(moduleId, "shaderScaleY"),
-    shaderRadiusUnits: game.settings.get(moduleId, "shaderRadiusUnits"),
-    shaderPreset: game.settings.get(moduleId, "shaderPreset"),
-    shaderGradientFadeStart: game.settings.get(moduleId, "shaderGradientFadeStart"),
-    shaderFalloff: game.settings.get(moduleId, "shaderFalloff"),
-    shaderDensity: game.settings.get(moduleId, "shaderDensity"),
-    shaderFlow: game.settings.get(moduleId, "shaderFlow"),
-    shaderFlowSpeed: game.settings.get(moduleId, "shaderFlowSpeed"),
-    shaderFlowTurbulence: game.settings.get(moduleId, "shaderFlowTurbulence"),
-    shaderColorA: game.settings.get(moduleId, "shaderColorA"),
-    shaderColorB: game.settings.get(moduleId, "shaderColorB"),
-    shaderDisplayTimeMs: game.settings.get(moduleId, "shaderDisplayTimeMs"),
-    shaderEaseInMs: game.settings.get(moduleId, "shaderEaseInMs"),
-    shaderEaseOutMs: game.settings.get(moduleId, "shaderEaseOutMs")
-    };
-}
-
-
-export function getClientCfg(moduleId) {
-  return {
-    mult: game.settings.get(moduleId, "clientMultiplier"),
-    disableBloom: game.settings.get(moduleId, "clientDisableBloom")
-  };
-}
 

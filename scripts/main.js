@@ -6,10 +6,9 @@ import {
   isRegionShaderBehaviorType,
   registerRegionShaderBehavior
 } from "./region-shader-behavior.js";
-import { createSparksController } from "./sparks.js";
 import { createMenus } from "./menus.js";
 import { createNetworkController } from "./network.js";
-import { registerModuleSettings, getWorldCfg, getClientCfg } from "./settings.js";
+import { registerModuleSettings } from "./settings.js";
 import {
   parseHexColorLike,
   parseDistanceValue,
@@ -43,7 +42,7 @@ import {
 const MODULE_ID = "indy-fx";
 const SOCKET = `module.${MODULE_ID}`;
 const shaderManager = new ShaderManager(MODULE_ID);
-const { ShaderSettingsMenu, SparksSettingsMenu, DebugSettingsMenu, ShaderLibraryMenu } = createMenus({
+const { ShaderSettingsMenu, DebugSettingsMenu, ShaderLibraryMenu } = createMenus({
   moduleId: MODULE_ID,
   shaderManager
 });
@@ -1232,30 +1231,6 @@ function updateSpriteDebugGfx(gfx, radius) {
 }
 
 let networkController = null;
-function broadcastPlayAtPointProxy(payload) {
-  return networkController?.broadcastPlayAtPoint(payload);
-}
-
-const sparksController = createSparksController({
-  moduleId: MODULE_ID,
-  getWorldCfg,
-  getClientCfg,
-  getTokenCenter,
-  worldPointFromPointerEvent,
-  broadcastPlayAtPoint: broadcastPlayAtPointProxy,
-  unitDir,
-  rand,
-  lerpColor,
-  darken
-});
-
-const {
-  playSparksAtOrigin,
-  playSparksAtPoint,
-  playSparksAtToken,
-  startSparksPlacement,
-  cancelSparksPlacement
-} = sparksController;
 
 function getLastSceneTemplateId() {
   const sceneTemplates = canvas.scene?.templates?.contents;
@@ -3620,8 +3595,6 @@ networkController = createNetworkController({
   resolveTemplateId,
   resolveTileId,
   resolveRegionId,
-  playSparksAtToken,
-  playSparksAtPoint,
   shaderOn,
   shaderOff,
   shaderToggle,
@@ -3646,9 +3619,6 @@ const {
   normalizeTileBroadcastPayload,
   normalizeRegionBroadcastPayload,
   normalizeRegionBehaviorBroadcastPayload,
-  normalizePointBroadcastPayload,
-  broadcastPlay,
-  broadcastPlayAtPoint,
   broadcastShaderOn,
   broadcastShaderOff,
   broadcastShaderToggle,
@@ -3665,7 +3635,6 @@ const {
   broadcastDeleteAllTokenFX,
   broadcastDeleteAllTemplateFX,
   broadcastDeleteAllTileFX,
-  broadcastFromSelection,
   registerSocketReceiver
 } = networkController;
 // ------------------------------
@@ -3675,7 +3644,7 @@ Hooks.once("init", () => {
   registerModuleSettings({
     moduleId: MODULE_ID,
     shaderManager,
-    menus: { ShaderSettingsMenu, SparksSettingsMenu, DebugSettingsMenu, ShaderLibraryMenu }
+    menus: { ShaderSettingsMenu, DebugSettingsMenu, ShaderLibraryMenu }
   });
   registerRegionShaderBehavior({
     moduleId: MODULE_ID,
@@ -3906,13 +3875,6 @@ Hooks.once("ready", async () => {
 
   // API
   game.indyFX = {
-    playAtToken: (tokenId, opts) => playSparksAtToken(tokenId, opts),
-    playAtPoint: (point, opts) => playSparksAtPoint(point, opts),
-    startSparksPlacement: (opts = {}) => startSparksPlacement(opts),
-    cancelSparksPlacement: () => cancelSparksPlacement(false),
-    broadcastPlay: (payloadOrTokenId, maybeOpts) => broadcastPlay(normalizeTokenBroadcastPayload(payloadOrTokenId, maybeOpts)),
-    broadcastPlayAtPoint: (payloadOrPoint, maybeOpts) => broadcastPlayAtPoint(normalizePointBroadcastPayload(payloadOrPoint, maybeOpts)),
-    broadcastFromSelection: (opts = {}) => broadcastFromSelection(opts),
     shaderOn: (tokenId, opts) => shaderOn(tokenId, opts),
     shaderOff: (tokenId) => shaderOff(tokenId),
     shaderToggle: (tokenId, opts) => shaderToggle(tokenId, opts),
