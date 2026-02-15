@@ -18,10 +18,19 @@ export class ShaderToyBufferChannel {
       width: this.size,
       height: this.size,
       resolution: 1,
-      scaleMode: PIXI.SCALE_MODES.LINEAR
+      scaleMode: PIXI.SCALE_MODES.LINEAR,
     });
+    this._historyTexture = PIXI.RenderTexture.create({
+      width: this.size,
+      height: this.size,
+      resolution: 1,
+      scaleMode: PIXI.SCALE_MODES.LINEAR,
+    });
+    this._selfChannelIndices = new Set();
 
-    this.fallbackTextures = CHANNEL_INDICES.map(() => getSolidTexture([0, 0, 0, 255], 2));
+    this.fallbackTextures = CHANNEL_INDICES.map(() =>
+      getSolidTexture([0, 0, 0, 255], 2),
+    );
     const iChannelResolution = [];
     for (const texture of this.fallbackTextures) {
       const [w, h] = getTextureSize(texture, 2);
@@ -43,24 +52,27 @@ export class ShaderToyBufferChannel {
       shaderScale: 1.0,
       shaderScaleXY: [1, 1],
       shaderRotation: 0,
-      resolution: [this.size, this.size]
+      shaderFlipX: 0,
+      shaderFlipY: 0,
+      cpfxPreserveTransparent: 1,
+      cpfxForceOpaqueCaptureAlpha: 0,
+      resolution: [this.size, this.size],
     };
 
     const fragment = adaptShaderToyBufferFragment(source);
     const shader = PIXI.Shader.from(SHADER_VERT, fragment, uniforms);
 
     const verts = new Float32Array([
-      0, 0,
-      this.size, 0,
-      this.size, this.size,
-      0, this.size
+      0,
+      0,
+      this.size,
+      0,
+      this.size,
+      this.size,
+      0,
+      this.size,
     ]);
-    const uvs = new Float32Array([
-      0, 0,
-      1, 0,
-      1, 1,
-      0, 1
-    ]);
+    const uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
     const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
     const geom = new PIXI.Geometry()
       .addAttribute("aVertexPosition", verts, 2)
@@ -69,16 +81,18 @@ export class ShaderToyBufferChannel {
 
     this.mesh = new PIXI.Mesh(geom, shader);
     this.mesh.eventMode = "none";
+
+    this._historyCopySprite = new PIXI.Sprite(this.texture);
+    this._historyCopySprite.eventMode = "none";
+    this._historyCopySprite.width = this.size;
+    this._historyCopySprite.height = this.size;
+
     this.update(0);
   }
 
-  setChannel(index, texture, resolution = [1, 1]) {
-    if (!this.mesh?.shader?.uniforms) return;
-    if (!Number.isInteger(index) || index < 0 || index > 3) return;
-    const uniforms = this.mesh.shader.uniforms;
-    const uniformName = `iChannel${index}`;
-    uniforms[uniformName] = texture ?? this.fallbackTextures[index];
-
+  _setChannelResolution(index, resolution = [1, 1]) {
+    const uniforms = this.mesh?.shader?.uniforms;
+    if (!uniforms) return;
     const channelRes = Array.from(uniforms.iChannelResolution ?? []);
     while (channelRes.length < 12) channelRes.push(1);
     const w = Math.max(1, Number(resolution?.[0]) || 1);
@@ -87,6 +101,25 @@ export class ShaderToyBufferChannel {
     channelRes[index * 3 + 1] = h;
     channelRes[index * 3 + 2] = 1;
     uniforms.iChannelResolution = channelRes;
+  }
+
+  setChannel(index, texture, resolution = [1, 1]) {
+    if (!this.mesh?.shader?.uniforms) return;
+    if (!Number.isInteger(index) || index < 0 || index > 3) return;
+    this._selfChannelIndices.delete(index);
+    const uniforms = this.mesh.shader.uniforms;
+    const uniformName = `iChannel${index}`;
+    uniforms[uniformName] = texture ?? this.fallbackTextures[index];
+    this._setChannelResolution(index, resolution);
+  }
+
+  setChannelSelf(index, resolution = [this.size, this.size]) {
+    if (!this.mesh?.shader?.uniforms) return;
+    if (!Number.isInteger(index) || index < 0 || index > 3) return;
+    this._selfChannelIndices.add(index);
+    const uniforms = this.mesh.shader.uniforms;
+    uniforms[`iChannel${index}`] = this._historyTexture;
+    this._setChannelResolution(index, resolution);
   }
 
   update(dtSeconds = 1 / 60, renderer = canvas?.app?.renderer) {
@@ -98,22 +131,49 @@ export class ShaderToyBufferChannel {
     uniforms.uTime = this.time;
     uniforms.iTimeDelta = dt;
     uniforms.iFrame = (uniforms.iFrame ?? 0) + 1;
-    uniforms.iFrameRate = dt > 0 ? (1 / dt) : 60;
+    uniforms.iFrameRate = dt > 0 ? 1 / dt : 60;
     const now = new Date();
-    const seconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds() + (now.getMilliseconds() / 1000);
-    uniforms.iDate = [now.getFullYear(), now.getMonth() + 1, now.getDate(), seconds];
+    const seconds =
+      now.getHours() * 3600 +
+      now.getMinutes() * 60 +
+      now.getSeconds() +
+      now.getMilliseconds() / 1000;
+    uniforms.iDate = [
+      now.getFullYear(),
+      now.getMonth() + 1,
+      now.getDate(),
+      seconds,
+    ];
+
+    for (const index of this._selfChannelIndices) {
+      uniforms[`iChannel${index}`] = this._historyTexture;
+    }
 
     renderer.render(this.mesh, {
       renderTexture: this.texture,
-      clear: true
+      clear: true,
     });
+
+    if (this._selfChannelIndices.size > 0 && this._historyTexture) {
+      this._historyCopySprite.texture = this.texture;
+      renderer.render(this._historyCopySprite, {
+        renderTexture: this._historyTexture,
+        clear: true,
+      });
+    }
   }
 
   destroy() {
     this.mesh?.destroy({ children: true, texture: false, baseTexture: false });
     this.mesh = null;
+    this._historyCopySprite?.destroy({ children: true, texture: false, baseTexture: false });
+    this._historyCopySprite = null;
     this.texture?.destroy(true);
     this.texture = null;
+    this._historyTexture?.destroy(true);
+    this._historyTexture = null;
+    this._selfChannelIndices?.clear?.();
+    this._selfChannelIndices = null;
     this.fallbackTextures = [];
   }
 }

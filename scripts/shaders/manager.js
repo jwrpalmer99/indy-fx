@@ -38,6 +38,7 @@ const CHANNEL_MODES = new Set([
   "tileImage",
   "image",
   "buffer",
+  "bufferSelf",
 ]);
 const MAX_BUFFER_CHAIN_DEPTH = 10;
 const DEFAULT_BUFFER_SIZE = 512;
@@ -2822,6 +2823,15 @@ export class ShaderManager {
               channels: {},
               size,
             };
+          const childMode = normalizeChannelMode(childCfg?.mode ?? "none");
+          if (childMode === "bufferSelf") {
+            debugLog(this.moduleId, "binding buffer self-feedback channel", {
+              channel: index,
+              size,
+            });
+            runtimeBuffer.setChannelSelf(index, [size, size]);
+            continue;
+          }
           const resolved = this.resolveImportedChannelTexture(
             childCfg,
             depth + 1,
@@ -3168,7 +3178,12 @@ export class ShaderManager {
     return this.getImportedRecord(id) ?? record;
   }
 
-  _buildChannelFromShaderToyInput(input, maps, stack = new Set()) {
+  _buildChannelFromShaderToyInput(
+    input,
+    maps,
+    stack = new Set(),
+    currentPassKey = null,
+  ) {
     const ctype = String(input?.ctype ?? input?.type ?? "").toLowerCase();
     const src = String(
       input?.src ?? input?.filepath ?? input?.previewfilepath ?? "",
@@ -3196,6 +3211,13 @@ export class ShaderManager {
       const passKey = String(
         pass.__cpfxPassKey ?? pass?.name ?? pass?.code ?? "",
       );
+      if (currentPassKey && passKey === currentPassKey) {
+        debugLog(this.moduleId, "detected buffer self-reference", {
+          passKey,
+          currentPassKey,
+        });
+        return { mode: "bufferSelf", size: DEFAULT_BUFFER_SIZE };
+      }
       if (stack.has(passKey)) {
         console.warn(
           `${this.moduleId} | Ignoring recursive ShaderToy buffer dependency: ${passKey}`,
@@ -3218,6 +3240,7 @@ export class ShaderManager {
         pass.inputs,
         maps,
         stack,
+        passKey,
       );
       stack.delete(passKey);
       return {
@@ -3255,7 +3278,12 @@ export class ShaderManager {
     return { mode: "none" };
   }
 
-  _buildChannelsFromShaderToyInputs(inputs, maps, stack = new Set()) {
+  _buildChannelsFromShaderToyInputs(
+    inputs,
+    maps,
+    stack = new Set(),
+    currentPassKey = null,
+  ) {
     const channels = {};
     for (const index of CHANNEL_INDICES) {
       channels[`iChannel${index}`] = { mode: "none" };
@@ -3268,6 +3296,7 @@ export class ShaderManager {
         input,
         maps,
         stack,
+        currentPassKey,
       );
     }
     return channels;
