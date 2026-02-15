@@ -481,6 +481,7 @@ uniform float shaderRotation;
 uniform float shaderFlipX;
 uniform float shaderFlipY;
 uniform float cpfxPreserveTransparent;
+uniform float cpfxForceOpaqueCaptureAlpha;
 uniform vec2 resolution;
 
 #define iTime uTime
@@ -630,16 +631,29 @@ void main() {
     gl_FragColor = vec4(stUv, 0.0, 1.0);
     return;
   }
-  if (debugMode > 1.5) {
-    gl_FragColor = vec4(vec3(base.a), 1.0);
+  if (debugMode > 1.5 && debugMode < 2.5) {
+    gl_FragColor = vec4(vec3(base.a), base.a);
     return;
   }
 
   vec4 shaderColor = vec4(0.0, 0.0, 0.0, 1.0);
   mainImage(shaderColor, fragCoord);
   float srcAlpha = shaderColor.a;
+  if (debugMode > 2.5 && debugMode < 3.5) {
+    gl_FragColor = vec4(vec3(srcAlpha), srcAlpha);
+    return;
+  }
+  if (cpfxForceOpaqueCaptureAlpha > 0.5 && srcAlpha <= 0.0001) srcAlpha = 1.0;
   if (cpfxPreserveTransparent < 0.5 && srcAlpha <= 0.0001) srcAlpha = 1.0;
+  if (debugMode > 3.5 && debugMode < 4.5) {
+    gl_FragColor = vec4(vec3(srcAlpha), srcAlpha);
+    return;
+  }
   float a = clamp(base.a * srcAlpha, 0.0, 1.0);
+  if (debugMode > 4.5 && debugMode < 5.5) {
+    gl_FragColor = vec4(vec3(a), a);
+    return;
+  }
   gl_FragColor = vec4(shaderColor.rgb * a * intensity, a);
 }`;
 }
@@ -670,6 +684,7 @@ uniform float shaderRotation;
 uniform float shaderFlipX;
 uniform float shaderFlipY;
 uniform float cpfxPreserveTransparent;
+uniform float cpfxForceOpaqueCaptureAlpha;
 uniform vec2 resolution;
 
 #define iTime uTime
@@ -817,3 +832,5 @@ void main() {
   gl_FragColor = shaderColor;
 }`;
 }
+
+

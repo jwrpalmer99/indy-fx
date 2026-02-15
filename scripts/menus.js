@@ -1648,6 +1648,9 @@ export function createMenus({ moduleId, shaderManager }) {
           source: sourceText,
           channels,
           autoAssignCapture,
+          captureRotationDeg: defaults?.captureRotationDeg,
+          captureFlipHorizontal: defaults?.captureFlipHorizontal,
+          captureFlipVertical: defaults?.captureFlipVertical,
           reason: "editor-preview"
         });
         if (!preview) {
@@ -2930,4 +2933,5 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
     ShaderLibraryMenu,
   };
 }
+
 

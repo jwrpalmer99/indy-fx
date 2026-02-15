@@ -49,6 +49,7 @@ const THUMBNAIL_SIZE = 256;
 const THUMBNAIL_CAPTURE_SECONDS = 1.0;
 const BACKGROUND_COMPILE_SIZE = 96;
 const PREVIEW_SCENE_CAPTURE_TEXTURE = "modules/indy-fx/images/indyFX_solid.webp";
+const PREVIEW_PLACEABLE_CAPTURE_TEXTURE = "modules/indy-fx/images/indyFX.webp";
 const IMPORTED_SHADER_DEFAULT_KEYS = [
   "layer",
   "useGradientMask",
@@ -181,6 +182,33 @@ function getTextureSize(texture, fallback = 256) {
   return [Math.max(1, w), Math.max(1, h)];
 }
 
+function getTextureDebugInfo(texture, fallback = 256) {
+  if (!texture) return { exists: false };
+  const base = texture?.baseTexture ?? null;
+  const resource = base?.resource ?? null;
+  const source = resource?.source ?? null;
+  let sourceHint = null;
+  try {
+    if (typeof source === "string") sourceHint = source;
+    else if (typeof source?.currentSrc === "string" && source.currentSrc) sourceHint = source.currentSrc;
+    else if (typeof source?.src === "string" && source.src) sourceHint = source.src;
+    else if (source?.tagName) sourceHint = String(source.tagName);
+  } catch (_err) {
+    sourceHint = null;
+  }
+  return {
+    exists: true,
+    className: texture?.constructor?.name ?? typeof texture,
+    valid: base?.valid === true,
+    width: Number(base?.realWidth ?? texture?.width ?? fallback),
+    height: Number(base?.realHeight ?? texture?.height ?? fallback),
+    resolution: Number(base?.resolution ?? texture?.resolution ?? 1),
+    resourceClass: resource?.constructor?.name ?? null,
+    resourceUrl: resource?.url ?? sourceHint ?? null,
+    sourceClass: source?.constructor?.name ?? null,
+  };
+}
+
 function normalizeBufferSize(value, fallback = DEFAULT_BUFFER_SIZE) {
   const size = Number(value);
   if (!Number.isFinite(size)) return fallback;
@@ -231,6 +259,22 @@ function channelConfigNeedsLivePreview(config, depth = 0) {
     const mode = normalizeChannelMode(entry.mode ?? "auto");
     if (mode === "sceneCapture" || mode === "tokenTileImage") return true;
     if (mode === "buffer" && channelConfigNeedsLivePreview(entry.channels, depth + 1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function channelConfigHasMode(config, matchMode, depth = 0) {
+  if (!config || typeof config !== "object") return false;
+  if (depth > MAX_BUFFER_CHAIN_DEPTH) return false;
+  for (const index of CHANNEL_INDICES) {
+    const key = `iChannel${index}`;
+    const entry = config[key] ?? config[index];
+    if (!entry || typeof entry !== "object") continue;
+    const mode = normalizeChannelMode(entry.mode ?? "auto");
+    if (mode === matchMode) return true;
+    if (mode === "buffer" && channelConfigHasMode(entry.channels, matchMode, depth + 1)) {
       return true;
     }
   }
@@ -389,10 +433,13 @@ export class ShaderManager {
     this._backgroundCompilePending = new Set();
     this._backgroundCompileDone = new Set();
     this._previewCaptureTextureCache = new Map();
+    this._pendingPreviewTextureLoads = new Set();
     this._pendingThumbnailRegenerations = new Map();
     this._thumbnailRenderer = null;
     this._thumbnailRendererCanvas = null;
     this._thumbnailRendererSize = 0;
+  
+    this._ensurePreviewReferenceTexturesLoaded();
   }
 
 
@@ -405,6 +452,86 @@ export class ShaderManager {
       default: [],
     });
   }
+
+  _getModuleAssetPath(relativePath, fallbackPath = "") {
+    const relative = String(relativePath ?? "").trim().replace(/^\/+/, "");
+    const fallback = String(fallbackPath ?? "").trim();
+    if (!relative) return fallback;
+
+    const modulePathRaw = game?.modules?.get?.(this.moduleId)?.path;
+    const modulePath = String(modulePathRaw ?? "").trim().replace(/\/+$/, "");
+    if (modulePath) return `${modulePath}/${relative}`;
+
+    const moduleId = String(this.moduleId ?? "").trim();
+    if (moduleId) return `modules/${moduleId}/${relative}`;
+    return fallback;
+  }
+
+  _getPreviewSceneCaptureTexturePath() {
+    return this._getModuleAssetPath(
+      "images/indyFX_solid.webp",
+      PREVIEW_SCENE_CAPTURE_TEXTURE,
+    );
+  }
+
+  _getPreviewPlaceableCaptureTexturePath() {
+    return this._getModuleAssetPath(
+      "images/indyFX.webp",
+      PREVIEW_PLACEABLE_CAPTURE_TEXTURE,
+    );
+  }
+
+  _ensurePreviewReferenceTexturesLoaded() {
+    this._ensurePreviewTextureLoaded(this._getPreviewSceneCaptureTexturePath());
+    this._ensurePreviewTextureLoaded(this._getPreviewPlaceableCaptureTexturePath());
+  }
+
+  _ensurePreviewTextureLoaded(path) {
+    if (!globalThis.PIXI?.Texture?.from) return null;
+    const normalized = String(path ?? "").trim();
+    if (!normalized) return null;
+
+    const texture = PIXI.Texture.from(normalized);
+    const base = texture?.baseTexture;
+    if (!base) return null;
+
+    base.wrapMode = PIXI.WRAP_MODES.CLAMP;
+    base.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    base.mipmap = PIXI.MIPMAP_MODES.OFF;
+
+    if (base.valid === true) {
+      base.update?.();
+      return texture;
+    }
+
+    const key = normalized;
+    if (!this._pendingPreviewTextureLoads.has(key)) {
+      this._pendingPreviewTextureLoads.add(key);
+      const finalize = () => {
+        this._pendingPreviewTextureLoads.delete(key);
+        this._previewCaptureTextureCache.clear();
+        debugLog(this.moduleId, "preview reference texture ready", {
+          path: normalized,
+          valid: base.valid === true,
+          width: Number(base.realWidth ?? 0),
+          height: Number(base.realHeight ?? 0),
+        });
+      };
+      base.once?.("loaded", finalize);
+      base.once?.("update", finalize);
+      base.once?.("error", (err) => {
+        this._pendingPreviewTextureLoads.delete(key);
+        debugLog(this.moduleId, "preview reference texture failed", {
+          path: normalized,
+          message: String(err?.message ?? err),
+        });
+      });
+    }
+
+    base.update?.();
+    return texture;
+  }
+
   _ensureThumbnailRenderer(size = THUMBNAIL_SIZE) {
     const nextSize = Math.max(
       32,
@@ -516,12 +643,85 @@ export class ShaderManager {
     return channel;
   }
 
+  _debugSampleTextureAlpha(texture, sampleSize = 16, rendererOverride = null) {
+    if (!isDebugLoggingEnabled(this.moduleId)) return null;
+    const renderer = rendererOverride ?? canvas?.app?.renderer;
+    const extractPixels =
+      (typeof renderer?.extract?.pixels === "function"
+        ? renderer.extract.pixels.bind(renderer.extract)
+        : null) ??
+      (typeof renderer?.plugins?.extract?.pixels === "function"
+        ? renderer.plugins.extract.pixels.bind(renderer.plugins.extract)
+        : null);
+    if (!renderer || !extractPixels) {
+      debugLog(this.moduleId, "preview alpha sampler unavailable", {
+        hasRenderer: !!renderer,
+        hasExtractPixels: typeof renderer?.extract?.pixels === "function",
+        hasPluginExtractPixels: typeof renderer?.plugins?.extract?.pixels === "function",
+      });
+      return null;
+    }
+    if (!texture) return null;
+
+    const size = Math.max(4, Math.min(32, Math.round(Number(sampleSize) || 16)));
+    const target = PIXI.RenderTexture.create({
+      width: size,
+      height: size,
+      resolution: 1,
+      scaleMode: PIXI.SCALE_MODES.LINEAR,
+    });
+    const stage = new PIXI.Container();
+    const sprite = new PIXI.Sprite(texture);
+    sprite.x = 0;
+    sprite.y = 0;
+    sprite.width = size;
+    sprite.height = size;
+    stage.addChild(sprite);
+
+    try {
+      renderer.render(stage, { renderTexture: target, clear: true });
+      const pixels = extractPixels(target);
+      if (!pixels || !pixels.length) return { ok: false, reason: "no-pixels" };
+
+      let minA = 255;
+      let maxA = 0;
+      let nonZero = 0;
+      let sumA = 0;
+      for (let i = 3; i < pixels.length; i += 4) {
+        const a = Number(pixels[i]) || 0;
+        if (a > 0) nonZero += 1;
+        if (a < minA) minA = a;
+        if (a > maxA) maxA = a;
+        sumA += a;
+      }
+      const total = Math.max(1, Math.floor(pixels.length / 4));
+      return {
+        ok: true,
+        total,
+        nonZero,
+        zero: total - nonZero,
+        minA,
+        maxA,
+        avgA: Number((sumA / total).toFixed(3)),
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: String(err?.message ?? err),
+      };
+    } finally {
+      stage.destroy({ children: true });
+      target.destroy(true);
+    }
+  }
+
   _getTransformedPreviewCaptureTexture(
     textureInput,
     {
       captureRotationDeg = 0,
       captureFlipHorizontal = false,
       captureFlipVertical = false,
+      forceOpaqueAlpha = false,
     } = {},
   ) {
     let sourceTexture = null;
@@ -530,7 +730,7 @@ export class ShaderManager {
     if (typeof textureInput === "string") {
       const path = String(textureInput ?? "").trim();
       if (!path) return null;
-      sourceTexture = PIXI.Texture.from(path);
+      sourceTexture = this._ensurePreviewTextureLoaded(path);
       cacheSourceKey = "url:" + path;
     } else if (
       textureInput instanceof PIXI.Texture ||
@@ -540,13 +740,28 @@ export class ShaderManager {
       sourceTexture = textureInput;
     }
 
-    if (!sourceTexture) return null;
+    if (!sourceTexture) {
+      debugLog(this.moduleId, "preview capture texture: no source", {
+        textureInputType: typeof textureInput,
+      });
+      return null;
+    }
+
+    debugLog(this.moduleId, "preview capture texture: source resolved", {
+      textureInputType: typeof textureInput,
+      cacheSourceKey,
+      source: getTextureDebugInfo(sourceTexture, 1024),
+    });
 
     const rotationDeg = toFiniteNumber(captureRotationDeg, 0);
     const flipH = parseBooleanLike(captureFlipHorizontal);
     const flipV = parseBooleanLike(captureFlipVertical);
+    const forceOpaque = parseBooleanLike(forceOpaqueAlpha);
     const needsTransform =
-      Math.abs(rotationDeg) > 0.0001 || flipH === true || flipV === true;
+      Math.abs(rotationDeg) > 0.0001 ||
+      flipH === true ||
+      flipV === true ||
+      forceOpaque === true;
 
     const sourceBase = sourceTexture?.baseTexture;
     if (sourceBase) {
@@ -554,8 +769,28 @@ export class ShaderManager {
       sourceBase.scaleMode = PIXI.SCALE_MODES.LINEAR;
       sourceBase.mipmap = PIXI.MIPMAP_MODES.OFF;
       sourceBase.update?.();
+      if (sourceBase.valid !== true) {
+        debugLog(this.moduleId, "preview capture texture: source base not valid", {
+          cacheSourceKey,
+          needsTransform,
+          source: getTextureDebugInfo(sourceTexture, 1024),
+        });
+        // Keep returning the source texture so preview channels can become valid
+        // once the asset finishes loading, instead of hard-falling to null.
+        return sourceTexture;
+      }
     }
-    if (!needsTransform) return sourceTexture;
+    if (!needsTransform) {
+      debugLog(this.moduleId, "preview capture texture: passthrough", {
+        cacheSourceKey,
+        rotationDeg,
+        flipH,
+        flipV,
+        forceOpaque,
+        source: getTextureDebugInfo(sourceTexture, 1024),
+      });
+      return sourceTexture;
+    }
 
     let cacheKey = null;
     if (cacheSourceKey) {
@@ -564,15 +799,97 @@ export class ShaderManager {
         Number(rotationDeg).toFixed(4),
         flipH ? "1" : "0",
         flipV ? "1" : "0",
+        forceOpaque ? "1" : "0",
       ].join("|");
       const cached = this._previewCaptureTextureCache.get(cacheKey);
-      if (cached?.valid) return cached;
+      const cachedBaseValid = cached?.baseTexture?.valid === true || cached?.valid === true;
+      const cachedIsLegacyRenderTexture = cached instanceof PIXI.RenderTexture;
+      if (cachedBaseValid && !cachedIsLegacyRenderTexture) {
+        debugLog(this.moduleId, "preview capture texture: cache hit", {
+          cacheKey,
+          texture: getTextureDebugInfo(cached, 1024),
+        });
+        return cached;
+      }
+      if (cachedIsLegacyRenderTexture) {
+        debugLog(this.moduleId, "preview capture texture: cache bypass legacy renderTexture", {
+          cacheKey,
+          texture: getTextureDebugInfo(cached, 1024),
+        });
+      }
     }
 
-    const renderer = canvas?.app?.renderer;
-    if (!renderer) return sourceTexture;
-
     const [width, height] = getTextureSize(sourceTexture, 1024);
+
+    // Use CPU canvas transform for image-backed textures so the resulting texture
+    // can be sampled by any renderer context (editor/library preview renderers).
+    const sourceElement = sourceBase?.resource?.source ?? null;
+    if (sourceElement && typeof document !== "undefined") {
+      try {
+        const canvasEl = document.createElement("canvas");
+        canvasEl.width = Math.max(1, Math.round(width));
+        canvasEl.height = Math.max(1, Math.round(height));
+        const ctx = canvasEl.getContext("2d", { alpha: true });
+        if (ctx) {
+          ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+          ctx.save();
+          ctx.translate(canvasEl.width * 0.5, canvasEl.height * 0.5);
+          ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+          ctx.rotate((rotationDeg * Math.PI) / 180);
+          ctx.drawImage(
+            sourceElement,
+            -canvasEl.width * 0.5,
+            -canvasEl.height * 0.5,
+            canvasEl.width,
+            canvasEl.height,
+          );
+          ctx.restore();
+
+          if (forceOpaque) {
+            const img = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
+            const data = img.data;
+            for (let i = 3; i < data.length; i += 4) data[i] = 255;
+            ctx.putImageData(img, 0, 0);
+          }
+
+          const transformed = PIXI.Texture.from(canvasEl);
+          const transformedBase = transformed?.baseTexture;
+          if (transformedBase) {
+            transformedBase.wrapMode = PIXI.WRAP_MODES.CLAMP;
+            transformedBase.scaleMode = PIXI.SCALE_MODES.LINEAR;
+            transformedBase.mipmap = PIXI.MIPMAP_MODES.OFF;
+            transformedBase.update?.();
+          }
+          if (cacheKey) this._previewCaptureTextureCache.set(cacheKey, transformed);
+          debugLog(this.moduleId, "preview capture texture: transformed (canvas)", {
+            cacheKey,
+            rotationDeg,
+            flipH,
+            flipV,
+            forceOpaque,
+            source: getTextureDebugInfo(sourceTexture, 1024),
+            target: getTextureDebugInfo(transformed, 1024),
+            targetAlphaSample: this._debugSampleTextureAlpha(transformed, 16),
+          });
+          return transformed;
+        }
+      } catch (err) {
+        debugLog(this.moduleId, "preview capture texture: canvas transform failed", {
+          cacheSourceKey,
+          message: String(err?.message ?? err),
+        });
+      }
+    }
+
+    // Fallback path for non-image-backed textures.
+    const renderer = canvas?.app?.renderer;
+    if (!renderer) {
+      debugLog(this.moduleId, "preview capture texture: no renderer", {
+        cacheSourceKey,
+      });
+      return sourceTexture;
+    }
+
     const target = PIXI.RenderTexture.create({
       width,
       height,
@@ -586,6 +903,14 @@ export class ShaderManager {
     sprite.y = height * 0.5;
     sprite.scale.set(flipH ? -1 : 1, flipV ? -1 : 1);
     sprite.rotation = (rotationDeg * Math.PI) / 180;
+    if (forceOpaque) {
+      sprite.filters = [
+        new PIXI.Filter(
+          undefined,
+          "varying vec2 vTextureCoord;uniform sampler2D uSampler;void main(){vec4 c=texture2D(uSampler,vTextureCoord);gl_FragColor=vec4(c.rgb,1.0);}",
+        ),
+      ];
+    }
     stage.addChild(sprite);
     try {
       renderer.render(stage, { renderTexture: target, clear: true });
@@ -597,8 +922,22 @@ export class ShaderManager {
         base.update?.();
       }
       if (cacheKey) this._previewCaptureTextureCache.set(cacheKey, target);
+      debugLog(this.moduleId, "preview capture texture: transformed (renderTexture)", {
+        cacheKey,
+        rotationDeg,
+        flipH,
+        flipV,
+        forceOpaque,
+        source: getTextureDebugInfo(sourceTexture, 1024),
+        target: getTextureDebugInfo(target, 1024),
+        targetAlphaSample: this._debugSampleTextureAlpha(target, 16),
+      });
       return target;
-    } catch (_err) {
+    } catch (err) {
+      debugLog(this.moduleId, "preview capture texture: transform failed", {
+        cacheSourceKey,
+        message: String(err?.message ?? err),
+      });
       target.destroy(true);
       return sourceTexture;
     } finally {
@@ -943,6 +1282,9 @@ export class ShaderManager {
       targetType = null,
       targetId = null,
       useLiveCapturePreview = false,
+      captureRotationDeg = null,
+      captureFlipHorizontal = null,
+      captureFlipVertical = null,
     } = {},
   ) {
     const perfNow = () => {
@@ -1061,6 +1403,18 @@ export class ShaderManager {
       0,
       Math.min(1, toFiniteNumber(runtimeDefaults.alpha, 1)),
     );
+    const explicitCaptureRotation = toFiniteNumber(captureRotationDeg, Number.NaN);
+    const effectiveCaptureRotationDeg = Number.isFinite(explicitCaptureRotation)
+      ? explicitCaptureRotation
+      : toFiniteNumber(runtimeDefaults?.captureRotationDeg, 0);
+    const effectiveCaptureFlipHorizontal =
+      captureFlipHorizontal === null || captureFlipHorizontal === undefined
+        ? parseBooleanLike(runtimeDefaults?.captureFlipHorizontal)
+        : parseBooleanLike(captureFlipHorizontal);
+    const effectiveCaptureFlipVertical =
+      captureFlipVertical === null || captureFlipVertical === undefined
+        ? parseBooleanLike(runtimeDefaults?.captureFlipVertical)
+        : parseBooleanLike(captureFlipVertical);
     const enableLiveCapturePreview = useLiveCapturePreview === true;
     const previewTarget = enableLiveCapturePreview
       ? this._resolvePreviewTarget({ targetType, targetId })
@@ -1072,17 +1426,48 @@ export class ShaderManager {
       ? this._buildLiveScenePreviewChannel(size)
       : null;
     const previewSceneTexture =
-      previewSceneChannel?.texture ?? PREVIEW_SCENE_CAPTURE_TEXTURE;
+      previewSceneChannel?.texture ?? this._getPreviewSceneCaptureTexturePath();
+    const previewPlaceableTexture = this._getPreviewPlaceableCaptureTexturePath();
+    const previewHasSceneCapture = channelConfigHasMode(
+      previewDefinition.channelConfig,
+      "sceneCapture",
+    );
+    const previewHasTokenTileCapture = channelConfigHasMode(
+      previewDefinition.channelConfig,
+      "tokenTileImage",
+    );
+    const previewTokenTileFallback =
+      previewHasTokenTileCapture && !previewTarget?.targetId;
+    const previewForceOpaqueCaptureAlpha =
+      previewUseGradientMask !== true &&
+      (previewHasSceneCapture || previewTokenTileFallback);
+    const previewCaptureMaskTextureCandidate =
+      previewUseGradientMask !== true && previewTokenTileFallback
+        ? this._getTransformedPreviewCaptureTexture(previewPlaceableTexture, {
+                        captureRotationDeg: effectiveCaptureRotationDeg,
+            captureFlipHorizontal: effectiveCaptureFlipHorizontal,
+            captureFlipVertical: effectiveCaptureFlipVertical,
+            forceOpaqueAlpha: false,
+          })
+        : null;
+    const previewCaptureMaskTexture =
+      previewCaptureMaskTextureCandidate?.baseTexture?.valid === true
+        ? previewCaptureMaskTextureCandidate
+        : null;
     const tMakeShader0 = perfNow();
     const shaderResult = this.makeShader({
-      ...runtimeDefaults,
+            ...runtimeDefaults,
+      captureRotationDeg: effectiveCaptureRotationDeg,
+      captureFlipHorizontal: effectiveCaptureFlipHorizontal,
+      captureFlipVertical: effectiveCaptureFlipVertical,
       shaderId: previewRecord.id,
       definitionOverride: previewDefinition,
       resolution: [size, size],
       // Keep non-gradient previews square; gradient previews still show radial falloff.
+      // For token/tile capture fallback previews, use preview placeable alpha as the mask.
       maskTexture: previewUseGradientMask
         ? undefined
-        : getSolidTexture([255, 255, 255, 255], 2),
+        : previewCaptureMaskTexture ?? getSolidTexture([255, 255, 255, 255], 2),
       useGradientMask: previewUseGradientMask,
       gradientMaskFadeStart: toFiniteNumber(
         runtimeDefaults.gradientMaskFadeStart,
@@ -1090,8 +1475,9 @@ export class ShaderManager {
       ),
       alpha: previewAlpha,
       previewSceneCaptureTexture: previewSceneTexture,
-      previewPlaceableTexture: previewSceneTexture,
+      previewPlaceableTexture: previewPlaceableTexture,
       previewMode: true,
+      previewForceOpaqueCaptureAlpha,
       targetType: previewTarget.targetType,
       targetId: previewTarget.targetId,
       debugMode: 0,
@@ -1103,6 +1489,57 @@ export class ShaderManager {
       iDate: [0, 0, 0, 0],
     });
     phaseMs.makeShader = perfNow() - tMakeShader0;
+    const previewMaskSource = !previewUseGradientMask
+      ? previewCaptureMaskTexture?.baseTexture?.valid === true
+        ? "captureMaskTexture"
+        : "solidFallback"
+      : "gradientMask";
+    const previewChannelDiagnostics = {};
+    for (const index of CHANNEL_INDICES) {
+      const key = `iChannel${index}`;
+      const tex = shaderResult?.shader?.uniforms?.[key] ?? null;
+      previewChannelDiagnostics[key] = {
+        texture: getTextureDebugInfo(tex, size),
+        alphaSample: this._debugSampleTextureAlpha(tex, 16),
+      };
+    }
+    debugLog(this.moduleId, "shader preview alpha policy", {
+      shaderId: previewRecord.id,
+      previewUseGradientMask,
+      previewForceOpaqueCaptureAlpha,
+      cpfxPreserveTransparent: shaderResult?.shader?.uniforms?.cpfxPreserveTransparent,
+      cpfxForceOpaqueCaptureAlpha: shaderResult?.shader?.uniforms?.cpfxForceOpaqueCaptureAlpha,
+      iChannelResolution: shaderResult?.shader?.uniforms?.iChannelResolution ?? [],
+      previewSceneTexture: getTextureDebugInfo(previewSceneTexture, size),
+      previewPlaceableTexture,
+      previewTarget,
+      previewHasSceneCapture,
+      previewHasTokenTileCapture,
+      previewTokenTileFallback,
+      previewMaskSource,
+      effectiveCaptureRotationDeg,
+      effectiveCaptureFlipHorizontal,
+      effectiveCaptureFlipVertical,
+      previewCaptureMaskTexture: getTextureDebugInfo(previewCaptureMaskTexture, size),
+      previewCaptureMaskTextureCandidate: getTextureDebugInfo(
+        previewCaptureMaskTextureCandidate,
+        size,
+      ),
+      channelDiagnostics: previewChannelDiagnostics,
+      runtimeDefaults: {
+        scale: runtimeDefaults?.scale,
+        scaleX: runtimeDefaults?.scaleX,
+        scaleY: runtimeDefaults?.scaleY,
+        alpha: runtimeDefaults?.alpha,
+        intensity: runtimeDefaults?.intensity,
+      },
+      shaderUniforms: {
+        globalAlpha: shaderResult?.shader?.uniforms?.globalAlpha,
+        intensity: shaderResult?.shader?.uniforms?.intensity,
+        shaderScale: shaderResult?.shader?.uniforms?.shaderScale,
+        shaderScaleXY: shaderResult?.shader?.uniforms?.shaderScaleXY,
+      },
+    });
 
     const shader = shaderResult.shader;
     const previewBloom = parseBooleanLike(
@@ -1159,6 +1596,7 @@ export class ShaderManager {
     phaseMs.bufferSetup = perfNow() - tBuffers0;
 
     let pendingBufferDt = 0;
+    let debugRenderSampleLogged = false;
     const totalMs = perfNow() - tStart;
     debugLog(this.moduleId, "shader preview timings", {
       shaderId: previewRecord.id,
@@ -1202,6 +1640,92 @@ export class ShaderManager {
         }
         if (target) renderer.render(container, { renderTexture: target, clear: true });
         else renderer.render(container, { clear: true });
+
+        if (!debugRenderSampleLogged && isDebugLoggingEnabled(this.moduleId)) {
+          const sampleSize = Math.max(32, Math.min(256, Math.round(Number(size) || 128)));
+          let sampledTexture = target ?? null;
+          let sampledOwnTarget = null;
+          if (!sampledTexture) {
+            sampledOwnTarget = PIXI.RenderTexture.create({
+              width: sampleSize,
+              height: sampleSize,
+              resolution: 1,
+              scaleMode: PIXI.SCALE_MODES.LINEAR,
+            });
+            renderer.render(container, { renderTexture: sampledOwnTarget, clear: true });
+            sampledTexture = sampledOwnTarget;
+          }
+
+          const outputAlphaSample = sampledTexture
+            ? this._debugSampleTextureAlpha(sampledTexture, 16, renderer)
+            : null;
+
+          let baseMaskAlphaSample = null;
+          let rawShaderAlphaSample = null;
+          let forcedShaderAlphaSample = null;
+          let finalAlphaSample = null;
+          const hasDebugUniform =
+            shader?.uniforms && Object.prototype.hasOwnProperty.call(shader.uniforms, "debugMode");
+          const priorDebugMode = hasDebugUniform
+            ? Number(shader.uniforms.debugMode ?? 0)
+            : 0;
+          if (hasDebugUniform) {
+            const debugTarget = PIXI.RenderTexture.create({
+              width: sampleSize,
+              height: sampleSize,
+              resolution: 1,
+              scaleMode: PIXI.SCALE_MODES.LINEAR,
+            });
+            try {
+              shader.uniforms.debugMode = 2;
+              renderer.render(container, { renderTexture: debugTarget, clear: true });
+              baseMaskAlphaSample = this._debugSampleTextureAlpha(debugTarget, 16, renderer);
+
+              shader.uniforms.debugMode = 3;
+              renderer.render(container, { renderTexture: debugTarget, clear: true });
+              rawShaderAlphaSample = this._debugSampleTextureAlpha(debugTarget, 16, renderer);
+
+              shader.uniforms.debugMode = 4;
+              renderer.render(container, { renderTexture: debugTarget, clear: true });
+              forcedShaderAlphaSample = this._debugSampleTextureAlpha(debugTarget, 16, renderer);
+
+              shader.uniforms.debugMode = 5;
+              renderer.render(container, { renderTexture: debugTarget, clear: true });
+              finalAlphaSample = this._debugSampleTextureAlpha(debugTarget, 16, renderer);
+            } catch (err) {
+              debugLog(this.moduleId, "shader preview render sample debug pass failed", {
+                shaderId: previewRecord.id,
+                message: String(err?.message ?? err),
+              });
+            } finally {
+              shader.uniforms.debugMode = Number.isFinite(priorDebugMode)
+                ? priorDebugMode
+                : 0;
+              debugTarget.destroy(true);
+            }
+          }
+
+          const renderSampleStats = {
+            shaderId: previewRecord.id,
+            reason: String(reason || "unspecified"),
+            targetProvided: !!target,
+            hasDebugUniform,
+            priorDebugMode,
+            outputAlphaSample,
+            baseMaskAlphaSample,
+            rawShaderAlphaSample,
+            forcedShaderAlphaSample,
+            finalAlphaSample,
+          };
+          debugLog(this.moduleId, "shader preview render sample", {
+            ...renderSampleStats,
+            outputTexture: getTextureDebugInfo(sampledTexture, size),
+          });
+          debugLog(this.moduleId, "shader preview render sample stats", renderSampleStats);
+
+          if (sampledOwnTarget) sampledOwnTarget.destroy(true);
+          debugRenderSampleLogged = true;
+        }
       },
       destroy: () => {
         for (const runtimeBuffer of runtimeBuffers) runtimeBuffer.destroy?.();
@@ -1383,8 +1907,8 @@ export class ShaderManager {
       colorA: 0xffffff,
       colorB: 0xffffff,
       captureScale: 1,
-      previewSceneCaptureTexture: PREVIEW_SCENE_CAPTURE_TEXTURE,
-      previewPlaceableTexture: PREVIEW_SCENE_CAPTURE_TEXTURE,
+      previewSceneCaptureTexture: this._getPreviewSceneCaptureTexturePath(),
+      previewPlaceableTexture: this._getPreviewPlaceableCaptureTexturePath(),
       previewMode: true,
       debugMode: 0,
       noiseOffset: [0, 0],
@@ -1428,6 +1952,8 @@ export class ShaderManager {
         }
         if (target) renderer.render(container, { renderTexture: target, clear: true });
         else renderer.render(container, { clear: true });
+
+
       },
       destroy: () => {
         for (const runtimeBuffer of runtimeBuffers) runtimeBuffer.destroy?.();
@@ -2051,11 +2577,8 @@ export class ShaderManager {
           captureRotationDeg,
           captureFlipHorizontal,
           captureFlipVertical,
-        }) ??
-        (typeof previewSceneTextureInput === "string" &&
-        String(previewSceneTextureInput).trim()
-          ? PIXI.Texture.from(String(previewSceneTextureInput).trim())
-          : null);
+          forceOpaqueAlpha: true,
+        });
       if (previewSceneTexture) {
         const texture = previewSceneTexture;
         const base = texture?.baseTexture;
@@ -2065,9 +2588,21 @@ export class ShaderManager {
           base.mipmap = PIXI.MIPMAP_MODES.OFF;
           base.update?.();
         }
+        const resolution = getTextureSize(texture, 1024);
+        debugLog(this.moduleId, "resolve sceneCapture channel: preview texture", {
+          mode,
+          previewMode: options?.previewMode === true,
+          captureRotationDeg,
+          captureFlipHorizontal,
+          captureFlipVertical,
+          previewSceneTextureInput: typeof previewSceneTextureInput === "string" ? previewSceneTextureInput : null,
+          texture: getTextureDebugInfo(texture, 1024),
+          resolution,
+          alphaSample: this._debugSampleTextureAlpha(texture, 16),
+        });
         return {
           texture,
-          resolution: getTextureSize(texture, 1024),
+          resolution,
           runtimeCapture: false,
           runtimeCaptureSize: 0,
           runtimeCaptureChannels: [],
@@ -2076,6 +2611,12 @@ export class ShaderManager {
         };
       }
       const texture = getNoiseTexture(IMPORTED_NOISE_TEXTURE_SIZE, "rgb");
+      debugLog(this.moduleId, "resolve sceneCapture channel: runtime fallback", {
+        mode,
+        previewMode: options?.previewMode === true,
+        texture: getTextureDebugInfo(texture, IMPORTED_NOISE_TEXTURE_SIZE),
+        alphaSample: this._debugSampleTextureAlpha(texture, 16),
+      });
       return {
         texture,
         resolution: [512, 512],
@@ -2096,7 +2637,7 @@ export class ShaderManager {
       const previewTextureInput =
         options?.previewPlaceableTexture ??
           options?.previewSceneCaptureTexture ??
-          PREVIEW_SCENE_CAPTURE_TEXTURE;
+          this._getPreviewPlaceableCaptureTexturePath();
       const previewTexturePath =
         typeof previewTextureInput === "string"
           ? String(previewTextureInput).trim()
@@ -2139,9 +2680,22 @@ export class ShaderManager {
           captureFlipHorizontal,
           captureFlipVertical,
         });
+        const texture = runtimeImageChannel.texture;
+        const resolution = [captureSize, captureSize];
+        debugLog(this.moduleId, "resolve tokenTileImage channel: placeable runtime channel", {
+          targetType,
+          targetId,
+          isPreview,
+          captureRotationDeg,
+          captureFlipHorizontal,
+          captureFlipVertical,
+          texture: getTextureDebugInfo(texture, captureSize),
+          resolution,
+          alphaSample: this._debugSampleTextureAlpha(texture, 16),
+        });
         return {
-          texture: runtimeImageChannel.texture,
-          resolution: [captureSize, captureSize],
+          texture,
+          resolution,
           runtimeCapture: false,
           runtimeCaptureSize: 0,
           runtimeCaptureChannels: [],
@@ -2167,8 +2721,8 @@ export class ShaderManager {
             captureRotationDeg,
             captureFlipHorizontal,
             captureFlipVertical,
-          }) ??
-          (previewTexturePath ? PIXI.Texture.from(previewTexturePath) : null);
+            forceOpaqueAlpha: false,
+          });
         const base = texture?.baseTexture;
         if (base) {
           base.wrapMode = PIXI.WRAP_MODES.CLAMP;
@@ -2176,10 +2730,31 @@ export class ShaderManager {
           base.mipmap = PIXI.MIPMAP_MODES.OFF;
           base.update?.();
         }
-        if (!texture) return emptyResult;
+        if (!texture) {
+          debugLog(this.moduleId, "resolve tokenTileImage channel: missing preview texture object", {
+            targetType: targetType || null,
+            targetId: targetId || null,
+            isPreview,
+            previewTexturePath,
+          });
+          return emptyResult;
+        }
+        const resolution = getTextureSize(texture, PLACEABLE_IMAGE_PREVIEW_SIZE);
+        debugLog(this.moduleId, "resolve tokenTileImage channel: preview fallback resolved", {
+          targetType: targetType || null,
+          targetId: targetId || null,
+          isPreview,
+          previewTexturePath,
+          captureRotationDeg,
+          captureFlipHorizontal,
+          captureFlipVertical,
+          texture: getTextureDebugInfo(texture, PLACEABLE_IMAGE_PREVIEW_SIZE),
+          resolution,
+          alphaSample: this._debugSampleTextureAlpha(texture, 16),
+        });
         return {
           texture,
-          resolution: getTextureSize(texture, PLACEABLE_IMAGE_PREVIEW_SIZE),
+          resolution,
           runtimeCapture: false,
           runtimeCaptureSize: 0,
           runtimeCaptureChannels: [],
@@ -2372,6 +2947,8 @@ export class ShaderManager {
     ];
     uniforms.globalAlpha = Number.isFinite(cfg.alpha) ? cfg.alpha : 1.0;
     uniforms.cpfxPreserveTransparent = cfg.useGradientMask === true ? 0.0 : 1.0;
+    uniforms.cpfxForceOpaqueCaptureAlpha =
+      cfg.previewForceOpaqueCaptureAlpha === true ? 1.0 : 0.0;
 
     if (def.requiresResolution) {
       uniforms.resolution = cfg.resolution ?? [1, 1];
@@ -2423,11 +3000,33 @@ export class ShaderManager {
           },
         );
         uniforms[key] = resolved.texture;
+        const resolvedWidth = Number(resolved?.resolution?.[0] ?? 1);
+        const resolvedHeight = Number(resolved?.resolution?.[1] ?? 1);
         channelResolution.push(
-          resolved.resolution[0],
-          resolved.resolution[1],
+          resolvedWidth,
+          resolvedHeight,
           1,
         );
+        if (isDebugLoggingEnabled(this.moduleId)) {
+          debugLog(this.moduleId, "makeShader imported channel bind", {
+            shaderId: def.id,
+            previewMode: cfg.previewMode === true,
+            channel: index,
+            uniformKey: key,
+            requestedMode: normalizeChannelMode(channelCfg?.mode ?? "none"),
+            effectiveMode: normalizeChannelMode(effectiveChannelCfg?.mode ?? "none"),
+            targetType: cfg.targetType ?? null,
+            targetId: cfg.targetId ?? null,
+            resolution: [resolvedWidth, resolvedHeight],
+            runtimeCapture: resolved.runtimeCapture === true,
+            runtimeCaptureSize: resolved.runtimeCaptureSize ?? 0,
+            runtimeCaptureChannelCount: (resolved.runtimeCaptureChannels ?? []).length,
+            runtimeBufferCount: (resolved.runtimeBuffers ?? []).length,
+            runtimeImageChannelCount: (resolved.runtimeImageChannels ?? []).length,
+            texture: getTextureDebugInfo(resolved.texture, resolvedWidth || 256),
+            alphaSample: this._debugSampleTextureAlpha(resolved.texture, 16),
+          });
+        }
         if (resolved.runtimeCapture) {
           runtimeChannels.push({
             channel: index,
@@ -2458,6 +3057,11 @@ export class ShaderManager {
         }
       }
       uniforms.iChannelResolution = channelResolution;
+      debugLog(this.moduleId, "makeShader imported channel resolutions", {
+        shaderId: def.id,
+        previewMode: cfg.previewMode === true,
+        iChannelResolution: channelResolution,
+      });
     }
 
     const shader = PIXI.Shader.from(SHADER_VERT, fragment, uniforms);
@@ -2952,4 +3556,22 @@ export class ShaderManager {
     return true;
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
