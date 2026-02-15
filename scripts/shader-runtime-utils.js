@@ -11,12 +11,27 @@ export function resolveShaderWorldLayer(moduleId, cfg, { allowTokenLayer = false
     ? (game.settings.get(moduleId, "layer") ?? "interfacePrimary")
     : shaderLayerSetting;
 
-  const useTokenLayer = allowTokenLayer && layerNameRaw === "token" && tokenTarget;
-  const worldLayer = useTokenLayer
-    ? tokenTarget
-    : layerNameRaw === "effects" ? canvas.effects
-    : layerNameRaw === "interface" ? canvas.interface
-    : (canvas.interface.primary ?? canvas.interface);
+  const normalizeLayerName = (value) => {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "interfacePrimary";
+    if (raw === "token") return "interfacePrimary";
+    if (raw === "baseEffects") return "belowTokens";
+    if (raw === "belowTiles") return "belowTokens";
+    if (raw === "effects") return "belowTokens";
+    if (raw === "interface") return "interfacePrimary";
+    if (raw === "drawingsLayer") return "drawings";
+    return raw;
+  };
+
+  const layerName = normalizeLayerName(layerNameRaw);
+
+  const interfaceLayer = canvas?.interface?.primary ?? canvas?.interface;
+
+  const worldLayer = (layerName === "belowTokens")
+    ? interfaceLayer
+    : (layerName === "drawings")
+      ? canvas.drawings
+      : interfaceLayer;
 
   if (worldLayer?.sortableChildren !== undefined) worldLayer.sortableChildren = true;
   return worldLayer;
@@ -203,6 +218,10 @@ export function destroyRegionClusterRuntime(cluster) {
   }
   cluster?.customMaskTexture?.destroy(true);
 }
+
+
+
+
 
 
 

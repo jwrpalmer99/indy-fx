@@ -156,6 +156,19 @@ export function createMenus({ moduleId, shaderManager }) {
     return asText.includes(".") ? asText : `${asText}.0`;
   }
 
+  function parseBooleanLiteral(value) {
+    let text = String(value ?? "").trim().toLowerCase();
+    const ctor = text.match(/^bool\s*\(\s*(.*?)\s*\)$/);
+    if (ctor) text = String(ctor[1] ?? "").trim().toLowerCase();
+    if (text === "true" || text === "1") return true;
+    if (text === "false" || text === "0") return false;
+    return null;
+  }
+
+  function formatBooleanLiteral(value) {
+    return value ? "true" : "false";
+  }
+
   function escapeRegExp(value) {
     return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
@@ -202,6 +215,24 @@ export function createMenus({ moduleId, shaderManager }) {
         type,
         name,
         value: Number(m[3]),
+      });
+    }
+
+    const boolConstRe =
+      /const\s+bool\s+([A-Za-z_]\w*)\s*=\s*(true|false|1|0|bool\s*\(\s*(?:true|false|1|0)\s*\))\s*;/gi;
+    while ((m = boolConstRe.exec(text))) {
+      const name = String(m[1]);
+      const parsed = parseBooleanLiteral(m[2]);
+      if (parsed === null) continue;
+      const key = `bool:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        kind: "scalar",
+        declaration: "const",
+        type: "bool",
+        name,
+        value: parsed,
       });
     }
 
@@ -284,6 +315,38 @@ export function createMenus({ moduleId, shaderManager }) {
         continue;
       }
 
+      const typedBool = rawExpr.match(/^bool\s*\(\s*(true|false|1|0)\s*\)\s*$/i);
+      if (typedBool) {
+        const value = parseBooleanLiteral(typedBool[1]);
+        if (value === null) continue;
+        const key = `define:bool:${name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push({
+          kind: "scalar",
+          declaration: "define",
+          type: "bool",
+          name,
+          value,
+        });
+        continue;
+      }
+
+      const plainBool = parseBooleanLiteral(rawExpr);
+      if (plainBool !== null && /^(true|false)$/i.test(rawExpr)) {
+        const key = `define:bool:${name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push({
+          kind: "scalar",
+          declaration: "define",
+          type: "bool",
+          name,
+          value: plainBool,
+        });
+        continue;
+      }
+
       const plainScalar = rawExpr.match(
         /^([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?|[-+]?\d+)\s*$/,
       );
@@ -305,7 +368,9 @@ export function createMenus({ moduleId, shaderManager }) {
       }
     }
 
-    result.sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" }));
+    result.sort((a, b) =>
+      String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" }),
+    );
     return result;
   }
 
@@ -319,7 +384,10 @@ export function createMenus({ moduleId, shaderManager }) {
       const escapedName = escapeRegExp(name);
 
       if (variable?.kind === "scalar") {
-        const valueText = formatScalarNumber(variable?.value, type);
+        const valueText =
+          type === "bool"
+            ? formatBooleanLiteral(Boolean(variable?.value))
+            : formatScalarNumber(variable?.value, type);
         if (declaration === "define") {
           const re = new RegExp(
             `(^[ \\t]*#define[ \\t]+${escapedName}[ \\t]+)([^\\r\\n]*)(\\r?\\n|$)`,
@@ -346,8 +414,13 @@ export function createMenus({ moduleId, shaderManager }) {
           );
           next = next.replace(re, `$1${valueText}$3`);
         } else {
-          const re = new RegExp(`(const\\s+${type}\\s+${escapedName}\\s*=\\s*${type}\\s*\\()([\\s\\S]*?)(\\)\\s*;)`);
-          next = next.replace(re, `$1${clipped.map((v) => formatVectorNumber(v)).join(", ")}$3`);
+          const re = new RegExp(
+            `(const\\s+${type}\\s+${escapedName}\\s*=\\s*${type}\\s*\\()([\\s\\S]*?)(\\)\\s*;)`,
+          );
+          next = next.replace(
+            re,
+            `$1${clipped.map((v) => formatVectorNumber(v)).join(", ")}$3`,
+          );
         }
       }
     }
@@ -1110,10 +1183,9 @@ export function createMenus({ moduleId, shaderManager }) {
       });
       const layerChoices = {
         inherit: "inherit from FX layer",
-        token: "token (attached to token)",
         interfacePrimary: "interfacePrimary",
-        interface: "interface",
-        effects: "effects",
+        belowTokens: "Below Tokens (interface, under token z-order)",
+        drawings: "DrawingsLayer (above tokens)",
       };
       return renderTemplate(
         `modules/${MODULE_ID}/templates/shader-edit-full.html`,
@@ -1306,7 +1378,11 @@ export function createMenus({ moduleId, shaderManager }) {
         syncUi();
       };
       const dlg = new foundry.applications.api.DialogV2({
-        window: { title: `Edit iChannel${channelIndex}` },
+        window: { title: `Edit iChannel${channelIndex}`, resizable: true },
+        position: {
+          width: 900,
+          height: Math.max(520, Math.floor(window.innerHeight * 0.8)),
+        },
         content,
         buttons: [
           {
@@ -1348,6 +1424,157 @@ export function createMenus({ moduleId, shaderManager }) {
       bindUi(dlg);
       setTimeout(() => bindUi(dlg), 0);
     }
+    _injectTokenAlphaIntoMainImage(sourceText) {
+      const source = String(sourceText ?? "");
+      if (!source.trim()) {
+        return { changed: false, source, reason: "Shader source is empty." };
+      }
+
+      const mainImageMatch = /void\s+mainImage\s*\([^)]*\)\s*\{/.exec(source);
+      if (!mainImageMatch) {
+        return {
+          changed: false,
+          source,
+          reason: "Could not find void mainImage(...) in shader source.",
+        };
+      }
+
+      const bodyOpen =
+        mainImageMatch.index +
+        mainImageMatch[0].lastIndexOf("{");
+
+      const findMatchingBrace = (text, openIndex) => {
+        let depth = 1;
+        let inLine = false;
+        let inBlock = false;
+        let inSingle = false;
+        let inDouble = false;
+
+        for (let i = openIndex + 1; i < text.length; i += 1) {
+          const ch = text[i];
+          const next = text[i + 1];
+
+          if (inLine) {
+            if (ch === "\n") inLine = false;
+            continue;
+          }
+          if (inBlock) {
+            if (ch === "*" && next === "/") {
+              inBlock = false;
+              i += 1;
+            }
+            continue;
+          }
+          if (inSingle) {
+            if (ch === "\\") {
+              i += 1;
+              continue;
+            }
+            if (ch === "'") inSingle = false;
+            continue;
+          }
+          if (inDouble) {
+            if (ch === "\\") {
+              i += 1;
+              continue;
+            }
+            if (ch === '"') inDouble = false;
+            continue;
+          }
+
+          if (ch === "/" && next === "/") {
+            inLine = true;
+            i += 1;
+            continue;
+          }
+          if (ch === "/" && next === "*") {
+            inBlock = true;
+            i += 1;
+            continue;
+          }
+          if (ch === "'") {
+            inSingle = true;
+            continue;
+          }
+          if (ch === '"') {
+            inDouble = true;
+            continue;
+          }
+
+          if (ch === "{") {
+            depth += 1;
+            continue;
+          }
+          if (ch === "}") {
+            depth -= 1;
+            if (depth === 0) return i;
+          }
+        }
+
+        return -1;
+      };
+
+      const bodyClose = findMatchingBrace(source, bodyOpen);
+      if (bodyClose < 0) {
+        return {
+          changed: false,
+          source,
+          reason: "Could not parse mainImage function body.",
+        };
+      }
+
+      const body = source.slice(bodyOpen + 1, bodyClose);
+      const hasStart =
+        /vec2\s+uvToken\s*=\s*fragCoord\.xy\s*\/\s*iResolution\.xy\s*;/.test(
+          body,
+        ) &&
+        /vec4\s+fragToken\s*=\s*texture\s*\(\s*iChannel0\s*,\s*uvToken\s*\)\s*;/.test(
+          body,
+        );
+      const hasEnd =
+        /fragColor\s*=\s*vec4\s*\(\s*vec3\s*\(\s*fragColor\s*\)\s*,\s*fragToken\.a\s*\)\s*;/.test(
+          body,
+        );
+
+      if (hasStart && hasEnd) {
+        return {
+          changed: false,
+          source,
+          reason: "Token alpha injection is already present in mainImage.",
+        };
+      }
+
+      const functionLineStart = source.lastIndexOf("\n", mainImageMatch.index);
+      const functionIndent =
+        /^[ \t]*/.exec(
+          source.slice(functionLineStart >= 0 ? functionLineStart + 1 : 0, mainImageMatch.index),
+        )?.[0] ?? "";
+
+      const bodyIndentMatch = /(?:\r?\n)([ \t]*)\S/.exec(body);
+      const indent = bodyIndentMatch?.[1] ?? `${functionIndent}  `;
+
+      let nextBody = body;
+
+      if (!hasStart) {
+        const startLines =
+          `${indent}vec2 uvToken = fragCoord.xy / iResolution.xy;\n\n` +
+          `${indent}vec4 fragToken= texture(iChannel0, uvToken);`;
+        const leading = nextBody.startsWith("\n") || nextBody.startsWith("\r\n") ? "" : "\n";
+        nextBody = `${leading}${startLines}\n${nextBody}`;
+      }
+
+      if (!hasEnd) {
+        const tail = /\r?\n\s*$/.test(nextBody) ? "" : "\n";
+        nextBody = `${nextBody}${tail}${indent}fragColor = vec4(vec3(fragColor), fragToken.a);\n`;
+      }
+
+      const nextSource =
+        source.slice(0, bodyOpen + 1) +
+        nextBody +
+        source.slice(bodyClose);
+
+      return { changed: nextSource !== source, source: nextSource };
+    }
     async _openShaderVariableEditor(root, refreshPreview) {
       const sourceInput = root?.querySelector?.('[name="editSource"]');
       if (!(sourceInput instanceof HTMLTextAreaElement)) {
@@ -1357,7 +1584,7 @@ export function createMenus({ moduleId, shaderManager }) {
 
       const variables = extractEditableShaderVariables(sourceInput.value);
       if (!variables.length) {
-        ui.notifications.info("No editable const/#define float/int/vec3/vec4 variables detected.");
+        ui.notifications.info("No editable const/#define bool/float/int/vec3/vec4 variables detected.");
         return;
       }
 
@@ -1366,6 +1593,20 @@ export function createMenus({ moduleId, shaderManager }) {
           const name = String(variable.name ?? "");
           const type = String(variable.type ?? "");
           if (variable.kind === "scalar") {
+            if (type === "bool") {
+              const isChecked = Boolean(variable.value);
+              return `
+                <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
+                  <label>${name} <small style="opacity:.8;">(${type})</small></label>
+                  <div class="form-fields">
+                    <label class="checkbox" style="gap:.35rem;">
+                      <input type="checkbox" name="var_${index}_value" ${isChecked ? "checked" : ""} />
+                      Enabled
+                    </label>
+                  </div>
+                </div>
+              `;
+            }
             return `
               <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
                 <label>${name} <small style="opacity:.8;">(${type})</small></label>
@@ -1399,11 +1640,19 @@ export function createMenus({ moduleId, shaderManager }) {
         })
         .join("");
 
-      const content = `<form class="indy-fx-variable-editor" style="max-height:70vh;overflow-y:auto;padding-right:.25rem;">${rows}</form>`;
+      const content = `<form class="indy-fx-variable-editor" style="max-height:min(72vh, calc(100vh - 220px));overflow-y:auto;overflow-x:hidden;padding-right:.35rem;">${rows}</form>`;
 
       const readDialogVariables = (dialogRoot) => {
         return variables.map((variable, index) => {
           if (variable.kind === "scalar") {
+            if (String(variable.type ?? "") === "bool") {
+              const el = dialogRoot?.querySelector?.(`[name="var_${index}_value"]`);
+              const checked = el instanceof HTMLInputElement ? el.checked : Boolean(variable.value);
+              return {
+                ...variable,
+                value: checked,
+              };
+            }
             const raw = Number(dialogRoot?.querySelector?.(`[name="var_${index}_value"]`)?.value);
             return {
               ...variable,
@@ -1991,6 +2240,36 @@ export function createMenus({ moduleId, shaderManager }) {
           }
         }
 
+        const injectTokenAlphaBtn = root.querySelector(
+          "[data-action='inject-token-alpha']",
+        );
+        if (injectTokenAlphaBtn instanceof HTMLElement) {
+          if (injectTokenAlphaBtn.dataset.indyFxInjectTokenAlphaBound !== "1") {
+            injectTokenAlphaBtn.dataset.indyFxInjectTokenAlphaBound = "1";
+            injectTokenAlphaBtn.addEventListener("click", () => {
+              const sourceInput = root.querySelector('[name="editSource"]');
+              if (!(sourceInput instanceof HTMLTextAreaElement)) {
+                ui.notifications.warn("Shader source editor not found.");
+                return;
+              }
+
+              const injected = this._injectTokenAlphaIntoMainImage(
+                sourceInput.value,
+              );
+              if (!injected.changed) {
+                ui.notifications.info(
+                  injected.reason ?? "Token alpha injection made no changes.",
+                );
+                return;
+              }
+
+              sourceInput.value = String(injected.source ?? sourceInput.value);
+              sourceInput.dispatchEvent(new Event("change", { bubbles: true }));
+              refreshPreview();
+              ui.notifications.info("Token alpha injection applied.");
+            });
+          }
+        }
         const captureThumbnailBtn = root.querySelector(
           "[data-action='capture-editor-thumbnail']",
         );
@@ -3057,5 +3336,6 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
     ShaderLibraryMenu,
   };
 }
+
 
 

@@ -267,7 +267,10 @@
       </section>
 
       <section style="border:1px solid var(--color-border-light-primary,#666);border-radius:8px;padding:0.5rem 0.6rem;background:rgba(0,0,0,0.08);min-height:0;">
-        <h3 style="margin:0 0 0.35rem 0;">Shader Source</h3>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;margin:0 0 0.35rem 0;">
+          <h3 style="margin:0;">Shader Source</h3>
+          <button type="button" data-action="inject-token-alpha" style="white-space:nowrap;">Inject Token Alpha</button>
+        </div>
         <div class="form-fields">
           <textarea name="editSource" rows="13" style="width:100%;font-family:monospace;min-height:16rem;">{{shader.source}}</textarea>
         </div>

@@ -1077,14 +1077,24 @@ export class ShaderManager {
         : this.getDefaultImportedShaderDefaults();
 
     const layerRaw = String(source.layer ?? base.layer ?? "inherit").trim();
+    const layerNormalized = layerRaw === "drawingsLayer"
+      ? "drawings"
+      : (layerRaw === "effects" || layerRaw === "effectsLayer")
+        ? "belowTokens"
+      : layerRaw === "interface"
+          ? "interfacePrimary"
+          : layerRaw === "token"
+            ? "interfacePrimary"
+                    : (layerRaw === "baseEffects" || layerRaw === "belowTiles")
+            ? "belowTokens"
+            : layerRaw;
     const layer = [
       "inherit",
-      "token",
       "interfacePrimary",
-      "interface",
-      "effects",
-    ].includes(layerRaw)
-      ? layerRaw
+      "belowTokens",
+      "drawings",
+    ].includes(layerNormalized)
+      ? layerNormalized
       : "inherit";
 
     const normalized = {
@@ -3178,6 +3188,134 @@ export class ShaderManager {
     return this.getImportedRecord(id) ?? record;
   }
 
+  _parseShaderToySizePair(value, depth = 0) {
+    if (depth > 3 || value == null) return null;
+
+    if (Array.isArray(value) && value.length >= 2) {
+      const w = Number(value[0]);
+      const h = Number(value[1]);
+      if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+        return [w, h];
+      }
+    }
+
+    if (typeof value === "number") {
+      if (Number.isFinite(value) && value > 0) return [value, value];
+      return null;
+    }
+
+    if (typeof value === "string") {
+      const raw = value.trim();
+      if (!raw) return null;
+
+      const pairMatch = raw.match(
+        /([0-9]+(?:\.[0-9]+)?)\s*(?:x|,|\s+)\s*([0-9]+(?:\.[0-9]+)?)/i,
+      );
+      if (pairMatch) {
+        const w = Number(pairMatch[1]);
+        const h = Number(pairMatch[2]);
+        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+          return [w, h];
+        }
+      }
+
+      const single = Number(raw);
+      if (Number.isFinite(single) && single > 0) return [single, single];
+      return null;
+    }
+
+    if (typeof value === "object") {
+      const directWidth = Number(value.width ?? value.w ?? value.x ?? Number.NaN);
+      const directHeight = Number(value.height ?? value.h ?? value.y ?? Number.NaN);
+      if (
+        Number.isFinite(directWidth) &&
+        Number.isFinite(directHeight) &&
+        directWidth > 0 &&
+        directHeight > 0
+      ) {
+        return [directWidth, directHeight];
+      }
+
+      const nestedKeys = [
+        "size",
+        "resolution",
+        "res",
+        "bufferSize",
+        "target",
+        "fbo",
+      ];
+      for (const key of nestedKeys) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+        const nested = this._parseShaderToySizePair(value[key], depth + 1);
+        if (nested) return nested;
+      }
+    }
+
+    return null;
+  }
+
+  _resolveShaderToyBufferSizeFromCandidates(candidates, fallback = DEFAULT_BUFFER_SIZE) {
+    for (const candidate of candidates) {
+      const pair = this._parseShaderToySizePair(candidate);
+      if (!pair) continue;
+      const [w, h] = pair;
+      const size = Math.max(w, h);
+      if (Number.isFinite(size) && size > 0) {
+        return normalizeBufferSize(size, fallback);
+      }
+    }
+    return normalizeBufferSize(fallback, DEFAULT_BUFFER_SIZE);
+  }
+
+  _resolveShaderToyPassBufferSize(pass, fallback = DEFAULT_BUFFER_SIZE) {
+    const outputs = toArray(pass?.outputs);
+    const candidates = [
+      pass?.size,
+      pass?.resolution,
+      pass?.res,
+      pass?.bufferSize,
+      pass?.target,
+      pass?.fbo,
+    ];
+    for (const output of outputs) {
+      candidates.push(
+        output?.size,
+        output?.resolution,
+        output?.res,
+        output?.bufferSize,
+      );
+    }
+    return this._resolveShaderToyBufferSizeFromCandidates(candidates, fallback);
+  }
+
+  _resolveShaderToyInputBufferSize(
+    input,
+    pass,
+    maps,
+    passKey,
+    currentPassKey = null,
+  ) {
+    const inputId = String(input?.id ?? "").trim();
+    const inputChannel = Number(input?.channel);
+    return this._resolveShaderToyBufferSizeFromCandidates(
+      [
+        input?.size,
+        input?.resolution,
+        input?.res,
+        input?.sampler?.size,
+        input?.sampler?.resolution,
+        inputId ? maps.passBufferSizeByOutputId?.get(inputId) : null,
+        Number.isInteger(inputChannel) && inputChannel >= 0 && inputChannel <= 3
+          ? maps.passBufferSizeByOutputChannel?.get(inputChannel)
+          : null,
+        pass?.__cpfxBufferSize,
+        passKey ? maps.passBufferSizeByPassKey?.get(passKey) : null,
+        currentPassKey ? maps.passBufferSizeByPassKey?.get(currentPassKey) : null,
+      ],
+      DEFAULT_BUFFER_SIZE,
+    );
+  }
+
   _buildChannelFromShaderToyInput(
     input,
     maps,
@@ -3211,12 +3349,20 @@ export class ShaderManager {
       const passKey = String(
         pass.__cpfxPassKey ?? pass?.name ?? pass?.code ?? "",
       );
+      const bufferSize = this._resolveShaderToyInputBufferSize(
+        input,
+        pass,
+        maps,
+        passKey,
+        currentPassKey,
+      );
       if (currentPassKey && passKey === currentPassKey) {
         debugLog(this.moduleId, "detected buffer self-reference", {
           passKey,
           currentPassKey,
+          size: bufferSize,
         });
-        return { mode: "bufferSelf", size: DEFAULT_BUFFER_SIZE };
+        return { mode: "bufferSelf", size: bufferSize };
       }
       if (stack.has(passKey)) {
         console.warn(
@@ -3247,7 +3393,7 @@ export class ShaderManager {
         mode: "buffer",
         source,
         channels,
-        size: DEFAULT_BUFFER_SIZE,
+        size: bufferSize,
       };
     }
 
@@ -3377,20 +3523,42 @@ export class ShaderManager {
         : passCode;
     }
 
+
     const passByOutputId = new Map();
     const passByOutputChannel = new Map();
+    const passBufferSizeByPassKey = new Map();
+    const passBufferSizeByOutputId = new Map();
+    const passBufferSizeByOutputChannel = new Map();
     for (const pass of renderPasses) {
       pass.__cpfxPassKey = `${pass.type ?? "pass"}:${pass.name ?? ""}:${pass.outputs?.[0]?.id ?? ""}`;
+      pass.__cpfxBufferSize = this._resolveShaderToyPassBufferSize(
+        pass,
+        DEFAULT_BUFFER_SIZE,
+      );
+      passBufferSizeByPassKey.set(pass.__cpfxPassKey, pass.__cpfxBufferSize);
       for (const output of toArray(pass.outputs)) {
         const outId = String(output?.id ?? "").trim();
-        if (outId) passByOutputId.set(outId, pass);
+        const outputSize = this._resolveShaderToyBufferSizeFromCandidates(
+          [
+            output?.size,
+            output?.resolution,
+            output?.res,
+            output?.bufferSize,
+            pass.__cpfxBufferSize,
+          ],
+          pass.__cpfxBufferSize,
+        );
+        if (outId) {
+          passByOutputId.set(outId, pass);
+          passBufferSizeByOutputId.set(outId, outputSize);
+        }
         const outCh = Number(output?.channel);
         if (Number.isInteger(outCh) && outCh >= 0 && outCh <= 3) {
           passByOutputChannel.set(outCh, pass);
+          passBufferSizeByOutputChannel.set(outCh, outputSize);
         }
       }
     }
-
     let imagePass = renderPasses.find(
       (pass) => String(pass.type ?? "").toLowerCase() === "image",
     );
@@ -3401,7 +3569,13 @@ export class ShaderManager {
 
     const channels = this._buildChannelsFromShaderToyInputs(
       imagePass.inputs,
-      { passByOutputId, passByOutputChannel },
+      {
+        passByOutputId,
+        passByOutputChannel,
+        passBufferSizeByPassKey,
+        passBufferSizeByOutputId,
+        passBufferSizeByOutputChannel,
+      },
       new Set(),
     );
     const displayName = sanitizeName(
@@ -3447,6 +3621,47 @@ export class ShaderManager {
     return this._importFromNormalizedShaderToy(shader, { shaderId, name });
   }
 
+  _mergeChannelsPreservingNested(existingChannels = {}, incomingChannels = {}) {
+    const base =
+      existingChannels && typeof existingChannels === "object"
+        ? existingChannels
+        : {};
+    const incoming =
+      incomingChannels && typeof incomingChannels === "object"
+        ? incomingChannels
+        : {};
+
+    const merged = foundry.utils.mergeObject(foundry.utils.deepClone(base), incoming, {
+      inplace: false,
+      recursive: true,
+    });
+
+    for (const index of CHANNEL_INDICES) {
+      const key = `iChannel${index}`;
+      const incomingEntry = incoming[key] ?? incoming[index];
+      if (!incomingEntry || typeof incomingEntry !== "object") continue;
+
+      const incomingMode = normalizeChannelMode(incomingEntry.mode ?? "auto");
+      if (incomingMode !== "buffer") continue;
+
+      const hasNestedInIncoming = Object.prototype.hasOwnProperty.call(
+        incomingEntry,
+        "channels",
+      );
+      if (hasNestedInIncoming) continue;
+
+      const existingEntry = base[key] ?? base[index];
+      const existingNested = existingEntry?.channels;
+      if (!existingNested || typeof existingNested !== "object") continue;
+
+      const mergedEntry = merged[key] ?? merged[index];
+      if (!mergedEntry || typeof mergedEntry !== "object") continue;
+      mergedEntry.channels = foundry.utils.deepClone(existingNested);
+    }
+
+    return merged;
+  }
+
   async updateImportedShader(
     shaderId,
     {
@@ -3484,7 +3699,7 @@ export class ShaderManager {
     const channelInput =
       channels == null
         ? foundry.utils.deepClone(record.channels ?? {})
-        : channels;
+        : this._mergeChannelsPreservingNested(record.channels ?? {}, channels ?? {});
     const nextChannels = this.buildChannelConfig({
       source: nextSource,
       channels: channelInput,
@@ -3521,10 +3736,9 @@ export class ShaderManager {
     }
 
     const record = records[idx];
-    const mergedChannels = foundry.utils.mergeObject(
-      foundry.utils.deepClone(record.channels ?? {}),
+    const mergedChannels = this._mergeChannelsPreservingNested(
+      record.channels ?? {},
       channels ?? {},
-      { inplace: false, recursive: true },
     );
     records[idx] = {
       ...record,
@@ -3612,6 +3826,7 @@ export class ShaderManager {
     return true;
   }
 }
+
 
 
 

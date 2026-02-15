@@ -55,8 +55,8 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
     type: String,
     choices: {
       interfacePrimary: "interfacePrimary (above tokens, world space)",
-      interface: "interface (overlay, not world space)",
-      effects: "effects (world space, can be behind some overlays)"
+      belowTokens: "Below Tokens (interface, under token z-order)",
+      drawings: "DrawingsLayer (above tokens, world space)"
     },
     default: "interfacePrimary"
   });
@@ -90,16 +90,15 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
 
   game.settings.register(moduleId, "shaderLayer", {
     name: "Shader layer",
-    hint: "Where to render shader effects. Use token to attach to the token itself.",
+    hint: "Where to render shader effects.",
     scope: "world",
     config: false,
     type: String,
     choices: {
       inherit: "inherit from FX layer",
-      token: "token (attached to token)",
       interfacePrimary: "interfacePrimary (above tokens, world space)",
-      interface: "interface (overlay, not world space)",
-      effects: "effects (world space, can be behind some overlays)"
+      belowTokens: "Below Tokens (interface, under token z-order)",
+      drawings: "DrawingsLayer (above tokens, world space)"
     },
     default: "inherit"
   });
@@ -351,5 +350,7 @@ game.settings.register(moduleId, "shaderRadiusUnits", {
     range: { min: 0, max: 60000, step: 50 }
   });
 }
+
+
 
 

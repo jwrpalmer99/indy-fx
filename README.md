@@ -1,95 +1,92 @@
 # Indy FX
 
-Indy FX adds shader effects for Foundry.
+Indy FX adds animated shader effects to Foundry VTT placeables and regions.
 
-This README is for GM/player usage. For macro/API details, see `README_API.md`.
+This file is the GM/player usage guide.
+For macro/API details, see `README_API.md`.
+
+## Requirements
+- Foundry VTT v13+
+- Module id: `indy-fx`
 
 ## Quick Start
 1. Enable the module.
 2. Open **Game Settings -> Module Settings -> Indy FX**.
-3. Open **Shader Library** (from settings or scene controls).
-4. Import/select a shader.
-5. Apply it to a token, tile, template, or region.
+3. Open **Shader Library** (from module settings or Scene Controls).
+4. Import a shader (or bundled examples).
+5. Apply the shader to tokens, tiles, templates, or regions.
 
-## Main UI Areas
-- **Shader Library**:
-  - Browse imported shaders (sorted/searchable).
-  - Hover cards to preview animation.
-  - Double-click to edit shader source/options/channels.
-  - Right-click for actions like duplicate/delete.
-  - Drag-drop a shader card onto canvas placeables.
-- **Module Settings**:
-  - Global defaults for shader behavior.
-  - Debug options (if needed).
-- **Per-document config** (Token/Tile/Template):
-  - Open the document config and use the **indyFX** section/menu.
-  - Enable/disable, apply, save, remove, and edit effect settings.
-- **Region Behavior**:
-  - Add Region Behavior type **indyFX**.
-  - Select shader and configure behavior settings.
+## Main Workflows
+### Shader Library
+- Search/filter imported shaders by name or label.
+- Hover a card to animate preview.
+- Double-click a card to open full shader editor.
+- Right-click a card for: `Add to Selected`, `Create Macro (Tokens/Tiles/Templates)`, `Duplicate`, `Delete`.
+- Drag/drop a card onto the canvas to apply.
+- Import/Export library from the library window.
+- If no imported shaders exist, Indy FX can prompt to import bundled examples from `scripts/shaders.json`.
 
-## Applying Effects
-### Tokens
-- Use shader library drag-drop onto a token.
-- Or open token config -> **indyFX** to edit/enable.
+### Apply to Tokens/Tiles/Templates
+- Drag/drop from Shader Library.
+- Or open placeable config and use the **indyFX** section/menu.
+- Or use macros/API (`game.indyFX...`).
 
-### Tiles
-- Use shader library drag-drop onto a tile.
-- Or open tile config -> **indyFX**.
+Token/Tile convenience:
+- If a token/tile has Indy FX, its HUD includes a remove button.
 
-### Measured Templates
-- Use shader library drag-drop onto a template.
-- Or open template config -> **indyFX**.
+### Apply to Regions
+- Add Region Behavior type **indyFX**.
+- Configure shader/options in behavior config.
+- Multiple region effects are supported on the same region.
 
-### Regions
-- Add a Region Behavior of type **indyFX**.
-- Configure shader and options there.
-
-## Shader Channels (Practical)
-In shader editor, each `iChannel` can be assigned to sources such as:
-- none / black
-- white
-- RGB noise / B&W noise
-- scene capture
-- custom image/video
-- buffer code
-- token/tile image capture (for placeable-attached use cases)
+## Channel Modes
+Imported shader channels (`iChannel0..iChannel3`) support:
+- `none` (black)
+- `white`
+- `noiseRgb`
+- `noiseBw`
+- `sceneCapture`
+- `image` (image/video path)
+- `buffer` (ShaderToy-style buffer source)
+- `tokenTileImage` (placeable image capture)
 
 Notes:
-- Some channel modes are placeable-only (not valid for region/template usage).
-- Scene capture and placeable capture behavior is affected by capture settings like scale/rotation/flip.
+- `tokenTileImage` is placeable-target specific and not suitable for region usage.
+- Preview backgrounds used for scene/placeable capture channels are configurable in module settings.
 
 ## Persistence
-- Token/Tile/Template shaders with `displayTimeMs = 0` persist across reload.
+- Token/Tile/Template effects persist when `displayTimeMs = 0`.
 - Timed effects (`displayTimeMs > 0`) do not persist.
-- Region persistence is behavior-based through **indyFX** Region Behaviors.
+- Persistent region effects are behavior-based (`indyFX` Region Behaviors).
 
-## Broadcast Behavior
-- GM can broadcast effects to all clients.
-- If GM-only broadcasting is enabled, non-GM users cannot broadcast.
+## Broadcast vs Local
+- Most UI actions and generated macros use broadcast methods.
+- GM-only broadcasting can be enabled in settings.
+- Local API methods are still available for client-side use.
 
-## Shader Import
-You can import shaders via:
-- ShaderToy API key flow
-- ShaderToy JSON paste flow
-- Manual shader source import
-
-Use `README_API.md` for the detailed no-key JSON/devtools commands.
+## Performance Tips
+- Prefer lighter shaders when many effects are active.
+- Reduce/disable bloom if needed.
+- Keep capture scale modest.
+- Disable debug logging unless troubleshooting.
 
 ## Troubleshooting
-- **Effect not visible**:
-  - Verify shader is enabled and assigned to the right target.
-  - Check layer setting (`inherit`, `token`, `interface`, etc.).
-  - Check alpha/intensity and mask settings.
-- **Wrong channel output**:
-  - Verify each `iChannel` mode/path/source.
-  - For buffers, verify dependencies and GLSL compatibility.
-- **Performance spikes**:
-  - Reduce heavy shaders, bloom, large capture sizes, and debug logging.
-- **Compile errors**:
-  - Some ShaderToy GLSL features require adaptation for Foundry/PIXI GLSL profile.
+### Effect not visible
+- Confirm shader is enabled for that target.
+- Check `alpha`, `intensity`, `layer`, and mask settings.
+- Confirm selected channel modes are valid for that target type.
 
-## Versioning Notes
-- If you previously relied on older naming/docs, use current module name/API namespace:
-  - Module: `indy-fx`
-  - API: `game.indyFX`
+### Wrong preview output
+- Verify channel mode/path/source assignments.
+- For capture channels, verify preview background settings.
+
+### Shader compiles in ShaderToy but fails in Foundry
+- Some ShaderToy code needs adaptation for Foundry/PIXI GLSL.
+- Common issues include dynamic loop bounds, GLSL ES 3-only features, and symbol collisions (`PI`, `resolution`, etc.).
+
+### Reload/restore issues
+- Persistent effects require `displayTimeMs = 0`.
+- Region persistence requires the `indyFX` behavior to be present.
+
+## Related Docs
+- API/macros/options: `README_API.md`

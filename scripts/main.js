@@ -559,9 +559,10 @@ function sanitizeShaderPersistOpts(opts = {}) {
 }
 
 function getTokenShaderDocument(tokenId) {
-  if (!tokenId) return null;
-  return canvas.tokens?.get?.(tokenId)?.document
-    ?? canvas.scene?.tokens?.get?.(tokenId)
+  const resolvedTokenId = resolveTokenId(tokenId);
+  if (!resolvedTokenId) return null;
+  return canvas.tokens?.get?.(resolvedTokenId)?.document
+    ?? canvas.scene?.tokens?.get?.(resolvedTokenId)
     ?? null;
 }
 
@@ -648,11 +649,109 @@ function escapeHtml(value) {
 
 const SHADER_LAYER_CHOICES = {
   inherit: "inherit from FX layer",
-  token: "token (attached to token)",
   interfacePrimary: "interfacePrimary",
-  interface: "interface",
-  effects: "effects"
+  belowTokens: "Below Tokens (interface, under token z-order)",
+  drawings: "DrawingsLayer (above tokens)"
 };
+
+function normalizeShaderLayerName(value, fallback = "interfacePrimary") {
+  const raw = String(value ?? "").trim();
+  if (!raw) return fallback;
+  if (raw === "token") return "interfacePrimary";
+  if (raw === "belowTiles") return "belowTokens";
+  if (raw === "baseEffects") return "belowTokens";
+  if (raw === "effects") return "belowTokens";
+  if (raw === "interface") return "interfacePrimary";
+  if (raw === "drawingsLayer") return "drawings";
+  return raw;
+}
+
+function resolveConfiguredShaderLayerName(cfg) {
+  const shaderLayerSetting = cfg?.layer ?? game.settings.get(MODULE_ID, "shaderLayer") ?? "inherit";
+  const layerNameRaw = shaderLayerSetting === "inherit"
+    ? (game.settings.get(MODULE_ID, "layer") ?? "interfacePrimary")
+    : shaderLayerSetting;
+  return normalizeShaderLayerName(layerNameRaw, "interfacePrimary");
+}
+
+function resolveShaderExplicitZIndex(cfg) {
+  const candidates = [cfg?.zIndex, cfg?.zOrder, cfg?.shaderZIndex, cfg?.shaderZOrder];
+  for (const candidate of candidates) {
+    const n = Number(candidate);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function resolveShaderContainerZIndex(cfg) {
+  const explicitZ = resolveShaderExplicitZIndex(cfg);
+  if (Number.isFinite(explicitZ)) return explicitZ;
+
+  const layerName = resolveConfiguredShaderLayerName(cfg);
+  const tokensZ = Number(canvas?.tokens?.zIndex);
+
+  // Legacy "effects" maps to belowTokens via normalizeShaderLayerName.
+  if (layerName === "belowTokens") {
+    if (Number.isFinite(tokensZ)) return tokensZ - 1;
+    return 199;
+  }
+
+  return 999999;
+}
+
+function addShaderContainerToWorldLayer(worldLayer, container, cfg) {
+  if (!worldLayer || !container) return;
+
+  const layerName = resolveConfiguredShaderLayerName(cfg);
+  const explicitZ = resolveShaderExplicitZIndex(cfg);
+  const isBelowLayer = !Number.isFinite(explicitZ) && layerName === "belowTokens";
+
+  if (isBelowLayer) {
+    const anchorLayer = canvas?.tokens ?? canvas?.tiles;
+
+    debugLog("addShaderContainerToWorldLayer: anchor check", {
+      layerName,
+      worldLayer: worldLayer?.constructor?.name ?? null,
+      anchorLayer: anchorLayer?.constructor?.name ?? null,
+      anchorParent: anchorLayer?.parent?.constructor?.name ?? null,
+      worldLayerChildCount: Array.isArray(worldLayer?.children) ? worldLayer.children.length : null,
+    });
+
+    if (
+      anchorLayer?.parent === worldLayer &&
+      typeof worldLayer.addChildAt === "function" &&
+      typeof worldLayer.getChildIndex === "function"
+    ) {
+      try {
+        const anchorIndex = worldLayer.getChildIndex(anchorLayer);
+        if (Number.isInteger(anchorIndex) && anchorIndex >= 0) {
+          // Keep insertion order relative to the anchor layer; do not re-sort.
+          worldLayer.addChildAt(container, anchorIndex);
+          debugLog("addShaderContainerToWorldLayer: inserted before anchor", {
+            layerName,
+            anchorLayer: anchorLayer?.constructor?.name ?? null,
+            anchorIndex,
+            worldLayer: worldLayer?.constructor?.name ?? null,
+          });
+          return;
+        }
+      } catch (_err) {
+        // Fall through to default addChild path.
+      }
+    }
+  }
+
+  worldLayer.addChild(container);
+  worldLayer.sortChildren?.();
+
+  if (isBelowLayer) {
+    debugLog("addShaderContainerToWorldLayer: fallback addChild", {
+      layerName,
+      worldLayer: worldLayer?.constructor?.name ?? null,
+      childIndex: worldLayer?.children?.indexOf?.(container) ?? null,
+    });
+  }
+}
 
 function resolveDocumentShaderTargetFromApp(app) {
   if (!app) return null;
@@ -693,6 +792,85 @@ function isDocumentShaderRuntimeActive(target) {
   if (target.targetType === "tile") return _activeTileShader.has(target.id);
   if (target.targetType === "template") return _activeTemplateShader.has(target.id);
   return false;
+}
+
+function resolveRuntimeMapForTargetType(targetType) {
+  if (targetType === "token") return _activeShader;
+  if (targetType === "tile") return _activeTileShader;
+  if (targetType === "template") return _activeTemplateShader;
+  return null;
+}
+
+function describeRuntimeEntry(targetType, id, entry) {
+  const container = entry?.container ?? null;
+  const parent = container?.parent ?? null;
+  const pos = container?.position ?? null;
+  const scale = container?.scale ?? null;
+  const pivot = container?.pivot ?? null;
+  const bounds = typeof container?.getBounds === "function"
+    ? (() => {
+        try {
+          const b = container.getBounds(false);
+          return {
+            x: Number.isFinite(Number(b?.x)) ? Number(b.x) : null,
+            y: Number.isFinite(Number(b?.y)) ? Number(b.y) : null,
+            width: Number.isFinite(Number(b?.width)) ? Number(b.width) : null,
+            height: Number.isFinite(Number(b?.height)) ? Number(b.height) : null,
+          };
+        } catch (_err) {
+          return null;
+        }
+      })()
+    : null;
+
+  return {
+    kind: targetType,
+    id: String(id ?? ""),
+    hasEntry: !!entry,
+    containerClass: container?.constructor?.name ?? null,
+    parentClass: parent?.constructor?.name ?? null,
+    parentName: parent?.name ?? null,
+    zIndex: Number.isFinite(Number(container?.zIndex)) ? Number(container.zIndex) : null,
+    childIndex: parent && Array.isArray(parent.children) ? parent.children.indexOf(container) : null,
+    layer: normalizeShaderLayerName(entry?.sourceOpts?.layer ?? "", "inherit"),
+    shaderId: String(entry?.sourceOpts?.shaderId ?? "").trim() || null,
+    visible: container?.visible ?? null,
+    renderable: container?.renderable ?? null,
+    alpha: Number.isFinite(Number(container?.alpha)) ? Number(container.alpha) : null,
+    worldAlpha: Number.isFinite(Number(container?.worldAlpha)) ? Number(container.worldAlpha) : null,
+    x: Number.isFinite(Number(pos?.x)) ? Number(pos.x) : null,
+    y: Number.isFinite(Number(pos?.y)) ? Number(pos.y) : null,
+    scaleX: Number.isFinite(Number(scale?.x)) ? Number(scale.x) : null,
+    scaleY: Number.isFinite(Number(scale?.y)) ? Number(scale.y) : null,
+    pivotX: Number.isFinite(Number(pivot?.x)) ? Number(pivot.x) : null,
+    pivotY: Number.isFinite(Number(pivot?.y)) ? Number(pivot.y) : null,
+    bounds,
+  };
+}
+
+function debugDumpShaderContainers({ kind = null, id = null } = {}) {
+  const normalizedKind = kind ? String(kind).trim().toLowerCase() : null;
+  const kinds = normalizedKind
+    ? [normalizedKind]
+    : ["token", "tile", "template"];
+
+  const rows = [];
+  for (const targetType of kinds) {
+    const runtimeMap = resolveRuntimeMapForTargetType(targetType);
+    if (!runtimeMap) continue;
+
+    if (id !== null && id !== undefined && String(id).trim()) {
+      const targetId = String(id).trim();
+      rows.push(describeRuntimeEntry(targetType, targetId, runtimeMap.get(targetId) ?? null));
+      continue;
+    }
+
+    for (const [targetId, entry] of runtimeMap.entries()) {
+      rows.push(describeRuntimeEntry(targetType, targetId, entry));
+    }
+  }
+
+  return rows;
 }
 
 function getDocumentShaderRuntimeSourceOpts(target) {
@@ -887,7 +1065,7 @@ async function openDocumentShaderConfigDialog(app) {
     `<input type="number" name="${name}" value="${escapeHtml(value)}" ${attrs}>`;
 
   const content = `
-<form class="indy-fx-doc-shader-config">
+<form class="indy-fx-doc-shader-config" style="max-height:min(74vh, calc(100vh - 240px));overflow-y:auto;overflow-x:hidden;padding-right:0.35rem;">
   <div class="form-group"><label>Enabled</label><div class="form-fields">${checkbox("enabled", enabled)}</div></div>
   <div class="form-group"><label>Shader</label><div class="form-fields"><select name="shaderId">${shaderOptions}</select></div></div>
   <div class="form-group"><label>Layer</label><div class="form-fields"><select name="layer">${layerOptions}</select></div></div>
@@ -1123,6 +1301,206 @@ function addIndyFxDocumentConfigButton(app, buttons) {
   });
 }
 
+function documentHasEnabledShader(target) {
+  if (!target) return false;
+  if (isDocumentShaderRuntimeActive(target)) return true;
+  const persisted = readShaderFlag(target.doc, target.flagKey);
+  if (!persisted || typeof persisted !== "object") return false;
+  return !parsePersistDisabled(persisted._disabled);
+}
+
+function resolveHudRoot(targetType, app, html) {
+  const preferClass = targetType === "tile" ? "tile-hud" : "token-hud";
+  const coerceElement = (value) => {
+    const direct = value?.[0] ?? value;
+    if (direct instanceof HTMLElement) return direct;
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (entry instanceof HTMLElement) return entry;
+      }
+    }
+    if (value instanceof NodeList || value instanceof HTMLCollection) {
+      for (const entry of value) {
+        if (entry instanceof HTMLElement) return entry;
+      }
+    }
+    return null;
+  };
+
+  const candidates = [
+    coerceElement(html),
+    coerceElement(app?.element),
+    coerceElement(app?.html),
+  ].filter((entry) => entry instanceof HTMLElement);
+
+  for (const candidate of candidates) {
+    const hudFromSelf =
+      candidate.matches?.(`.placeable-hud.${preferClass}`) ||
+      candidate.matches?.(".placeable-hud")
+        ? candidate
+        : null;
+    const hudFromClosest =
+      candidate.closest?.(`.placeable-hud.${preferClass}`) ??
+      candidate.closest?.(".placeable-hud");
+    const hudFromChildren = candidate.querySelector?.(
+      `.placeable-hud.${preferClass}, .placeable-hud`,
+    );
+    const resolved = hudFromSelf ?? hudFromClosest ?? hudFromChildren;
+    if (resolved instanceof HTMLElement) return resolved;
+  }
+
+  const fallback = document.querySelector(
+    targetType === "tile"
+      ? ".placeable-hud.tile-hud, #hud .tile-hud, #tile-hud"
+      : ".placeable-hud.token-hud, #hud .token-hud, #token-hud",
+  );
+  if (fallback instanceof HTMLElement) return fallback;
+
+  return null;
+}
+
+function resolveHudPlaceableId(targetType, app, data) {
+  const fromObject =
+    app?.object?.id ??
+    app?.object?.document?.id ??
+    app?.token?.id ??
+    app?.tile?.id ??
+    data?._id ??
+    data?.id ??
+    null;
+  if (!fromObject) return null;
+  const id = String(fromObject).trim();
+  if (!id) return null;
+  if (targetType === "token") return resolveTokenId(id);
+  if (targetType === "tile") return resolveTileId(id);
+  return id;
+}
+
+function addIndyFxHudRemoveButton({ targetType, app, html, data } = {}) {
+  if (targetType !== "token" && targetType !== "tile") return;
+
+  const id = resolveHudPlaceableId(targetType, app, data);
+  if (!id) {
+    debugLog("hud remove button skipped: no placeable id", {
+      targetType,
+      appClass: app?.constructor?.name ?? null,
+      dataId: data?._id ?? data?.id ?? null,
+    });
+    return;
+  }
+
+  const doc =
+    targetType === "token"
+      ? getTokenShaderDocument(id)
+      : getTileShaderDocument(id);
+  if (!doc) {
+    debugLog("hud remove button skipped: no document", {
+      targetType,
+      id,
+      appClass: app?.constructor?.name ?? null,
+    });
+    return;
+  }
+
+  const target = {
+    targetType,
+    id,
+    doc,
+    flagKey: targetType === "token" ? TOKEN_SHADER_FLAG : TILE_SHADER_FLAG,
+  };
+
+  const root = resolveHudRoot(targetType, app, html);
+  if (!(root instanceof HTMLElement)) {
+    debugLog("hud remove button skipped: no root element", {
+      targetType,
+      id,
+      appClass: app?.constructor?.name ?? null,
+    });
+    return;
+  }
+
+  const actionName = "indyfx-remove-shader";
+  const existing = root.querySelector(`[data-action="${actionName}"]`);
+
+  const runtimeActive = isDocumentShaderRuntimeActive(target);
+  const persisted = readShaderFlag(target.doc, target.flagKey);
+  const persistedDisabled = parsePersistDisabled(persisted?._disabled);
+
+  if (!documentHasAnyShader(target)) {
+    existing?.remove?.();
+    debugLog("hud remove button skipped: no shader", {
+      targetType,
+      id,
+      runtimeActive,
+      hasPersisted: !!persisted,
+      persistedDisabled,
+    });
+    return;
+  }
+
+  if (existing instanceof HTMLElement) {
+    debugLog("hud remove button already present", {
+      targetType,
+      id,
+      runtimeActive,
+      hasPersisted: !!persisted,
+      persistedDisabled,
+    });
+    return;
+  }
+
+  const host =
+    root.querySelector(".col.right") ??
+    root.querySelector(".col.left") ??
+    root.querySelector(".control-icons") ??
+    root;
+  if (!(host instanceof HTMLElement)) {
+    debugLog("hud remove button skipped: no host", {
+      targetType,
+      id,
+      rootTag: root?.tagName ?? null,
+    });
+    return;
+  }
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "control-icon indyfx-hud-remove-shader";
+  button.dataset.action = actionName;
+  button.title = "Remove indyFX";
+  button.setAttribute("data-tooltip", "Remove indyFX");
+  button.innerHTML = '<i class="fa-solid fa-trash" inert></i>';
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const gmOnly = game.settings.get(MODULE_ID, "gmOnlyBroadcast") === true;
+    if (gmOnly && !game.user?.isGM) {
+      ui.notifications?.warn?.("Only the GM can broadcast this FX.");
+      return;
+    }
+
+    if (targetType === "token") {
+      broadcastShaderOff({ tokenId: id });
+    } else {
+      broadcastShaderOffTile({ tileId: id });
+    }
+    button.remove();
+    ui.notifications?.info?.("indyFX effect removed.");
+  });
+
+  host.appendChild(button);
+  debugLog("hud remove button inserted", {
+    targetType,
+    id,
+    runtimeActive,
+    hasPersisted: !!persisted,
+    persistedDisabled,
+    rootTag: root?.tagName ?? null,
+    hostClass: host?.className ?? null,
+  });
+}
+
 function createRegionEffectKey(regionId, behaviorId = null) {
   if (behaviorId) return `behavior:${regionId}:${behaviorId}`;
   return `runtime:${regionId}:${foundry.utils.randomID()}`;
@@ -1194,6 +1572,18 @@ function setCenterFromWorld(container, center, worldLayer) {
 }
 
 function setCenter(container, tok, worldLayer) {
+  if (worldLayer === tok?.mesh) {
+    container.position.set(0, 0);
+    return;
+  }
+  if (worldLayer === tok) {
+    const w = Number(tok?.w ?? tok?.width ?? 0);
+    const h = Number(tok?.h ?? tok?.height ?? 0);
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+      container.position.set(w * 0.5, h * 0.5);
+      return;
+    }
+  }
   setCenterFromWorld(container, getTokenCenter(tok), worldLayer);
 }
 
@@ -1232,6 +1622,23 @@ function updateSpriteDebugGfx(gfx, radius) {
 
 let networkController = null;
 
+function getLastSceneTokenId() {
+  const sceneTokens = canvas.scene?.tokens?.contents;
+  if (Array.isArray(sceneTokens) && sceneTokens.length) {
+    const last = sceneTokens[sceneTokens.length - 1];
+    return last?.id ?? null;
+  }
+  const placeables = canvas.tokens?.placeables;
+  if (Array.isArray(placeables) && placeables.length) {
+    const last = placeables[placeables.length - 1];
+    return last?.id ?? last?.document?.id ?? null;
+  }
+  return null;
+}
+
+function resolveTokenId(tokenId) {
+  return tokenId ?? getLastSceneTokenId();
+}
 function getLastSceneTemplateId() {
   const sceneTemplates = canvas.scene?.templates?.contents;
   if (Array.isArray(sceneTemplates) && sceneTemplates.length) {
@@ -1946,6 +2353,7 @@ function normalizeShaderMacroOpts(opts = {}) {
   const next = foundry.utils.mergeObject({}, src, { inplace: false });
 
   if (next.layer === undefined && next.shaderLayer !== undefined) next.layer = next.shaderLayer;
+  if (next.layer !== undefined) next.layer = normalizeShaderLayerName(next.layer, "inherit");
   if (next.shaderId === undefined && next.shaderPreset !== undefined) next.shaderId = next.shaderPreset;
   if (next.useGradientMask === undefined && next.shaderGradientMask !== undefined) next.useGradientMask = next.shaderGradientMask;
   if (next.gradientMaskFadeStart === undefined && next.shaderGradientFadeStart !== undefined) next.gradientMaskFadeStart = next.shaderGradientFadeStart;
@@ -1999,6 +2407,10 @@ function normalizeShaderMacroOpts(opts = {}) {
   if (next.shapeDistanceUnits === undefined && next.shaderShapeDistanceUnits !== undefined) next.shapeDistanceUnits = next.shaderShapeDistanceUnits;
   if (next.coneAngleDeg === undefined && next.shaderConeAngleDeg !== undefined) next.coneAngleDeg = next.shaderConeAngleDeg;
   if (next.lineWidthUnits === undefined && next.shaderLineWidthUnits !== undefined) next.lineWidthUnits = next.shaderLineWidthUnits;
+  if (next.zIndex === undefined && next.zOrder !== undefined) next.zIndex = next.zOrder;
+  if (next.zOrder === undefined && next.zIndex !== undefined) next.zOrder = next.zIndex;
+  if (next.zIndex === undefined && next.shaderZIndex !== undefined) next.zIndex = next.shaderZIndex;
+  if (next.shaderZIndex === undefined && next.zIndex !== undefined) next.shaderZIndex = next.zIndex;
 
   if (next.debugMode === undefined && next.shaderDebugMode !== undefined) {
     if (typeof next.shaderDebugMode === "number") next.debugMode = next.shaderDebugMode;
@@ -2258,10 +2670,9 @@ function shaderOn(tokenId, opts = {}) {
   const tokenEffectScaleFactor = (useTokenTextureScale ? tokenTextureScaleFactor : 1) * tokenScaleMultiplier;
 
   const container = new PIXI.Container();
-  container.zIndex = 999999;
+  container.zIndex = resolveShaderContainerZIndex(cfg);
   container.eventMode = "none";
-  worldLayer.addChild(container);
-  worldLayer.sortChildren?.();
+  addShaderContainerToWorldLayer(worldLayer, container, cfg);
   const baseSizePx = Math.max(tok.document.width, tok.document.height) * canvas.grid.size;
   const sizePx = baseSizePx * tokenEffectScaleFactor;
   const radiusUnits = parseDistanceValue(cfg.radiusUnits, NaN);
@@ -2551,10 +2962,9 @@ function shaderOnTemplate(templateId, opts = {}) {
   const worldLayer = resolveShaderWorldLayer(MODULE_ID, cfg);
 
   const container = new PIXI.Container();
-  container.zIndex = 999999;
+  container.zIndex = resolveShaderContainerZIndex(cfg);
   container.eventMode = "none";
-  worldLayer.addChild(container);
-  worldLayer.sortChildren?.();
+  addShaderContainerToWorldLayer(worldLayer, container, cfg);
 
   const radiusUnits = parseDistanceValue(cfg.radiusUnits, cfg.shapeDistanceUnits);
   const radius = (Number.isFinite(radiusUnits) && radiusUnits > 0)
@@ -2823,10 +3233,9 @@ function shaderOnTile(tileId, opts = {}) {
   }
 
   const container = new PIXI.Container();
-  container.zIndex = 999999;
+  container.zIndex = resolveShaderContainerZIndex(cfg);
   container.eventMode = "none";
-  worldLayer.addChild(container);
-  worldLayer.sortChildren?.();
+  addShaderContainerToWorldLayer(worldLayer, container, cfg);
 
   setCenterFromWorld(container, metrics.center, worldLayer);
   container.rotation = 0;
@@ -3211,10 +3620,9 @@ function shaderOnRegion(regionId, opts = {}) {
   const worldLayer = resolveShaderWorldLayer(MODULE_ID, cfg);
 
   const rootContainer = new PIXI.Container();
-  rootContainer.zIndex = 999999;
+  rootContainer.zIndex = resolveShaderContainerZIndex(cfg);
   rootContainer.eventMode = "none";
-  worldLayer.addChild(rootContainer);
-  worldLayer.sortChildren?.();
+  addShaderContainerToWorldLayer(worldLayer, rootContainer, cfg);
 
   const regionShapes = extractRegionShapes(region);
   const regionBounds = computeRegionBounds(regionShapes);
@@ -3665,6 +4073,23 @@ Hooks.on("getHeaderControlsApplicationV2", (app, buttons) => {
   addIndyFxDocumentConfigButton(app, buttons);
 });
 
+Hooks.on("renderTokenHUD", (app, html, data) => {
+  debugLog("renderTokenHUD fired", {
+    appClass: app?.constructor?.name ?? null,
+    dataId: data?._id ?? data?.id ?? null,
+    objectId: app?.object?.id ?? app?.object?.document?.id ?? null,
+  });
+  addIndyFxHudRemoveButton({ targetType: "token", app, html, data });
+});
+Hooks.on("renderTileHUD", (app, html, data) => {
+  debugLog("renderTileHUD fired", {
+    appClass: app?.constructor?.name ?? null,
+    dataId: data?._id ?? data?.id ?? null,
+    objectId: app?.object?.id ?? app?.object?.document?.id ?? null,
+  });
+  addIndyFxHudRemoveButton({ targetType: "tile", app, html, data });
+});
+
 Hooks.on("getSceneControlButtons", (controls) => {
   if (!controls) return;
 
@@ -3916,6 +4341,8 @@ Hooks.once("ready", async () => {
     broadcastShaderToggleRegion: (payloadOrRegionId, maybeOpts) => broadcastShaderToggleRegion(normalizeRegionBroadcastPayload(payloadOrRegionId, maybeOpts)),
     startShaderPlacement: (tokenId, opts) => startShaderPlacement(tokenId, opts),
     cancelShaderPlacement: () => cancelShaderPlacement(false),
+    debugDumpShaderContainers: (payload = {}) => debugDumpShaderContainers(payload),
+    debugDumpShaderContainerParents: (payload = {}) => debugDumpShaderContainers(payload),
     shaders: {
       list: () => shaderManager.getCombinedEntries(),
       choices: () => shaderManager.getShaderChoices(),
@@ -3930,23 +4357,6 @@ Hooks.once("ready", async () => {
     }
   };
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

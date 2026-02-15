@@ -2,10 +2,9 @@ const REGION_SHADER_BEHAVIOR_SUBTYPE = "indyFX";
 const REGION_SHADER_BEHAVIOR_TYPE = "indy-fx.indyFX";
 const REGION_SHADER_LAYER_CHOICES = {
   inherit: "inherit from FX layer",
-  token: "token (attached to token)",
   interfacePrimary: "interfacePrimary (above tokens, world space)",
-  interface: "interface (overlay, not world space)",
-  effects: "effects (world space, can be behind some overlays)",
+  belowTokens: "Below Tokens (interface, under token z-order)",
+  drawings: "DrawingsLayer (above tokens, world space)",
 };
 
 const REGION_SHADER_BEHAVIOR_SYSTEM_KEYS = [
@@ -75,6 +74,25 @@ function _toBoolean(value, fallback) {
   return fallback;
 }
 
+function _normalizeShaderLayerChoice(value, fallback = "inherit") {
+  const raw = String(value ?? "").trim();
+  if (!raw) return fallback;
+  if (raw === "token") return "interfacePrimary";
+  if (raw === "effects" || raw === "effectsLayer") return "belowTokens";
+  if (raw === "interface") return "interfacePrimary";
+  if (raw === "drawingsLayer") return "drawings";
+  if (raw === "baseEffects") return "belowTokens";
+  if (raw === "belowTiles") return "belowTokens";
+  if (
+    raw === "inherit" ||
+    raw === "interfacePrimary" ||
+    raw === "belowTokens" ||
+    raw === "drawings"
+  ) {
+    return raw;
+  }
+  return fallback;
+}
 function _normalizeHexColor(value, fallback = "FFFFFF") {
   const fallbackClean = String(fallback ?? "FFFFFF")
     .replace(/^#|^0x/i, "")
@@ -217,7 +235,7 @@ function _ensureShaderChoicesSettingsHook(moduleId, getShaderChoices) {
 
 function getDefaultRegionShaderBehaviorSystem(moduleId) {
   return {
-    shaderLayer: String(_getSetting(moduleId, "shaderLayer", "inherit")),
+    shaderLayer: _normalizeShaderLayerChoice(_getSetting(moduleId, "shaderLayer", "inherit"), "inherit"),
     shaderPreset: String(_getSetting(moduleId, "shaderPreset", "noise")),
     shaderGradientMask: _toBoolean(
       _getSetting(moduleId, "shaderGradientMask", false),
@@ -324,8 +342,9 @@ function buildRegionShaderBehaviorSystemData(moduleId, opts = {}, { getShaderCho
     : _toBoolean(flowFromMode, defaults.shaderFlow);
 
   return {
-    shaderLayer: String(
+    shaderLayer: _normalizeShaderLayerChoice(
       source.shaderLayer ?? source.layer ?? defaults.shaderLayer,
+      defaults.shaderLayer,
     ),
     shaderPreset: String(
       typeof getShaderChoices === "function"
@@ -1017,13 +1036,6 @@ export {
   isRegionShaderBehaviorType,
   registerRegionShaderBehavior,
 };
-
-
-
-
-
-
-
 
 
 

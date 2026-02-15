@@ -144,13 +144,132 @@ function rewriteTopLevelRedeclaredLocals(source) {
     const seen = new Set();
     const declRe = /(^|;)\s*((?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(?:float|int|bool|vec[234]|mat[234])\s+)([A-Za-z_]\w*)(?=\s*(?:[=;,\[]))/gm;
 
+    const buildCodeMask = (value) => {
+      const chars = String(value ?? "").split("");
+      let inLine = false;
+      let inBlock = false;
+      let inSingle = false;
+      let inDouble = false;
+
+      for (let i = 0; i < chars.length; i += 1) {
+        const ch = chars[i];
+        const next = chars[i + 1];
+
+        if (inLine) {
+          if (ch === "\n") {
+            inLine = false;
+          } else {
+            chars[i] = " ";
+          }
+          continue;
+        }
+
+        if (inBlock) {
+          if (ch === "*" && next === "/") {
+            chars[i] = " ";
+            chars[i + 1] = " ";
+            inBlock = false;
+            i += 1;
+          } else if (ch !== "\n") {
+            chars[i] = " ";
+          }
+          continue;
+        }
+
+        if (inSingle) {
+          if (ch === "\\") {
+            if (ch !== "\n") chars[i] = " ";
+            if (i + 1 < chars.length && chars[i + 1] !== "\n") chars[i + 1] = " ";
+            i += 1;
+            continue;
+          }
+          if (ch === "'") {
+            chars[i] = " ";
+            inSingle = false;
+            continue;
+          }
+          if (ch !== "\n") chars[i] = " ";
+          continue;
+        }
+
+        if (inDouble) {
+          if (ch === "\\") {
+            if (ch !== "\n") chars[i] = " ";
+            if (i + 1 < chars.length && chars[i + 1] !== "\n") chars[i + 1] = " ";
+            i += 1;
+            continue;
+          }
+          if (ch === '"') {
+            chars[i] = " ";
+            inDouble = false;
+            continue;
+          }
+          if (ch !== "\n") chars[i] = " ";
+          continue;
+        }
+
+        if (ch === "/" && next === "/") {
+          chars[i] = " ";
+          chars[i + 1] = " ";
+          inLine = true;
+          i += 1;
+          continue;
+        }
+
+        if (ch === "/" && next === "*") {
+          chars[i] = " ";
+          chars[i + 1] = " ";
+          inBlock = true;
+          i += 1;
+          continue;
+        }
+
+        if (ch === "'") {
+          chars[i] = " ";
+          inSingle = true;
+          continue;
+        }
+
+        if (ch === '"') {
+          chars[i] = " ";
+          inDouble = true;
+          continue;
+        }
+      }
+
+      return chars.join("");
+    };
+
+    const replaceNameInCodeTail = (sourceText, codeMask, fromIndex, fromName, toName) => {
+      const tailSource = sourceText.slice(fromIndex);
+      const tailMask = codeMask.slice(fromIndex);
+      const re = new RegExp(`\\b${escapeRegex(fromName)}\\b`, "g");
+
+      let srcOut = sourceText.slice(0, fromIndex);
+      let maskOut = codeMask.slice(0, fromIndex);
+      let last = 0;
+      let m;
+      while ((m = re.exec(tailMask)) !== null) {
+        const s = m.index;
+        const e = s + fromName.length;
+        srcOut += tailSource.slice(last, s) + toName;
+        maskOut += tailMask.slice(last, s) + toName;
+        last = e;
+      }
+
+      srcOut += tailSource.slice(last);
+      maskOut += tailMask.slice(last);
+      return { source: srcOut, mask: maskOut };
+    };
+
+    let scanText = buildCodeMask(result);
     let scanIndex = 0;
     while (true) {
       declRe.lastIndex = scanIndex;
-      const match = declRe.exec(result);
+      const match = declRe.exec(scanText);
       if (!match) break;
 
-      const depth = getBraceDepth(result, match.index);
+      const depth = getBraceDepth(scanText, match.index);
       if (depth !== 0) {
         scanIndex = declRe.lastIndex;
         continue;
@@ -166,13 +285,18 @@ function rewriteTopLevelRedeclaredLocals(source) {
       const newName = `${name}_cpfx${renamedCount++}`;
       const nameStart = match.index + String(match[0] ?? "").lastIndexOf(name);
       result = `${result.slice(0, nameStart)}${newName}${result.slice(nameStart + name.length)}`;
+      scanText = `${scanText.slice(0, nameStart)}${newName}${scanText.slice(nameStart + name.length)}`;
 
       const replaceFrom = nameStart + newName.length;
-      const tail = result.slice(replaceFrom).replace(
-        new RegExp(`\\b${escapeRegex(name)}\\b`, "g"),
+      const replaced = replaceNameInCodeTail(
+        result,
+        scanText,
+        replaceFrom,
+        name,
         newName,
       );
-      result = `${result.slice(0, replaceFrom)}${tail}`;
+      result = replaced.source;
+      scanText = replaced.mask;
       scanIndex = replaceFrom;
     }
 
