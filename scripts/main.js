@@ -2430,7 +2430,8 @@ function shaderOn(tokenId, opts = {}) {
         ? Number(cfg.captureRotationDeg)
         : 0;
       const captureFlipHorizontal = parseBooleanLike(cfg.captureFlipHorizontal, false);
-      const captureFlipVertical = parseBooleanLike(cfg.captureFlipVertical, false);
+      const captureFlipVerticalUser = parseBooleanLike(cfg.captureFlipVertical, false);
+      const captureFlipVertical = !captureFlipVerticalUser;
       for (const capture of sceneAreaChannels) {
         capture.update({
           centerWorld: liveCenter,
@@ -2698,7 +2699,8 @@ function shaderOnTemplate(templateId, opts = {}) {
         ? Number(cfg.captureRotationDeg)
         : 0;
       const captureFlipHorizontal = parseBooleanLike(cfg.captureFlipHorizontal, false);
-      const captureFlipVertical = parseBooleanLike(cfg.captureFlipVertical, false);
+      const captureFlipVerticalUser = parseBooleanLike(cfg.captureFlipVertical, false);
+      const captureFlipVertical = !captureFlipVerticalUser;
       for (const capture of sceneAreaChannels) {
         capture.update({
           centerWorld: liveCenter,
@@ -2947,7 +2949,8 @@ function shaderOnTile(tileId, opts = {}) {
         ? Number(cfg.captureRotationDeg)
         : 0;
       const captureFlipHorizontal = parseBooleanLike(cfg.captureFlipHorizontal, false);
-      const captureFlipVertical = parseBooleanLike(cfg.captureFlipVertical, false);
+      const captureFlipVerticalUser = parseBooleanLike(cfg.captureFlipVertical, false);
+      const captureFlipVertical = !captureFlipVerticalUser;
       for (const capture of sceneAreaChannels) {
         capture.update({
           centerWorld: liveMetrics.center,
@@ -3471,7 +3474,8 @@ function shaderOnRegion(regionId, opts = {}) {
           ? Number(cfg.captureRotationDeg)
           : 0;
         const captureFlipHorizontal = parseBooleanLike(cfg.captureFlipHorizontal, false);
-        const captureFlipVertical = parseBooleanLike(cfg.captureFlipVertical, false);
+        const captureFlipVerticalUser = parseBooleanLike(cfg.captureFlipVertical, false);
+        const captureFlipVertical = !captureFlipVerticalUser;
         for (const capture of cluster.sceneAreaChannels) {
           capture.update({
             centerWorld: clusterBounds.center,

@@ -2593,7 +2593,8 @@ export class ShaderManager {
       const captureFlipHorizontal = parseBooleanLike(
         options?.captureFlipHorizontal,
       );
-      const captureFlipVertical = parseBooleanLike(options?.captureFlipVertical);
+      const captureFlipVerticalUser = parseBooleanLike(options?.captureFlipVertical);
+      const captureFlipVertical = !captureFlipVerticalUser;
       const previewSceneTextureInput =
         options?.previewSceneCaptureTexture ?? "";
       const previewSceneTexture =
@@ -2683,7 +2684,8 @@ export class ShaderManager {
         const captureFlipHorizontal = parseBooleanLike(
           options?.captureFlipHorizontal,
         );
-        const captureFlipVertical = parseBooleanLike(options?.captureFlipVertical);
+        const captureFlipVerticalUser = parseBooleanLike(options?.captureFlipVertical);
+        const captureFlipVertical = !captureFlipVerticalUser;
         debugLog(this.moduleId, "create placeable image channel", {
           targetType,
           targetId,
@@ -2739,7 +2741,8 @@ export class ShaderManager {
         const captureFlipHorizontal = parseBooleanLike(
           options?.captureFlipHorizontal,
         );
-        const captureFlipVertical = parseBooleanLike(options?.captureFlipVertical);
+        const captureFlipVerticalUser = parseBooleanLike(options?.captureFlipVertical);
+        const captureFlipVertical = !captureFlipVerticalUser;
         const texture =
           this._getTransformedPreviewCaptureTexture(previewTextureInput, {
             captureRotationDeg,
