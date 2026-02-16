@@ -981,7 +981,9 @@ function applyCompatibilityRewrites(source) {
     const iterVar = `cpfxWhileLoop${whileRewriteIndex++}`;
     const replacement = `for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  if (!(${condExpr})) break;\n  ${body}\n}`;
     next = `${next.slice(0, whileStart)}${replacement}${next.slice(sliceEnd)}`;
-    whileHeadRe.lastIndex = whileStart + replacement.length;
+    // Rescan from this location so nested while-loops inside the rewritten
+    // body are also normalized in subsequent iterations.
+    whileHeadRe.lastIndex = whileStart;
   }
 
   // Some sources declare a loop index without initializer, which WebGL1 parsers
