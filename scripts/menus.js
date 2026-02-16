@@ -112,6 +112,30 @@ export function createMenus({ moduleId, shaderManager }) {
     }
     return null;
   }
+  function ensureDialogVerticalScroll(candidate, { viewportHeight = "88vh" } = {}) {
+    const root = resolveElementRoot(candidate);
+    if (!(root instanceof Element)) return;
+    const host =
+      root.matches?.(".window-app, .application")
+        ? root
+        : (root.closest?.(".window-app, .application") ??
+          root.querySelector?.(".window-app, .application"));
+    if (host instanceof HTMLElement) {
+      host.style.maxHeight = viewportHeight;
+      host.style.height = "auto";
+    }
+    const windowContent =
+      root.matches?.(".window-content")
+        ? root
+        : (root.closest?.(".window-content") ??
+          root.querySelector?.(".window-content"));
+    if (windowContent instanceof HTMLElement) {
+      windowContent.style.maxHeight = `calc(${viewportHeight} - 4.5rem)`;
+      windowContent.style.overflowY = "auto";
+      windowContent.style.overflowX = "hidden";
+      windowContent.style.minHeight = "0";
+    }
+  }
   function collectSearchRoots(start) {
     const roots = [];
     const seen = new Set();
@@ -1175,6 +1199,7 @@ export function createMenus({ moduleId, shaderManager }) {
         ],
       });
       await dlg.render(true);
+      ensureDialogVerticalScroll(dlg);
     }
     async _renderShaderEditorContent(shader) {
       const channelConfig = shaderManager.getRecordChannelConfig(shader);
@@ -1344,6 +1369,7 @@ export function createMenus({ moduleId, shaderManager }) {
           resolveElementRoot(candidate?.element) ??
           resolveElementRoot(candidate);
         if (!(dialogRoot instanceof Element)) return;
+        ensureDialogVerticalScroll(dialogRoot);
         if (dialogRoot.dataset.indyFxChannelEditBound === "1") return;
         dialogRoot.dataset.indyFxChannelEditBound = "1";
         const modeInput = dialogRoot.querySelector('[name="editChannelMode"]');
@@ -1686,6 +1712,7 @@ export function createMenus({ moduleId, shaderManager }) {
         const dialogRoot =
           resolveElementRoot(candidate?.element) ?? resolveElementRoot(candidate);
         if (!(dialogRoot instanceof Element)) return;
+        ensureDialogVerticalScroll(dialogRoot);
         if (dialogRoot.dataset.indyFxVariablesBound === "1") return;
         dialogRoot.dataset.indyFxVariablesBound = "1";
 
@@ -1836,6 +1863,7 @@ export function createMenus({ moduleId, shaderManager }) {
                 callback: () => finish(false),
               },
             ],
+            render: (app) => ensureDialogVerticalScroll(app),
           });
 
           const close = dlg.close.bind(dlg);
@@ -2133,6 +2161,7 @@ export function createMenus({ moduleId, shaderManager }) {
           debugLog("editor bind skipped: hostRoot missing element", { shaderId: shader.id });
           return;
         }
+        ensureDialogVerticalScroll(hostRoot);
         debugLog("editor bind host", { shaderId: shader.id, tagName: hostRoot.tagName });
 
         const formEl =
@@ -2814,6 +2843,7 @@ export function createMenus({ moduleId, shaderManager }) {
               callback: () => finish(null),
             },
           ],
+          render: (app) => ensureDialogVerticalScroll(app),
         });
 
         const close = dlg.close.bind(dlg);
@@ -2976,6 +3006,7 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
           ],
         });
         await dlg.render(true);
+        ensureDialogVerticalScroll(dlg);
       };
 
       menu

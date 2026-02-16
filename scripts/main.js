@@ -1112,6 +1112,30 @@ async function openDocumentShaderConfigDialog(app) {
     dialog?.element ??
     dialog
   );
+  const ensureDialogVerticalScroll = (candidate, { viewportHeight = "88vh" } = {}) => {
+    const root = resolveDialogRoot(candidate);
+    if (!(root instanceof Element)) return;
+    const host =
+      root.matches?.(".window-app, .application")
+        ? root
+        : (root.closest?.(".window-app, .application") ??
+          root.querySelector?.(".window-app, .application"));
+    if (host instanceof HTMLElement) {
+      host.style.maxHeight = viewportHeight;
+      host.style.height = "auto";
+    }
+    const windowContent =
+      root.matches?.(".window-content")
+        ? root
+        : (root.closest?.(".window-content") ??
+          root.querySelector?.(".window-content"));
+    if (windowContent instanceof HTMLElement) {
+      windowContent.style.maxHeight = `calc(${viewportHeight} - 4.5rem)`;
+      windowContent.style.overflowY = "auto";
+      windowContent.style.overflowX = "hidden";
+      windowContent.style.minHeight = "0";
+    }
+  };
 
   const restoreOriginalState = async () => {
     const baselineDisabled = parsePersistDisabled(baselineFlag?._disabled);
@@ -1253,6 +1277,7 @@ async function openDocumentShaderConfigDialog(app) {
   const bindPersistentActionButtons = () => {
     const root = resolveDialogRoot(dlg);
     if (!(root instanceof Element)) return;
+    ensureDialogVerticalScroll(root);
     if (root.dataset.indyFxPersistButtonsBound === "1") return;
     root.dataset.indyFxPersistButtonsBound = "1";
     root.addEventListener("click", (event) => {
@@ -1269,6 +1294,7 @@ async function openDocumentShaderConfigDialog(app) {
   };
 
   await dlg.render(true);
+  ensureDialogVerticalScroll(dlg);
   bindPersistentActionButtons();
   setTimeout(() => bindPersistentActionButtons(), 0);
 }
