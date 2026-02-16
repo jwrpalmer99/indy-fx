@@ -586,6 +586,8 @@ export class ShaderManager {
     this._previewCaptureTextureCache = new Map();
     this._pendingPreviewTextureLoads = new Set();
     this._pendingThumbnailRegenerations = new Map();
+    this._pendingThumbnailRegenerationRerun = new Set();
+    this._pendingThumbnailRegenerationNextOptions = new Map();
     this._thumbnailRenderer = null;
     this._thumbnailRendererCanvas = null;
     this._thumbnailRendererSize = 0;
@@ -2437,8 +2439,21 @@ export class ShaderManager {
   _queueImportedShaderThumbnailRegeneration(shaderId, options = {}) {
     const id = String(shaderId ?? "").trim();
     if (!id) return;
-    if (this._pendingThumbnailRegenerations.has(id)) return;
+    if (this._pendingThumbnailRegenerations.has(id)) {
+      const existingNextOptions =
+        this._pendingThumbnailRegenerationNextOptions.get(id) ?? {};
+      this._pendingThumbnailRegenerationNextOptions.set(id, {
+        ...existingNextOptions,
+        ...(options && typeof options === "object" ? options : {}),
+      });
+      this._pendingThumbnailRegenerationRerun.add(id);
+      debugLog(this.moduleId, "thumbnail regenerate deferred (pending in-flight)", {
+        shaderId: id,
+      });
+      return;
+    }
 
+    this._pendingThumbnailRegenerationNextOptions.delete(id);
     const pending = Promise.resolve()
       .then(() => this.regenerateImportedShaderThumbnail(id, options))
       .catch((err) => {
@@ -2449,6 +2464,13 @@ export class ShaderManager {
       })
       .finally(() => {
         this._pendingThumbnailRegenerations.delete(id);
+        const shouldRerun = this._pendingThumbnailRegenerationRerun.delete(id);
+        if (shouldRerun) {
+          const nextOptions =
+            this._pendingThumbnailRegenerationNextOptions.get(id) ?? {};
+          this._pendingThumbnailRegenerationNextOptions.delete(id);
+          this._queueImportedShaderThumbnailRegeneration(id, nextOptions);
+        }
       });
 
     this._pendingThumbnailRegenerations.set(id, pending);
@@ -3112,7 +3134,10 @@ export class ShaderManager {
   }
 
   hasShader(shaderId) {
-    return this.getCombinedEntries().some((entry) => entry.id === shaderId);
+    const id = String(shaderId ?? "").trim();
+    if (!id) return false;
+    if (this.builtinById.has(id)) return true;
+    return this.getImportedRecord(id) !== null;
   }
 
   isBuiltinShader(shaderId) {
@@ -4485,8 +4510,12 @@ export class ShaderManager {
       channelsChanged ||
       defaultsChanged ||
       referencedChannelsChanged;
-    const shouldRegenerateThumbnail =
-      sourceChanged || channelsChanged || defaultsChanged;
+    const thumbnailRegenerateReasons = [];
+    if (sourceChanged) thumbnailRegenerateReasons.push("source");
+    if (channelsChanged) thumbnailRegenerateReasons.push("channels");
+    if (defaultsChanged) thumbnailRegenerateReasons.push("defaults");
+    if (referencedChannelsChanged) thumbnailRegenerateReasons.push("referencedChannels");
+    const shouldRegenerateThumbnail = thumbnailRegenerateReasons.length > 0;
 
     if (shouldPersist) {
       phaseStart = nowMs();
@@ -4561,6 +4590,7 @@ export class ShaderManager {
       referencedChannelsChanged,
       shouldPersist,
       shouldRegenerateThumbnail,
+      thumbnailRegenerateReasons,
       ...timings,
     });
 
@@ -4604,6 +4634,7 @@ export class ShaderManager {
   }
 
   async duplicateImportedShader(shaderId, { name = null, label = null } = {}) {
+    const duplicateStart = nowMs();
     const source = this.getImportedRecord(shaderId);
     if (!source) throw new Error("Imported shader not found.");
 
@@ -4612,6 +4643,56 @@ export class ShaderManager {
       label ?? `${source.label ?? source.name} Copy`,
     );
 
+    const indexEntries = this._getImportedLibraryIndexEntries();
+
+    // Fast path for indexed storage: avoid full-library read/write.
+    if (indexEntries.length > 0) {
+      const used = new Set(indexEntries.map((entry) => String(entry?.id ?? "").trim()));
+      const base = slugify(nextName);
+      let id = base;
+      let i = 2;
+      while (used.has(id) || this.builtinById.has(id)) {
+        id = `${base}-${i++}`;
+      }
+
+      const clone = foundry.utils.deepClone(source);
+      clone.id = id;
+      clone.name = nextName;
+      clone.label = nextLabel;
+      clone.createdAt = Date.now();
+      clone.updatedAt = Date.now();
+
+      const settingKey = this._buildShaderRecordSettingKey(id);
+      this._registerShaderRecordSetting(settingKey);
+      await game.settings.set(this.moduleId, settingKey, clone);
+      const nextIndex = [...indexEntries, { id, settingKey }];
+      await game.settings.set(this.moduleId, this.shaderLibraryIndexSetting, nextIndex);
+
+      this._shaderLibraryRevision += 1;
+      this._invalidateShaderChoiceCaches();
+      Hooks.callAll(`${this.moduleId}.shaderLibraryChanged`, {
+        context: "duplicateImportedShader",
+        operation: "duplicate",
+        changedShaderIds: [id],
+        addedShaderIds: [id],
+        updatedShaderIds: [],
+        removedShaderIds: [],
+        choicesMayHaveChanged: true,
+        recordCount: nextIndex.length,
+      });
+
+      debugLog(this.moduleId, "duplicateImportedShader timing", {
+        sourceShaderId: String(shaderId ?? ""),
+        shaderId: id,
+        path: "indexed-fast",
+        indexBeforeCount: indexEntries.length,
+        indexAfterCount: nextIndex.length,
+        totalMs: roundMs(nowMs() - duplicateStart),
+      });
+      return this.getImportedRecord(id) ?? clone;
+    }
+
+    // Legacy fallback path.
     const records = this.getImportedRecords();
     const used = new Set(records.map((entry) => entry.id));
     const base = slugify(nextName);
@@ -4633,6 +4714,12 @@ export class ShaderManager {
       context: "duplicateImportedShader",
       changedShaderIds: [id],
       operation: "duplicate",
+    });
+    debugLog(this.moduleId, "duplicateImportedShader timing", {
+      sourceShaderId: String(shaderId ?? ""),
+      shaderId: id,
+      path: "legacy-fallback",
+      totalMs: roundMs(nowMs() - duplicateStart),
     });
     return this.getImportedRecord(id) ?? clone;
   }
@@ -4672,16 +4759,69 @@ export class ShaderManager {
   }
 
   async removeImportedShader(shaderId) {
+    const removeStart = nowMs();
+    const id = String(shaderId ?? "").trim();
+    if (!id) return false;
+
+    // Fast path for indexed storage: avoid reading every shader record.
+    const indexEntries = this._getImportedLibraryIndexEntries();
+    if (indexEntries.length > 0) {
+      const removedEntry = indexEntries.find((entry) => String(entry?.id ?? "").trim() === id);
+      if (!removedEntry) return false;
+
+      const nextIndex = indexEntries.filter(
+        (entry) => String(entry?.id ?? "").trim() !== id,
+      );
+      const removedSettingKey = String(removedEntry?.settingKey ?? "").trim();
+      if (removedSettingKey) {
+        this._registerShaderRecordSetting(removedSettingKey);
+        await game.settings.set(this.moduleId, removedSettingKey, {});
+      }
+      await game.settings.set(this.moduleId, this.shaderLibraryIndexSetting, nextIndex);
+
+      this._pendingThumbnailRegenerationRerun?.delete?.(id);
+      this._pendingThumbnailRegenerationNextOptions?.delete?.(id);
+
+      this._shaderLibraryRevision += 1;
+      this._invalidateShaderChoiceCaches();
+      Hooks.callAll(`${this.moduleId}.shaderLibraryChanged`, {
+        context: "removeImportedShader",
+        operation: "remove",
+        changedShaderIds: [id],
+        addedShaderIds: [],
+        updatedShaderIds: [],
+        removedShaderIds: [id],
+        choicesMayHaveChanged: true,
+        recordCount: nextIndex.length,
+      });
+
+      await this.enforceValidSelection();
+      debugLog(this.moduleId, "removeImportedShader timing", {
+        shaderId: id,
+        path: "indexed-fast",
+        indexBeforeCount: indexEntries.length,
+        indexAfterCount: nextIndex.length,
+        totalMs: roundMs(nowMs() - removeStart),
+      });
+      return true;
+    }
+
+    // Legacy fallback path.
     const records = this.getImportedRecords();
-    const next = records.filter((entry) => entry.id !== shaderId);
+    const next = records.filter((entry) => entry.id !== id);
     if (next.length === records.length) return false;
 
     await this.setImportedRecords(next, {
       context: "removeImportedShader",
-      changedShaderIds: [shaderId],
+      changedShaderIds: [id],
       operation: "remove",
     });
     await this.enforceValidSelection();
+    debugLog(this.moduleId, "removeImportedShader timing", {
+      shaderId: id,
+      path: "legacy-fallback",
+      totalMs: roundMs(nowMs() - removeStart),
+    });
     return true;
   }
 }
