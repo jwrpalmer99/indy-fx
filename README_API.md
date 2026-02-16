@@ -7,6 +7,11 @@ Macro/API reference for module `indy-fx`.
 const fx = game.indyFX;
 ```
 
+Additional utilities:
+- `fx.debugDumpShaderContainers(payload?)`
+- `fx.debugDumpShaderContainerParents(payload?)`
+- `fx.rebuildShaderStorageFromLegacy(payload?)`
+
 ## Token FX
 - `fx.shaderOn(tokenId, opts?)`
 - `fx.shaderOff(tokenId)`
@@ -89,6 +94,7 @@ Region notes:
 - `fx.shaders.importShaderToy(payload)`
 - `fx.shaders.importShaderToyUrl(payload)`
 - `fx.shaders.importShaderToyJson(payload)`
+- `fx.shaders.rebuildStorageFromLegacy(payload?)`
 - `fx.shaders.updateImportedShader(shaderId, payload)`
 - `fx.shaders.updateImportedChannels(shaderId, payload)`
 - `fx.shaders.duplicateImported(shaderId, payload?)`
@@ -99,7 +105,7 @@ Region notes:
 | Option | Type | Notes |
 |---|---|---|
 | `shaderId` | string | Built-in or imported shader id. |
-| `layer` | `inherit \| token \| interfacePrimary \| interface \| effects` | Render layer override. |
+| `layer` | `inherit \| interfacePrimary \| belowTokens \| drawings` | Render layer override. |
 | `shape` | `circle \| cone \| line \| rectangle` | Mask shape. |
 | `shapeDirectionDeg` | number | Direction for cone/line/rectangle. |
 | `shapeDistanceUnits` | number/string | Shape distance in scene units. Alias: `distance`. |
@@ -139,7 +145,7 @@ Region notes:
 | `flowTurbulence` | number | Built-in flow turbulence. |
 | `colorA` | string | Built-in color A (hex). |
 | `colorB` | string | Built-in color B (hex). |
-| `debugMode` | `0 \| 1 \| 2` | Off / UV / mask debug. |
+| `debugMode` | number | `0` off. Imported shaders: `1` UV, `2` base alpha, `3` source alpha, `4` post-policy alpha, `5` final alpha. |
 
 ## Option Aliases
 - `distance -> shapeDistanceUnits`
@@ -154,6 +160,14 @@ Region notes:
 - `shaderDisplayTimeMs -> displayTimeMs`
 - `shaderEaseInMs -> easeInMs`
 - `shaderEaseOutMs -> easeOutMs`
+
+Layer compatibility aliases are also accepted and normalized:
+- `token -> interfacePrimary`
+- `interface -> interfacePrimary`
+- `effects -> belowTokens`
+- `baseEffects -> belowTokens`
+- `belowTiles -> belowTokens`
+- `drawingsLayer -> drawings`
 
 ## Import Payloads
 ### `fx.shaders.importShaderToy(payload)`
@@ -236,3 +250,4 @@ ui.notifications.info(`Removed ${imported.length} imported shader(s).`);
 - Imported shader ids are slugified from names (for example `fire`, `fire-2`), not `custom-*` prefixed.
 - Broadcast behavior can be restricted by setting `gmOnlyBroadcast`.
 - Persistent placeable effects require `displayTimeMs: 0`.
+- Shader library persistence uses per-shader settings + index internally; import/export JSON format is unchanged.

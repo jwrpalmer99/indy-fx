@@ -1508,6 +1508,24 @@ async function openDocumentShaderConfigDialog(app) {
     const variableRoot = resolveDialogRoot(variableDialog);
     ensureDialogVerticalScroll(variableRoot);
 
+    const applyButton = variableRoot?.querySelector?.('[data-action="apply"]');
+    if (applyButton instanceof HTMLElement) {
+      if (applyButton.dataset.indyFxNoCloseApplyBound !== "1") {
+        applyButton.dataset.indyFxNoCloseApplyBound = "1";
+        applyButton.addEventListener(
+          "click",
+          (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation?.();
+            const dialogRoot = resolveDialogRoot(variableDialog);
+            void applyFromDialog(dialogRoot, "apply");
+          },
+          { capture: true },
+        );
+      }
+    }
+
     for (const group of variableRoot?.querySelectorAll?.('[data-var-kind="vector"][data-var-index]') ?? []) {
       const idx = Number(group.getAttribute("data-var-index") ?? -1);
       if (!Number.isInteger(idx) || idx < 0) continue;

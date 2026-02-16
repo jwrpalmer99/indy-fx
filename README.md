@@ -32,7 +32,7 @@ For macro/API details, see `README_API.md`.
 - Or use macros/API (`game.indyFX...`).
 
 Token/Tile convenience:
-- If a token/tile has Indy FX, its HUD includes a remove button.
+- If a token/tile/template has Indy FX, its HUD includes an **Edit** button that opens the shader editor for that instance.
 
 ### Apply to Regions
 - Add Region Behavior type **indyFX**.
@@ -79,6 +79,7 @@ Notes:
 ### Wrong preview output
 - Verify channel mode/path/source assignments.
 - For capture channels, verify preview background settings.
+- Thumbnail updates are asynchronous; if debug logging is enabled, check `shader save timing` and `thumbnail regenerate encoded` logs.
 
 ### Shader compiles in ShaderToy but fails in Foundry
 - Some ShaderToy code needs adaptation for Foundry/PIXI GLSL.
