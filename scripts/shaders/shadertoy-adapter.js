@@ -102,27 +102,63 @@ function rewriteFloatStepLoopsToCountedLoops(source) {
   }
 
   let rewriteIndex = 0;
+  const computeLoopIterations = (init, bound, step, cmpOp) => {
+    if (!Number.isFinite(init) || !Number.isFinite(bound) || !Number.isFinite(step) || step === 0) {
+      return NaN;
+    }
+
+    let iters = NaN;
+    if (cmpOp === "<") {
+      if (step <= 0) return NaN;
+      iters = Math.ceil((bound - init) / step - 1e-8);
+    } else if (cmpOp === "<=") {
+      if (step <= 0) return NaN;
+      iters = Math.floor((bound - init) / step + 1e-8) + 1;
+    } else if (cmpOp === ">") {
+      if (step >= 0) return NaN;
+      iters = Math.ceil((init - bound) / (-step) - 1e-8);
+    } else if (cmpOp === ">=") {
+      if (step >= 0) return NaN;
+      iters = Math.floor((init - bound) / (-step) + 1e-8) + 1;
+    } else {
+      return NaN;
+    }
+
+    if (!Number.isFinite(iters)) return NaN;
+    return Math.max(0, iters);
+  };
+
   const floatForRe = /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<)\s*([^;]+)\s*;\s*\1\s*\+=\s*([^)]+)\)\s*\{/g;
   next = next.replace(floatForRe, (full, loopVar, initExpr, cmpOp, boundExpr, stepExpr) => {
     const init = evalNumericExpression(initExpr, constants);
     const bound = evalNumericExpression(boundExpr, constants);
     const step = evalNumericExpression(stepExpr, constants);
-    if (!Number.isFinite(init) || !Number.isFinite(bound) || !Number.isFinite(step) || step <= 0) {
-      return full;
-    }
-
-    let iters = 0;
-    if (cmpOp === "<") {
-      iters = Math.ceil((bound - init) / step - 1e-8);
-    } else {
-      iters = Math.floor((bound - init) / step + 1e-8) + 1;
-    }
-
+    const iters = computeLoopIterations(init, bound, step, cmpOp);
     if (!Number.isFinite(iters) || iters <= 0 || iters > 8192) return full;
 
     const iterVar = `cpfxForStep${rewriteIndex++}`;
     return `for(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){\n  float ${loopVar} = (${String(initExpr).trim()}) + float(${iterVar})*(${String(stepExpr).trim()});`;
   });
+
+  const floatIncForRe = /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<|>=|>)\s*([^;]+)\s*;\s*(\+\+\s*\1|\1\s*\+\+|--\s*\1|\1\s*--)\s*\)\s*\{/g;
+  next = next.replace(floatIncForRe, (full, loopVar, initExpr, cmpOp, boundExpr, incExpr) => {
+    const init = evalNumericExpression(initExpr, constants);
+    const bound = evalNumericExpression(boundExpr, constants);
+    const step = String(incExpr).includes("--") ? -1 : 1;
+    const iters = computeLoopIterations(init, bound, step, cmpOp);
+    if (!Number.isFinite(iters) || iters <= 0 || iters > 8192) return full;
+
+    const iterVar = `cpfxForStep${rewriteIndex++}`;
+    return `for(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){\n  float ${loopVar} = (${String(initExpr).trim()}) + float(${iterVar})*(${step}.0);`;
+  });
+
+  // Some GLSL ES compilers reject an empty increment expression in a for-loop.
+  const floatNoIncForRe = /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<|>=|>)\s*([^;]+)\s*;\s*\)\s*\{/g;
+  next = next.replace(
+    floatNoIncForRe,
+    (_full, loopVar, initExpr, cmpOp, boundExpr) =>
+      `for(float ${loopVar} = ${String(initExpr).trim()}; ${loopVar} ${cmpOp} ${String(boundExpr).trim()}; ${loopVar} += 0.0){`,
+  );
 
   return next;
 }
@@ -457,6 +493,11 @@ function applyCompatibilityRewrites(source) {
     /(\b(?:0x[0-9A-Fa-f]+|\d+))[uU]\b/g,
     "$1",
   );
+  // GLSL ES 1.00 has no floatBitsToUint/uint families.
+  // Route floatBitsToUint to a deterministic compatibility helper.
+  next = next.replace(/\bfloatBitsToUint\s*\(/g, "cpfx_floatBitsToUint(");
+  // Common hash normalization literal in ES3 shaders.
+  next = next.replace(/\bfloat\s*\(\s*0x[fF]{8}\s*\)/g, "4294967295.0");
 
   // Common Twigl shorthand in some ShaderToy ports.
   // Rewritten to ANGLE/WebGL-friendly canonical loop form.
@@ -519,6 +560,19 @@ function applyCompatibilityRewrites(source) {
       const ch = value[idx];
       if (ch === "(") depth += 1;
       else if (ch === ")") {
+        depth -= 1;
+        if (depth === 0) return idx;
+      }
+    }
+    return -1;
+  };
+
+  const findMatchingBrace = (value, openIndex) => {
+    let depth = 0;
+    for (let idx = openIndex; idx < value.length; idx += 1) {
+      const ch = value[idx];
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
         depth -= 1;
         if (depth === 0) return idx;
       }
@@ -627,9 +681,11 @@ function applyCompatibilityRewrites(source) {
   }
 
   // GLSL ES 1.00 is strict about loop form. Shaders sometimes use:
-  // for( ; conditionWithSideEffects ; ) statement-or-block;
-  // Rewrite to a bounded canonical loop and evaluate the original condition
-  // at the top of each iteration so side effects are preserved.
+  // for( ; condition ; step ) statement-or-block;
+  // for( initExpr ; condition ; ) statement-or-block;
+  // Rewrite non-declaration loop headers to bounded canonical loops and
+  // evaluate the original condition at the top of each iteration so side
+  // effects are preserved.
   let emptyForRewriteIndex = 0;
   const emptyForHeadRe = /for\s*\(/g;
   while (true) {
@@ -656,9 +712,19 @@ function applyCompatibilityRewrites(source) {
     const initPart = String(headerParts[0] ?? "").trim();
     const condPart = String(headerParts[1] ?? "").trim();
     const stepPart = String(headerParts[2] ?? "").trim();
-    if (initPart !== "" || stepPart !== "" || condPart === "") {
+    if (condPart === "") {
       emptyForHeadRe.lastIndex = closeParen + 1;
       continue;
+    }
+    const initHasDeclaration = /^(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(?:int|float|bool|vec[234]|ivec[234]|uvec[234]|mat[234])\b/.test(initPart);
+    if (initHasDeclaration) {
+      emptyForHeadRe.lastIndex = closeParen + 1;
+      continue;
+    }
+    // Only target non-declaration headers. Declaration loops are handled by
+    // dedicated rewrites later in the pipeline.
+    if (initPart === "" && stepPart === "") {
+      // handled by same generic replacement below
     }
 
     let stmtStart = closeParen + 1;
@@ -686,9 +752,64 @@ function applyCompatibilityRewrites(source) {
     }
 
     const iterVar = `cpfxEmptyLoop${emptyForRewriteIndex++}`;
-    const replacement = `for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  if (!(${condPart})) break;\n  ${body}\n}`;
+    const initStmt = initPart ? `${initPart};\n` : "";
+    const stepStmt = stepPart ? `\n  ${stepPart};` : "";
+    const replacement = `${initStmt}for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  if (!(${condPart})) break;\n  ${body}${stepStmt}\n}`;
     next = `${next.slice(0, forStart)}${replacement}${next.slice(sliceEnd)}`;
     emptyForHeadRe.lastIndex = forStart + replacement.length;
+  }
+
+  // GLSL ES 1.00 in this runtime rejects while-loops.
+  // Rewrite while(cond) body; into a bounded canonical for-loop.
+  let whileRewriteIndex = 0;
+  const whileHeadRe = /\bwhile\s*\(/g;
+  while (true) {
+    const m = whileHeadRe.exec(next);
+    if (!m) break;
+
+    const whileStart = m.index;
+    const openParen = next.indexOf("(", whileStart);
+    if (openParen < 0) break;
+    const closeParen = findMatchingParen(next, openParen);
+    if (closeParen < 0) {
+      whileHeadRe.lastIndex = whileStart + 5;
+      continue;
+    }
+
+    const condPart = String(next.slice(openParen + 1, closeParen) ?? "").trim();
+    if (!condPart) {
+      whileHeadRe.lastIndex = closeParen + 1;
+      continue;
+    }
+
+    let stmtStart = closeParen + 1;
+    while (stmtStart < next.length && /\s/.test(next[stmtStart])) stmtStart += 1;
+    if (stmtStart >= next.length) break;
+
+    let body = "";
+    let sliceEnd = stmtStart;
+    if (next[stmtStart] === "{") {
+      const stmtClose = findMatchingBrace(next, stmtStart);
+      if (stmtClose < 0) {
+        whileHeadRe.lastIndex = closeParen + 1;
+        continue;
+      }
+      body = next.slice(stmtStart + 1, stmtClose).trim();
+      sliceEnd = stmtClose + 1;
+    } else {
+      const stmtEnd = findStatementEnd(next, stmtStart);
+      if (stmtEnd < 0) {
+        whileHeadRe.lastIndex = closeParen + 1;
+        continue;
+      }
+      body = next.slice(stmtStart, stmtEnd + 1).trim();
+      sliceEnd = stmtEnd + 1;
+    }
+
+    const iterVar = `cpfxWhileLoop${whileRewriteIndex++}`;
+    const replacement = `for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  if (!(${condPart})) break;\n  ${body}\n}`;
+    next = `${next.slice(0, whileStart)}${replacement}${next.slice(sliceEnd)}`;
+    whileHeadRe.lastIndex = whileStart + replacement.length;
   }
 
   // GLSL ES 1.00 rejects conditions like:
@@ -764,7 +885,7 @@ function applyCompatibilityRewrites(source) {
   let arrayHelpers = "";
   const rewrittenArrays = [];
   const constArrayCtorRe =
-    /const\s+(float|int|vec2|vec3|vec4)\s*(?:\[\s*(\d+)\s*\])?\s+([A-Za-z_]\w*)\s*(?:\[\s*(\d+)\s*\])?\s*=\s*\1\s*\[\s*(\d+)\s*\]\s*\(([\s\S]*?)\)\s*;/g;
+    /const\s+(?:(?:lowp|mediump|highp)\s+)?(float|int|vec2|vec3|vec4)\s*(?:\[\s*(\d+)\s*\])?\s+([A-Za-z_]\w*)\s*(?:\[\s*(\d+)\s*\])?\s*=\s*\1\s*\[\s*(\d*)\s*\]\s*\(([\s\S]*?)\)\s*;/g;
   next = next.replace(
     constArrayCtorRe,
     (
@@ -884,12 +1005,16 @@ function applyCompatibilityRewrites(source) {
     "cpfx_bitand(cpfx_shr($1, $2), $3)",
   );
 
-  const atom = String.raw`(?:[A-Za-z_]\w*\s*\([^()]*\)|[A-Za-z_]\w*|\d+(?:\.\d+)?|\([^()]*\))`;
+  const identifierAtom = String.raw`[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[\s*[^][]+\s*\])?`;
+  const parenAtom = String.raw`\((?:[^()]|\([^()]*\))*\)`;
+  const atom = String.raw`(?:${identifierAtom}\s*\([^()]*\)|${identifierAtom}|[+-]?\d+(?:\.\d+)?|${parenAtom})`;
   const shrRe = new RegExp(`(${atom})\\s*>>\\s*(${atom})`, "g");
   const andRe = new RegExp(`(${atom})\\s*&\\s*(${atom})`, "g");
+  const xorRe = new RegExp(`(${atom})\\s*\\^\\s*(${atom})`, "g");
   const modRe = new RegExp(`(${atom})\\s*%\\s*(${atom})`, "g");
   next = foldBinaryOps(next, shrRe, "cpfx_shr($1, $2)");
   next = foldBinaryOps(next, andRe, "cpfx_bitand($1, $2)");
+  next = foldBinaryOps(next, xorRe, "cpfx_bitxor($1, $2)");
   next = foldBinaryOps(next, modRe, "cpfx_mod($1, $2)");
   // Catch residual forms like ((cpfx_shr((i+3),1))&1).
   next = next.replace(
@@ -1302,6 +1427,12 @@ int cpfx_shr(int a, int b) {
 float cpfx_shr(float a, float b) { return float(cpfx_shr(int(floor(a)), int(floor(b)))); }
 float cpfx_shr(float a, int b) { return float(cpfx_shr(int(floor(a)), b)); }
 float cpfx_shr(int a, float b) { return float(cpfx_shr(a, int(floor(b)))); }
+ivec2 cpfx_shr(ivec2 a, int b) { return ivec2(cpfx_shr(a.x, b), cpfx_shr(a.y, b)); }
+ivec3 cpfx_shr(ivec3 a, int b) { return ivec3(cpfx_shr(a.x, b), cpfx_shr(a.y, b), cpfx_shr(a.z, b)); }
+ivec4 cpfx_shr(ivec4 a, int b) { return ivec4(cpfx_shr(a.x, b), cpfx_shr(a.y, b), cpfx_shr(a.z, b), cpfx_shr(a.w, b)); }
+ivec2 cpfx_shr(ivec2 a, ivec2 b) { return ivec2(cpfx_shr(a.x, b.x), cpfx_shr(a.y, b.y)); }
+ivec3 cpfx_shr(ivec3 a, ivec3 b) { return ivec3(cpfx_shr(a.x, b.x), cpfx_shr(a.y, b.y), cpfx_shr(a.z, b.z)); }
+ivec4 cpfx_shr(ivec4 a, ivec4 b) { return ivec4(cpfx_shr(a.x, b.x), cpfx_shr(a.y, b.y), cpfx_shr(a.z, b.z), cpfx_shr(a.w, b.w)); }
 
 int cpfx_bitand(int a, int b) {
   int aa = (a < 0) ? 0 : a;
@@ -1322,6 +1453,34 @@ int cpfx_bitand(int a, int b) {
 float cpfx_bitand(float a, float b) { return float(cpfx_bitand(int(floor(a)), int(floor(b)))); }
 float cpfx_bitand(float a, int b) { return float(cpfx_bitand(int(floor(a)), b)); }
 float cpfx_bitand(int a, float b) { return float(cpfx_bitand(a, int(floor(b)))); }
+ivec2 cpfx_bitand(ivec2 a, ivec2 b) { return ivec2(cpfx_bitand(a.x, b.x), cpfx_bitand(a.y, b.y)); }
+ivec3 cpfx_bitand(ivec3 a, ivec3 b) { return ivec3(cpfx_bitand(a.x, b.x), cpfx_bitand(a.y, b.y), cpfx_bitand(a.z, b.z)); }
+ivec4 cpfx_bitand(ivec4 a, ivec4 b) { return ivec4(cpfx_bitand(a.x, b.x), cpfx_bitand(a.y, b.y), cpfx_bitand(a.z, b.z), cpfx_bitand(a.w, b.w)); }
+ivec2 cpfx_bitand(ivec2 a, int b) { return cpfx_bitand(a, ivec2(b)); }
+ivec3 cpfx_bitand(ivec3 a, int b) { return cpfx_bitand(a, ivec3(b)); }
+ivec4 cpfx_bitand(ivec4 a, int b) { return cpfx_bitand(a, ivec4(b)); }
+
+int cpfx_bitxor(int a, int b) {
+  return a + b - 2 * cpfx_bitand(a, b);
+}
+float cpfx_bitxor(float a, float b) { return float(cpfx_bitxor(int(floor(a)), int(floor(b)))); }
+float cpfx_bitxor(float a, int b) { return float(cpfx_bitxor(int(floor(a)), b)); }
+float cpfx_bitxor(int a, float b) { return float(cpfx_bitxor(a, int(floor(b)))); }
+ivec2 cpfx_bitxor(ivec2 a, ivec2 b) { return ivec2(cpfx_bitxor(a.x, b.x), cpfx_bitxor(a.y, b.y)); }
+ivec3 cpfx_bitxor(ivec3 a, ivec3 b) { return ivec3(cpfx_bitxor(a.x, b.x), cpfx_bitxor(a.y, b.y), cpfx_bitxor(a.z, b.z)); }
+ivec4 cpfx_bitxor(ivec4 a, ivec4 b) { return ivec4(cpfx_bitxor(a.x, b.x), cpfx_bitxor(a.y, b.y), cpfx_bitxor(a.z, b.z), cpfx_bitxor(a.w, b.w)); }
+ivec2 cpfx_bitxor(ivec2 a, int b) { return cpfx_bitxor(a, ivec2(b)); }
+ivec3 cpfx_bitxor(ivec3 a, int b) { return cpfx_bitxor(a, ivec3(b)); }
+ivec4 cpfx_bitxor(ivec4 a, int b) { return cpfx_bitxor(a, ivec4(b)); }
+
+int cpfx_floatBitsToUint(float v) {
+  float av = abs(v);
+  float signSalt = (v < 0.0) ? 19.19 : 0.0;
+  return int(floor(fract(sin(av * 12.9898 + signSalt) * 43758.5453123) * 16777215.0));
+}
+ivec2 cpfx_floatBitsToUint(vec2 v) { return ivec2(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y)); }
+ivec3 cpfx_floatBitsToUint(vec3 v) { return ivec3(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y), cpfx_floatBitsToUint(v.z)); }
+ivec4 cpfx_floatBitsToUint(vec4 v) { return ivec4(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y), cpfx_floatBitsToUint(v.z), cpfx_floatBitsToUint(v.w)); }
 
 float cpfx_mod(float a, float b) { return mod(a, b); }
 float cpfx_mod(float a, int b) { return mod(a, float(b)); }
@@ -1695,6 +1854,12 @@ int cpfx_shr(int a, int b) {
 float cpfx_shr(float a, float b) { return float(cpfx_shr(int(floor(a)), int(floor(b)))); }
 float cpfx_shr(float a, int b) { return float(cpfx_shr(int(floor(a)), b)); }
 float cpfx_shr(int a, float b) { return float(cpfx_shr(a, int(floor(b)))); }
+ivec2 cpfx_shr(ivec2 a, int b) { return ivec2(cpfx_shr(a.x, b), cpfx_shr(a.y, b)); }
+ivec3 cpfx_shr(ivec3 a, int b) { return ivec3(cpfx_shr(a.x, b), cpfx_shr(a.y, b), cpfx_shr(a.z, b)); }
+ivec4 cpfx_shr(ivec4 a, int b) { return ivec4(cpfx_shr(a.x, b), cpfx_shr(a.y, b), cpfx_shr(a.z, b), cpfx_shr(a.w, b)); }
+ivec2 cpfx_shr(ivec2 a, ivec2 b) { return ivec2(cpfx_shr(a.x, b.x), cpfx_shr(a.y, b.y)); }
+ivec3 cpfx_shr(ivec3 a, ivec3 b) { return ivec3(cpfx_shr(a.x, b.x), cpfx_shr(a.y, b.y), cpfx_shr(a.z, b.z)); }
+ivec4 cpfx_shr(ivec4 a, ivec4 b) { return ivec4(cpfx_shr(a.x, b.x), cpfx_shr(a.y, b.y), cpfx_shr(a.z, b.z), cpfx_shr(a.w, b.w)); }
 
 int cpfx_bitand(int a, int b) {
   int aa = (a < 0) ? 0 : a;
@@ -1715,6 +1880,34 @@ int cpfx_bitand(int a, int b) {
 float cpfx_bitand(float a, float b) { return float(cpfx_bitand(int(floor(a)), int(floor(b)))); }
 float cpfx_bitand(float a, int b) { return float(cpfx_bitand(int(floor(a)), b)); }
 float cpfx_bitand(int a, float b) { return float(cpfx_bitand(a, int(floor(b)))); }
+ivec2 cpfx_bitand(ivec2 a, ivec2 b) { return ivec2(cpfx_bitand(a.x, b.x), cpfx_bitand(a.y, b.y)); }
+ivec3 cpfx_bitand(ivec3 a, ivec3 b) { return ivec3(cpfx_bitand(a.x, b.x), cpfx_bitand(a.y, b.y), cpfx_bitand(a.z, b.z)); }
+ivec4 cpfx_bitand(ivec4 a, ivec4 b) { return ivec4(cpfx_bitand(a.x, b.x), cpfx_bitand(a.y, b.y), cpfx_bitand(a.z, b.z), cpfx_bitand(a.w, b.w)); }
+ivec2 cpfx_bitand(ivec2 a, int b) { return cpfx_bitand(a, ivec2(b)); }
+ivec3 cpfx_bitand(ivec3 a, int b) { return cpfx_bitand(a, ivec3(b)); }
+ivec4 cpfx_bitand(ivec4 a, int b) { return cpfx_bitand(a, ivec4(b)); }
+
+int cpfx_bitxor(int a, int b) {
+  return a + b - 2 * cpfx_bitand(a, b);
+}
+float cpfx_bitxor(float a, float b) { return float(cpfx_bitxor(int(floor(a)), int(floor(b)))); }
+float cpfx_bitxor(float a, int b) { return float(cpfx_bitxor(int(floor(a)), b)); }
+float cpfx_bitxor(int a, float b) { return float(cpfx_bitxor(a, int(floor(b)))); }
+ivec2 cpfx_bitxor(ivec2 a, ivec2 b) { return ivec2(cpfx_bitxor(a.x, b.x), cpfx_bitxor(a.y, b.y)); }
+ivec3 cpfx_bitxor(ivec3 a, ivec3 b) { return ivec3(cpfx_bitxor(a.x, b.x), cpfx_bitxor(a.y, b.y), cpfx_bitxor(a.z, b.z)); }
+ivec4 cpfx_bitxor(ivec4 a, ivec4 b) { return ivec4(cpfx_bitxor(a.x, b.x), cpfx_bitxor(a.y, b.y), cpfx_bitxor(a.z, b.z), cpfx_bitxor(a.w, b.w)); }
+ivec2 cpfx_bitxor(ivec2 a, int b) { return cpfx_bitxor(a, ivec2(b)); }
+ivec3 cpfx_bitxor(ivec3 a, int b) { return cpfx_bitxor(a, ivec3(b)); }
+ivec4 cpfx_bitxor(ivec4 a, int b) { return cpfx_bitxor(a, ivec4(b)); }
+
+int cpfx_floatBitsToUint(float v) {
+  float av = abs(v);
+  float signSalt = (v < 0.0) ? 19.19 : 0.0;
+  return int(floor(fract(sin(av * 12.9898 + signSalt) * 43758.5453123) * 16777215.0));
+}
+ivec2 cpfx_floatBitsToUint(vec2 v) { return ivec2(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y)); }
+ivec3 cpfx_floatBitsToUint(vec3 v) { return ivec3(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y), cpfx_floatBitsToUint(v.z)); }
+ivec4 cpfx_floatBitsToUint(vec4 v) { return ivec4(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y), cpfx_floatBitsToUint(v.z), cpfx_floatBitsToUint(v.w)); }
 
 float cpfx_mod(float a, float b) { return mod(a, b); }
 float cpfx_mod(float a, int b) { return mod(a, float(b)); }
