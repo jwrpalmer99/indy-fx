@@ -64,6 +64,7 @@ function debugLog(message, payload = undefined) {
 }
 
 const SHADER_LIBRARY_TOOL_NAME = "indyfx-shader-library";
+const INDYFX_ICON_CLASS = "fa-jelly fa-regular fa-sparkles";
 let _shaderLibraryMenuApp = null;
 let _shaderLibraryMenuOpening = null;
 
@@ -1202,10 +1203,10 @@ async function openDocumentShaderConfigDialog(app) {
         label: "Save",
         icon: "fas fa-save",
         default: true,
-        close: false,
-        callback: (_event, _button, dialog) => {
-          void applyAction(dialog, "save");
-          return false;
+        close: true,
+        callback: async (_event, _button, dialog) => {
+          await applyAction(dialog, "save");
+          return true;
         }
       },
       {
@@ -1259,7 +1260,7 @@ async function openDocumentShaderConfigDialog(app) {
       const actionButton = targetEl?.closest?.("[data-action]");
       if (!(actionButton instanceof Element)) return;
       const action = String(actionButton.getAttribute("data-action") ?? "").trim().toLowerCase();
-      if (!["save", "apply", "toggle", "remove"].includes(action)) return;
+      if (!["apply", "toggle", "remove"].includes(action)) return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
@@ -1295,7 +1296,7 @@ function addIndyFxDocumentConfigButton(app, buttons) {
     label: "indyFX",
     class: "indyfx-config",
     action: "indyfx-config",
-    icon: "fa-jelly fa-regular fa-sparkles",
+    icon: INDYFX_ICON_CLASS,
     onclick: onClick,
     onClick,
   });
@@ -1480,7 +1481,7 @@ function addIndyFxHudEditButton({ targetType, app, html, data } = {}) {
   button.dataset.action = actionName;
   button.title = "Edit indyFX";
   button.setAttribute("data-tooltip", "Edit indyFX");
-  button.innerHTML = '<i class="fa-solid fa-pen-to-square" inert></i>';
+  button.innerHTML = `<i class="${INDYFX_ICON_CLASS}" inert></i>`;
   button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -4148,7 +4149,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
       addTool(control, {
         name: SHADER_LIBRARY_TOOL_NAME,
         title: "Shader Library",
-        icon: "fa-jelly fa-regular fa-sparkles",
+        icon: INDYFX_ICON_CLASS,
         button: true,
         visible: true,
         onClick: () => openShaderLibraryWindow(),
@@ -4163,7 +4164,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
     addTool(control, {
       name: SHADER_LIBRARY_TOOL_NAME,
       title: "Shader Library",
-      icon: "fa-jelly fa-regular fa-sparkles",
+      icon: INDYFX_ICON_CLASS,
       button: true,
       visible: true,
       onClick: () => openShaderLibraryWindow(),
