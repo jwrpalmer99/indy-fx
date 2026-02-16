@@ -927,7 +927,9 @@ function applyCompatibilityRewrites(source) {
     const stepStmt = stepExpr ? `\n  ${stepExpr};` : "";
     const replacement = `${initStmt}for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  if (!(${condExpr})) break;\n  ${body}${stepStmt}\n}`;
     next = `${next.slice(0, forStart)}${replacement}${next.slice(sliceEnd)}`;
-    emptyForHeadRe.lastIndex = forStart + replacement.length;
+    // Rescan from this location so nested non-declaration for-loops in the
+    // rewritten body are normalized too.
+    emptyForHeadRe.lastIndex = forStart;
   }
 
   // GLSL ES 1.00 in this runtime rejects while-loops.
