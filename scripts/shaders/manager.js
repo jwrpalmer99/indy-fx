@@ -2362,7 +2362,14 @@ export class ShaderManager {
 
   async regenerateImportedShaderThumbnail(
     shaderId,
-    { size = THUMBNAIL_SIZE, captureSeconds = THUMBNAIL_CAPTURE_SECONDS } = {},
+    {
+      size = THUMBNAIL_SIZE,
+      captureSeconds = THUMBNAIL_CAPTURE_SECONDS,
+      source = null,
+      channels = null,
+      defaults = null,
+      autoAssignCapture = null,
+    } = {},
   ) {
     const renderer = this._ensureThumbnailRenderer(size);
     if (!renderer) return null;
@@ -2376,6 +2383,10 @@ export class ShaderManager {
     const preview = this._createImportedShaderPreview(shaderId, {
       size: targetSize,
       reason: "thumbnail-regenerate",
+      source,
+      channels,
+      defaults,
+      autoAssignCapture,
     });
     if (!preview) return null;
 
@@ -4566,7 +4577,12 @@ export class ShaderManager {
 
     phaseStart = nowMs();
     if (shouldPersist && shouldRegenerateThumbnail) {
-      this._queueImportedShaderThumbnailRegeneration(shaderId);
+      this._queueImportedShaderThumbnailRegeneration(shaderId, {
+        source: nextSource,
+        channels: nextChannels,
+        defaults: normalizedDefaults,
+        autoAssignCapture,
+      });
       timings.queueThumbnailMs = roundMs(nowMs() - phaseStart);
     } else {
       timings.queueThumbnailMs = 0;
@@ -4629,7 +4645,12 @@ export class ShaderManager {
       changedShaderIds: [shaderId],
       operation: "update-channels",
     });
-    this._queueImportedShaderThumbnailRegeneration(shaderId);
+    this._queueImportedShaderThumbnailRegeneration(shaderId, {
+      source: record.source,
+      channels: records[idx]?.channels ?? mergedChannels,
+      defaults: records[idx]?.defaults ?? record.defaults,
+      autoAssignCapture,
+    });
     return this.getImportedRecord(shaderId) ?? records[idx];
   }
 

@@ -700,11 +700,55 @@ export function createMenus({ moduleId, shaderManager }) {
         template: `modules/${MODULE_ID}/templates/shader-library-menu.html`,
       },
     };
+    constructor(...args) {
+      super(...args);
+      this._shaderLibraryChangedHookId = Hooks.on(
+        `${MODULE_ID}.shaderLibraryChanged`,
+        (payload = {}) => this._onShaderLibraryChanged(payload),
+      );
+    }
     async close(options) {
+      if (this._shaderLibraryChangedHookId !== null) {
+        Hooks.off(`${MODULE_ID}.shaderLibraryChanged`, this._shaderLibraryChangedHookId);
+        this._shaderLibraryChangedHookId = null;
+      }
       this._stopHoverPreview({ destroy: true });
       this._destroyHoverPreviewCache();
       this._hideShaderContextMenu();
       return super.close(options);
+    }
+    _rememberLibraryScrollTop(root = null) {
+      const resolvedRoot = root ?? resolveElementRoot(this.element);
+      if (!(resolvedRoot instanceof Element)) return;
+      const form = resolvedRoot.matches("form.indy-fx-shader-library")
+        ? resolvedRoot
+        : (resolvedRoot.querySelector("form.indy-fx-shader-library") ??
+          resolvedRoot.querySelector("form"));
+      if (!(form instanceof HTMLElement)) return;
+      this._shaderLibraryScrollTop = form.scrollTop;
+    }
+    _onShaderLibraryChanged(payload = {}) {
+      const root = resolveElementRoot(this.element);
+      if (!(root instanceof Element)) return;
+
+      // Adds/removes/renames affect card list and ordering; rerender whole dialog.
+      if (payload?.choicesMayHaveChanged !== false) {
+        this._rememberLibraryScrollTop(root);
+        this.render();
+        return;
+      }
+
+      // Thumbnail-only/content-only updates should patch cards in place.
+      const changedIds = Array.isArray(payload?.changedShaderIds)
+        ? payload.changedShaderIds
+        : [];
+      for (const rawId of changedIds) {
+        const id = String(rawId ?? "").trim();
+        if (!id) continue;
+        const record = shaderManager.getImportedRecord(id);
+        const thumbnail = String(record?.thumbnail ?? "").trim();
+        if (thumbnail) this._applyGeneratedThumbnail(id, thumbnail);
+      }
     }
     async _prepareContext() {
       const modeChoices = shaderManager.getChannelModeChoices();
@@ -2790,6 +2834,7 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
         const removed = await shaderManager.removeImportedShader(shaderId);
         if (removed) {
           ui.notifications.info("Imported shader removed.");
+          this._rememberLibraryScrollTop();
           this.render();
         }
       };
@@ -2819,6 +2864,7 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
                   label: `${name}`,
                 });
                 ui.notifications.info(`Duplicated shader: ${name}`);
+                this._rememberLibraryScrollTop();
                 this.render();
               },
             },
