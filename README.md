@@ -81,6 +81,7 @@ Notes:
 - Confirm shader is enabled for that target.
 - Check `alpha`, `intensity`, `layer`, and mask settings.
 - Confirm selected channel modes are valid for that target type.
+- Confirm that shader doesnt have 0 alpha explicitly set on output. 
 
 ### Wrong preview output
 - Verify channel mode/path/source assignments.
