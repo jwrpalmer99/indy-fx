@@ -57,6 +57,8 @@ Imported shader channels (`iChannel0..iChannel3`) support:
 Notes:
 - `tokenTileImage` is placeable-target specific and not suitable for region usage.
 - Preview backgrounds used for scene/placeable capture channels are configurable in module settings.
+- Const/#Define variables in the shader will be exposed in Edit Variables dialog
+- Look at how the example shaders are set up with regard to filling in tokens/tiles and respecting alpha/rotation etc.
 
 ## Persistence
 - Token/Tile/Template effects persist when `displayTimeMs = 0`.
