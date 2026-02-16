@@ -556,6 +556,11 @@ function sanitizeShaderPersistOpts(opts = {}) {
   if (normalizedShaderId) clean.shaderId = normalizedShaderId;
   delete clean.shaderPreset;
   delete clean.shaderMode;
+  if (typeof clean.instanceSource === "string") {
+    if (!clean.instanceSource.trim()) delete clean.instanceSource;
+  } else {
+    delete clean.instanceSource;
+  }
   return clean;
 }
 
@@ -646,6 +651,331 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function escapeShaderVariableRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parseShaderVariableBooleanLiteral(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^bool\s*\(\s*(true|false|1|0)\s*\)$/, "$1");
+  if (!normalized) return null;
+  if (normalized === "true" || normalized === "1") return true;
+  if (normalized === "false" || normalized === "0") return false;
+  return null;
+}
+
+function formatShaderVariableNumber(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(fallback);
+  if (Math.abs(n) >= 1000000 || (Math.abs(n) > 0 && Math.abs(n) < 0.000001)) {
+    return n.toExponential(6).replace(/\.?0+e/, "e").replace("e+", "e");
+  }
+  return n.toFixed(6).replace(/\.?0+$/, "");
+}
+
+function formatShaderScalarValue(value, type) {
+  if (type === "bool") return value ? "true" : "false";
+  if (type === "int") return String(Math.trunc(Number(value) || 0));
+  return formatShaderVariableNumber(value, 0);
+}
+
+function formatShaderVectorValue(value) {
+  return formatShaderVariableNumber(value, 0);
+}
+
+function vecToHexForShaderVariable(values) {
+  const rgb = [0, 1, 2].map((idx) => {
+    const v = Number(values?.[idx] ?? 0);
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
+    return Math.round(clamped * 255);
+  });
+  return `#${rgb.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function hexToVecRgbForShaderVariable(hex) {
+  const clean = String(hex ?? "")
+    .trim()
+    .replace(/^#/, "")
+    .replace(/[^0-9a-f]/gi, "")
+    .padEnd(6, "0")
+    .slice(0, 6);
+  if (!clean) return [0, 0, 0];
+  const r = parseInt(clean.slice(0, 2), 16) / 255;
+  const g = parseInt(clean.slice(2, 4), 16) / 255;
+  const b = parseInt(clean.slice(4, 6), 16) / 255;
+  return [r, g, b].map((v) => (Number.isFinite(v) ? v : 0));
+}
+
+function extractEditableShaderVariables(source) {
+  const text = String(source ?? "");
+  const result = [];
+  const seen = new Set();
+
+  const scalarRe = /const\s+(float|int)\s+([A-Za-z_]\w*)\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?|[-+]?\d+)\s*;/g;
+  let m;
+  while ((m = scalarRe.exec(text))) {
+    const type = String(m[1]);
+    const name = String(m[2]);
+    const key = `${type}:${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      kind: "scalar",
+      declaration: "const",
+      type,
+      name,
+      value: Number(m[3]),
+    });
+  }
+
+  const boolConstRe =
+    /const\s+bool\s+([A-Za-z_]\w*)\s*=\s*(true|false|1|0|bool\s*\(\s*(?:true|false|1|0)\s*\))\s*;/gi;
+  while ((m = boolConstRe.exec(text))) {
+    const name = String(m[1]);
+    const parsed = parseShaderVariableBooleanLiteral(m[2]);
+    if (parsed === null) continue;
+    const key = `bool:${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      kind: "scalar",
+      declaration: "const",
+      type: "bool",
+      name,
+      value: parsed,
+    });
+  }
+
+  const vecRe = /const\s+(vec3|vec4)\s+([A-Za-z_]\w*)\s*=\s*(vec3|vec4)\s*\(([\s\S]*?)\)\s*;/g;
+  while ((m = vecRe.exec(text))) {
+    const type = String(m[1]);
+    const ctor = String(m[3]);
+    if (type !== ctor) continue;
+    const name = String(m[2]);
+    const key = `${type}:${name}`;
+    if (seen.has(key)) continue;
+
+    const rawParts = String(m[4])
+      .split(",")
+      .map((part) => String(part ?? "").trim())
+      .filter((part) => part.length > 0);
+    const expected = type === "vec4" ? 4 : 3;
+    if (rawParts.length !== expected) continue;
+    const values = rawParts.map((part) => Number(part));
+    if (!values.every((v) => Number.isFinite(v))) continue;
+
+    seen.add(key);
+    result.push({
+      kind: "vector",
+      declaration: "const",
+      type,
+      name,
+      values,
+    });
+  }
+
+  const defineRe = /^[ \t]*#define[ \t]+([A-Za-z_]\w*)[ \t]+([^\r\n]+)/gm;
+  while ((m = defineRe.exec(text))) {
+    const name = String(m[1] ?? "").trim();
+    const rawExpr = String(m[2] ?? "").replace(/\/\/.*$/, "").trim();
+    if (!name || !rawExpr) continue;
+
+    const vecMatch = rawExpr.match(/^(vec3|vec4)\s*\(([\s\S]*?)\)\s*$/);
+    if (vecMatch) {
+      const type = String(vecMatch[1]);
+      const parts = String(vecMatch[2])
+        .split(",")
+        .map((part) => String(part ?? "").trim())
+        .filter((part) => part.length > 0);
+      const expected = type === "vec4" ? 4 : 3;
+      if (parts.length !== expected) continue;
+      const values = parts.map((part) => Number(part));
+      if (!values.every((v) => Number.isFinite(v))) continue;
+
+      const key = `define:${type}:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        kind: "vector",
+        declaration: "define",
+        type,
+        name,
+        values,
+      });
+      continue;
+    }
+
+    const typedScalar = rawExpr.match(
+      /^(float|int)\s*\(\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?|[-+]?\d+)\s*\)\s*$/,
+    );
+    if (typedScalar) {
+      const type = String(typedScalar[1]);
+      const value = Number(typedScalar[2]);
+      if (!Number.isFinite(value)) continue;
+      const key = `define:${type}:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        kind: "scalar",
+        declaration: "define",
+        type,
+        name,
+        value,
+      });
+      continue;
+    }
+
+    const typedBool = rawExpr.match(/^bool\s*\(\s*(true|false|1|0)\s*\)\s*$/i);
+    if (typedBool) {
+      const value = parseShaderVariableBooleanLiteral(typedBool[1]);
+      if (value === null) continue;
+      const key = `define:bool:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        kind: "scalar",
+        declaration: "define",
+        type: "bool",
+        name,
+        value,
+      });
+      continue;
+    }
+
+    const plainBool = parseShaderVariableBooleanLiteral(rawExpr);
+    if (plainBool !== null && /^(true|false)$/i.test(rawExpr)) {
+      const key = `define:bool:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        kind: "scalar",
+        declaration: "define",
+        type: "bool",
+        name,
+        value: plainBool,
+      });
+      continue;
+    }
+
+    const plainScalar = rawExpr.match(
+      /^([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?|[-+]?\d+)\s*$/,
+    );
+    if (plainScalar) {
+      const rawNum = String(plainScalar[1]);
+      const value = Number(rawNum);
+      if (!Number.isFinite(value)) continue;
+      const type = /[.eE]/.test(rawNum) ? "float" : "int";
+      const key = `define:${type}:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        kind: "scalar",
+        declaration: "define",
+        type,
+        name,
+        value,
+      });
+    }
+  }
+
+  result.sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" }),
+  );
+  return result;
+}
+
+function applyEditableShaderVariables(source, variables) {
+  let next = String(source ?? "");
+  for (const variable of Array.isArray(variables) ? variables : []) {
+    const type = String(variable?.type ?? "").trim();
+    const name = String(variable?.name ?? "").trim();
+    const declaration = String(variable?.declaration ?? "const").trim();
+    if (!type || !name) continue;
+    const escapedName = escapeShaderVariableRegExp(name);
+
+    if (variable?.kind === "scalar") {
+      const valueText = formatShaderScalarValue(variable?.value, type);
+      if (declaration === "define") {
+        const re = new RegExp(
+          `(^[ \\t]*#define[ \\t]+${escapedName}[ \\t]+)([^\\r\\n]*)(\\r?\\n|$)`,
+          "m",
+        );
+        next = next.replace(re, `$1${valueText}$3`);
+      } else {
+        const re = new RegExp(`(const\\s+${type}\\s+${escapedName}\\s*=\\s*)([^;]+)(;)`);
+        next = next.replace(re, `$1${valueText}$3`);
+      }
+      continue;
+    }
+
+    if (variable?.kind === "vector") {
+      const values = Array.isArray(variable?.values) ? variable.values : [];
+      const expected = type === "vec4" ? 4 : 3;
+      const clipped = values.slice(0, expected);
+      while (clipped.length < expected) clipped.push(0);
+      const valueText = `${type}(${clipped.map((v) => formatShaderVectorValue(v)).join(", ")})`;
+      if (declaration === "define") {
+        const re = new RegExp(
+          `(^[ \\t]*#define[ \\t]+${escapedName}[ \\t]+)([^\\r\\n]*)(\\r?\\n|$)`,
+          "m",
+        );
+        next = next.replace(re, `$1${valueText}$3`);
+      } else {
+        const re = new RegExp(
+          `(const\\s+${type}\\s+${escapedName}\\s*=\\s*${type}\\s*\\()([\\s\\S]*?)(\\)\\s*;)`,
+        );
+        next = next.replace(
+          re,
+          `$1${clipped.map((v) => formatShaderVectorValue(v)).join(", ")}$3`,
+        );
+      }
+    }
+  }
+  return next;
+}
+
+function resolveInstanceShaderDefinitionOverride(
+  shaderId,
+  opts = {},
+  { notify = false, target = null } = {},
+) {
+  const instanceSource = String(opts?.instanceSource ?? "");
+  if (!instanceSource.trim()) return null;
+  const normalizedShaderId = String(shaderId ?? "").trim();
+  if (!normalizedShaderId) return null;
+  const importedRecord = shaderManager.getImportedRecord?.(normalizedShaderId);
+  if (!importedRecord) {
+    if (notify) {
+      ui.notifications.warn("Per-instance source overrides are only available for imported shaders.");
+    }
+    return null;
+  }
+  try {
+    const override = shaderManager.buildImportedDefinitionOverride?.(
+      normalizedShaderId,
+      instanceSource,
+    );
+    return override ?? null;
+  } catch (err) {
+    const targetType = String(target?.targetType ?? "target");
+    const targetId = String(target?.id ?? "");
+    console.warn(`${MODULE_ID} | Invalid per-instance shader source override`, {
+      shaderId: normalizedShaderId,
+      targetType,
+      targetId,
+      message: String(err?.message ?? err),
+    });
+    if (notify) {
+      ui.notifications.error(
+        `Invalid per-instance shader source for ${targetType} ${targetId || "(unknown)"}: ${String(err?.message ?? err)}`,
+      );
+    }
+    return null;
+  }
 }
 
 const SHADER_LAYER_CHOICES = {
@@ -945,6 +1275,9 @@ function getDocumentShaderEditableOptions(target) {
   const opts = normalizeShaderMacroOpts(seed);
   if (!opts.shaderId) opts.shaderId = String(seed.shaderId ?? "");
   if (!opts.layer) opts.layer = "inherit";
+  if (typeof opts.instanceSource !== "string" || !opts.instanceSource.trim()) {
+    delete opts.instanceSource;
+  }
   opts._disabled = parsePersistDisabled(persisted?._disabled);
   return opts;
 }
@@ -990,6 +1323,17 @@ function parseDocumentShaderForm(root, currentOpts) {
   next.bloomStrength = numVal("bloomStrength", Number(next.bloomStrength ?? 1));
   next.bloomBlur = numVal("bloomBlur", Number(next.bloomBlur ?? 7));
   next.bloomQuality = numVal("bloomQuality", Number(next.bloomQuality ?? 2));
+  const instanceSourceInput = root?.querySelector?.('[name="instanceSource"]');
+  const instanceSourceShaderIdInput = root?.querySelector?.('[name="instanceSourceShaderId"]');
+  const instanceSource = instanceSourceInput instanceof HTMLTextAreaElement
+    ? String(instanceSourceInput.value ?? "")
+    : "";
+  const instanceSourceShaderId = String(instanceSourceShaderIdInput?.value ?? "").trim();
+  if (instanceSource.trim() && (!instanceSourceShaderId || instanceSourceShaderId === next.shaderId)) {
+    next.instanceSource = instanceSource;
+  } else {
+    delete next.instanceSource;
+  }
 
   const enabledInput = root?.querySelector?.('[name="enabled"]');
   const enabled = enabledInput instanceof HTMLInputElement
@@ -1064,11 +1408,24 @@ async function openDocumentShaderConfigDialog(app) {
     `<input type="checkbox" name="${name}" ${checked ? "checked" : ""}>`;
   const number = (name, value, attrs = "") =>
     `<input type="number" name="${name}" value="${escapeHtml(value)}" ${attrs}>`;
+  const currentInstanceSource =
+    typeof current?.instanceSource === "string" ? current.instanceSource : "";
+  const currentInstanceSourceShaderId = currentInstanceSource.trim()
+    ? String(current.shaderId ?? "")
+    : "";
 
   const content = `
 <form class="indy-fx-doc-shader-config" style="max-height:min(74vh, calc(100vh - 240px));overflow-y:auto;overflow-x:hidden;padding-right:0.35rem;">
   <div class="form-group"><label>Enabled</label><div class="form-fields">${checkbox("enabled", enabled)}</div></div>
-  <div class="form-group"><label>Shader</label><div class="form-fields"><select name="shaderId">${shaderOptions}</select></div></div>
+  <div class="form-group">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;">
+      <label style="margin:0;">Shader</label>
+      <button type="button" data-action="edit-instance-shader-variables">Edit Variables</button>
+    </div>
+    <div class="form-fields"><select name="shaderId">${shaderOptions}</select></div>
+  </div>
+  <textarea name="instanceSource" style="display:none;">${escapeHtml(currentInstanceSource)}</textarea>
+  <input type="hidden" name="instanceSourceShaderId" value="${escapeHtml(currentInstanceSourceShaderId)}" />
   <div class="form-group"><label>Layer</label><div class="form-fields"><select name="layer">${layerOptions}</select></div></div>
   <div class="form-group"><label>Gradient Mask</label><div class="form-fields">${checkbox("useGradientMask", current.useGradientMask === true)}</div></div>
   <div class="form-group"><label>Gradient Fade Start</label><div class="form-fields">${number("gradientMaskFadeStart", current.gradientMaskFadeStart ?? 0.8, 'step="0.01" min="0" max="1"')}</div></div>
@@ -1208,6 +1565,25 @@ async function openDocumentShaderConfigDialog(app) {
       return;
     }
 
+    const hasInstanceSourceOverride =
+      typeof next?.instanceSource === "string" && next.instanceSource.trim().length > 0;
+    if (hasInstanceSourceOverride) {
+      const normalizedShaderId = String(next?.shaderId ?? "").trim();
+      if (!shaderManager.getImportedRecord?.(normalizedShaderId)) {
+        delete next.instanceSource;
+        const sourceInput = form?.querySelector?.('[name="instanceSource"]');
+        if (sourceInput instanceof HTMLTextAreaElement) sourceInput.value = "";
+        const sourceShaderInput = form?.querySelector?.('[name="instanceSourceShaderId"]');
+        if (sourceShaderInput instanceof HTMLInputElement) sourceShaderInput.value = "";
+      } else {
+        const override = resolveInstanceShaderDefinitionOverride(next.shaderId, next, {
+          notify: true,
+          target,
+        });
+        if (!override) return;
+      }
+    }
+
     const runOpts = foundry.utils.mergeObject({}, next, { inplace: false });
     delete runOpts._disabled;
 
@@ -1222,6 +1598,208 @@ async function openDocumentShaderConfigDialog(app) {
       displayTimeMs: next?.displayTimeMs ?? null,
     });
     ui.notifications.info(action === "save" ? "indyFX effect saved." : "indyFX effect applied.");
+  };
+
+  const openInstanceShaderVariableEditor = async () => {
+    const root = resolveDialogRoot(dlg);
+    const form = root?.querySelector?.("form.indy-fx-doc-shader-config") ?? root;
+    const shaderId = String(
+      form?.querySelector?.('[name="shaderId"]')?.value ?? current?.shaderId ?? "",
+    ).trim();
+    if (!shaderId) {
+      ui.notifications.warn("No shader selected.");
+      return;
+    }
+
+    const record = shaderManager.getImportedRecord?.(shaderId);
+    if (!record || typeof record?.source !== "string") {
+      ui.notifications.warn("Edit Variables is only available for imported shaders.");
+      return;
+    }
+
+    const instanceSourceInput = form?.querySelector?.('[name="instanceSource"]');
+    const instanceSourceShaderIdInput = form?.querySelector?.(
+      '[name="instanceSourceShaderId"]',
+    );
+    const storedSource = instanceSourceInput instanceof HTMLTextAreaElement
+      ? String(instanceSourceInput.value ?? "")
+      : "";
+    const storedSourceShaderId = String(instanceSourceShaderIdInput?.value ?? "").trim();
+    let workingSource = (storedSource.trim() && (!storedSourceShaderId || storedSourceShaderId === shaderId))
+      ? storedSource
+      : String(record.source ?? "");
+
+    const variables = extractEditableShaderVariables(workingSource);
+    if (!variables.length) {
+      ui.notifications.info(
+        "No editable const/#define bool/float/int/vec3/vec4 variables detected.",
+      );
+      return;
+    }
+
+    const rows = variables
+      .map((variable, index) => {
+        const name = String(variable.name ?? "");
+        const type = String(variable.type ?? "");
+        if (variable.kind === "scalar") {
+          if (type === "bool") {
+            const isChecked = Boolean(variable.value);
+            return `
+              <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
+                <label>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
+                <div class="form-fields">
+                  <label class="checkbox" style="gap:.35rem;">
+                    <input type="checkbox" name="var_${index}_value" ${isChecked ? "checked" : ""} />
+                    Enabled
+                  </label>
+                </div>
+              </div>
+            `;
+          }
+          return `
+            <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
+              <label>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
+              <div class="form-fields">
+                <input type="number" name="var_${index}_value" value="${escapeHtml(formatShaderScalarValue(variable.value, type))}" step="${type === "int" ? "1" : "0.001"}" />
+              </div>
+            </div>
+          `;
+        }
+
+        const expected = type === "vec4" ? 4 : 3;
+        const values = Array.isArray(variable.values) ? variable.values.slice(0, expected) : [];
+        while (values.length < expected) values.push(0);
+        const colorHex = vecToHexForShaderVariable(values);
+        const componentInputs = values
+          .map(
+            (value, componentIndex) =>
+              `<input type="number" name="var_${index}_c${componentIndex}" value="${escapeHtml(formatShaderVectorValue(value))}" step="0.001" />`,
+          )
+          .join("");
+
+        return `
+          <div class="form-group" data-var-index="${index}" data-var-kind="vector" data-var-type="${escapeHtml(type)}">
+            <label>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
+            <div class="form-fields" style="gap:0.35rem;align-items:center;flex-wrap:wrap;">
+              <input type="color" name="var_${index}_color" value="${escapeHtml(colorHex)}" />
+              ${componentInputs}
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    const variableContent = `<form class="indy-fx-variable-editor" style="max-height:min(72vh, calc(100vh - 220px));overflow-y:auto;overflow-x:hidden;padding-right:.35rem;">${rows}</form>`;
+
+    const readDialogVariables = (dialogRoot) => {
+      return variables.map((variable, index) => {
+        if (variable.kind === "scalar") {
+          if (String(variable.type ?? "") === "bool") {
+            const el = dialogRoot?.querySelector?.(`[name="var_${index}_value"]`);
+            const checked = el instanceof HTMLInputElement ? el.checked : Boolean(variable.value);
+            return {
+              ...variable,
+              value: checked,
+            };
+          }
+          const raw = Number(dialogRoot?.querySelector?.(`[name="var_${index}_value"]`)?.value);
+          return {
+            ...variable,
+            value: Number.isFinite(raw) ? raw : Number(variable.value ?? 0),
+          };
+        }
+
+        const type = String(variable.type ?? "vec3");
+        const expected = type === "vec4" ? 4 : 3;
+        const values = [];
+        for (let componentIndex = 0; componentIndex < expected; componentIndex += 1) {
+          const raw = Number(
+            dialogRoot?.querySelector?.(`[name="var_${index}_c${componentIndex}"]`)?.value,
+          );
+          values.push(Number.isFinite(raw) ? raw : Number(variable.values?.[componentIndex] ?? 0));
+        }
+        return {
+          ...variable,
+          values,
+        };
+      });
+    };
+
+    const writeOverrideToHost = (sourceText) => {
+      if (instanceSourceInput instanceof HTMLTextAreaElement) {
+        instanceSourceInput.value = sourceText;
+      }
+      if (instanceSourceShaderIdInput instanceof HTMLInputElement) {
+        instanceSourceShaderIdInput.value = shaderId;
+      }
+    };
+
+    const applyFromDialog = async (dialogRoot, action = "apply") => {
+      const nextVariables = readDialogVariables(dialogRoot);
+      const nextSource = applyEditableShaderVariables(workingSource, nextVariables);
+      workingSource = nextSource;
+      writeOverrideToHost(nextSource);
+      await applyAction(dlg, action === "save" ? "save" : "apply");
+    };
+
+    const variableDialog = new foundry.applications.api.DialogV2({
+      window: {
+        title: "Edit Shader Variables",
+        resizable: true,
+      },
+      content: variableContent,
+      buttons: [
+        {
+          action: "save",
+          label: "Save",
+          icon: "fas fa-save",
+          default: true,
+          close: true,
+          callback: async (_event, _button, dialog) => {
+            const dialogRoot = resolveDialogRoot(dialog);
+            await applyFromDialog(dialogRoot, "save");
+            return true;
+          },
+        },
+        {
+          action: "apply",
+          label: "Apply",
+          icon: "fas fa-check",
+          close: false,
+          callback: async (_event, _button, dialog) => {
+            const dialogRoot = resolveDialogRoot(dialog);
+            await applyFromDialog(dialogRoot, "apply");
+            return false;
+          },
+        },
+        {
+          action: "cancel",
+          label: "Cancel",
+          icon: "fas fa-times",
+          close: true,
+        },
+      ],
+    });
+
+    await variableDialog.render(true);
+    const variableRoot = resolveDialogRoot(variableDialog);
+    ensureDialogVerticalScroll(variableRoot);
+
+    for (const group of variableRoot?.querySelectorAll?.('[data-var-kind="vector"][data-var-index]') ?? []) {
+      const idx = Number(group.getAttribute("data-var-index") ?? -1);
+      if (!Number.isInteger(idx) || idx < 0) continue;
+      const colorInput = group.querySelector(`[name="var_${idx}_color"]`);
+      if (!(colorInput instanceof HTMLInputElement)) continue;
+      colorInput.addEventListener("input", () => {
+        const rgb = hexToVecRgbForShaderVariable(colorInput.value);
+        for (let c = 0; c < 3; c += 1) {
+          const componentInput = group.querySelector(`[name="var_${idx}_c${c}"]`);
+          if (componentInput instanceof HTMLInputElement) {
+            componentInput.value = formatShaderVectorValue(rgb[c]);
+          }
+        }
+      });
+    }
   };
 
   const dlg = new foundry.applications.api.DialogV2({
@@ -1302,10 +1880,32 @@ async function openDocumentShaderConfigDialog(app) {
     }, true);
   };
 
+  const bindVariableEditorButton = () => {
+    const root = resolveDialogRoot(dlg);
+    if (!(root instanceof Element)) return;
+    if (root.dataset.indyFxVariableButtonBound === "1") return;
+    root.dataset.indyFxVariableButtonBound = "1";
+    root.addEventListener(
+      "click",
+      (event) => {
+        const targetEl = event.target instanceof Element ? event.target : null;
+        const actionButton = targetEl?.closest?.('[data-action="edit-instance-shader-variables"]');
+        if (!(actionButton instanceof Element)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        void openInstanceShaderVariableEditor();
+      },
+      true,
+    );
+  };
+
   await dlg.render(true);
   ensureDialogVerticalScroll(dlg);
   bindPersistentActionButtons();
+  bindVariableEditorButton();
   setTimeout(() => bindPersistentActionButtons(), 0);
+  setTimeout(() => bindVariableEditorButton(), 0);
 }
 
 function addIndyFxDocumentConfigButton(app, buttons) {
@@ -2697,6 +3297,9 @@ function shaderOn(tokenId, opts = {}) {
 
   const worldLayer = resolveShaderWorldLayer(MODULE_ID, cfg, { allowTokenLayer: true, tokenTarget: tok });
   const selectedShaderId = cfg.shaderId ?? cfg.shaderMode ?? game.settings.get(MODULE_ID, "shaderPreset");
+  const definitionOverride = resolveInstanceShaderDefinitionOverride(selectedShaderId, cfg, {
+    target: { targetType: "token", id: tokenId },
+  });
   const usesTokenTileImage = shaderManager.shaderUsesTokenTileImage?.(selectedShaderId) === true;
   const useTokenTextureScale = usesTokenTileImage || cfg.scaleWithTokenTexture === true;
   const tokenTextureScaleFactor = useTokenTextureScale ? getTokenTextureScaleFactor(tok) : 1;
@@ -2795,6 +3398,7 @@ function shaderOn(tokenId, opts = {}) {
     shape,
     shaderRotation: shaderRotationRad,
     maskTexture: customMaskTexture,
+    definitionOverride: definitionOverride ?? undefined,
     shaderId: selectedShaderId,
     targetType: "token",
     targetId: tokenId,
@@ -3034,6 +3638,9 @@ function shaderOnTemplate(templateId, opts = {}) {
 
   const geom = createQuadGeometry(effectExtent, effectExtent);
   const selectedShaderId = cfg.shaderId ?? cfg.shaderMode ?? game.settings.get(MODULE_ID, "shaderPreset");
+  const definitionOverride = resolveInstanceShaderDefinitionOverride(selectedShaderId, cfg, {
+    target: { targetType: "template", id: resolvedTemplateId },
+  });
   shaderManager.queueBackgroundCompile?.(selectedShaderId, { reason: "canvas-apply" });
   if (!shaderManager.shaderSupportsTarget(selectedShaderId, "template")) {
     container.destroy({ children: true });
@@ -3055,6 +3662,7 @@ function shaderOnTemplate(templateId, opts = {}) {
     shape,
     shaderRotation: shaderRotationRad,
     maskTexture: customMaskTexture,
+    definitionOverride: definitionOverride ?? undefined,
     shaderId: selectedShaderId,
     targetType: "template",
     targetId: resolvedTemplateId,
@@ -3282,6 +3890,9 @@ function shaderOnTile(tileId, opts = {}) {
   const geom = createQuadGeometry(halfW, halfH);
 
   const selectedShaderId = cfg.shaderId ?? cfg.shaderMode ?? game.settings.get(MODULE_ID, "shaderPreset");
+  const definitionOverride = resolveInstanceShaderDefinitionOverride(selectedShaderId, cfg, {
+    target: { targetType: "tile", id: resolvedTileId },
+  });
   shaderManager.queueBackgroundCompile?.(selectedShaderId, { reason: "canvas-apply" });
   if (!skipPersist) {
     const tileDoc = tile.document ?? getTileShaderDocument(resolvedTileId);
@@ -3298,6 +3909,7 @@ function shaderOnTile(tileId, opts = {}) {
     ...cfg,
     shape: "rectangle",
     maskTexture: customMaskTexture,
+    definitionOverride: definitionOverride ?? undefined,
     shaderId: selectedShaderId,
     targetType: "tile",
     targetId: resolvedTileId,

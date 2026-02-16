@@ -349,6 +349,57 @@ function applyCompatibilityRewrites(source) {
   next = rewriteFloatStepLoopsToCountedLoops(next);
   next = rewriteTopLevelRedeclaredLocals(next);
 
+  // Common ShaderToy trick in ES3 shaders:
+  //   #define ZERO min(iFrame,0)
+  //   for (int i=ZERO; i<N; i++) ...
+  // GLSL ES 1.00 requires loop init to be compile-time constant.
+  next = next.replace(
+    /^\s*#\s*define\s+ZERO\s+([^\n]+)$/gm,
+    (full, expr) => {
+      const rhs = String(expr ?? "").trim();
+      if (/^0(?:\.0+)?$/.test(rhs)) return full;
+      if (/\biFrame\b|\biTime\b|\biMouse\b|\bmin\s*\(|\bmax\s*\(|\bcpfx_min\s*\(|\bcpfx_max\s*\(/.test(rhs)) {
+        return "#define ZERO 0";
+      }
+      return full;
+    },
+  );
+  next = next.replace(
+    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*\(?\s*ZERO\s*\)?\s*;/g,
+    "for(int $1=0;",
+  );
+
+  // Do not transform preprocessor lines/macros. Rewrites that inject
+  // multi-line loop bodies break #define function macros (for example,
+  // DECL_FBM_FUNC(...) with an inline for-loop body).
+  const preprocessorBlocks = [];
+  const maskPreprocessorBlocks = (value) => {
+    const lines = String(value ?? "").split("\n");
+    const out = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (/^\s*#/.test(line)) {
+        const block = [line];
+        while (/[\\]\s*$/.test(block[block.length - 1]) && i + 1 < lines.length) {
+          i += 1;
+          block.push(lines[i]);
+        }
+        const token = `__CPFX_PP_BLOCK_${preprocessorBlocks.length}__`;
+        preprocessorBlocks.push(block.join("\n"));
+        out.push(token);
+        continue;
+      }
+      out.push(line);
+    }
+    return out.join("\n");
+  };
+  const unmaskPreprocessorBlocks = (value) =>
+    String(value ?? "").replace(/__CPFX_PP_BLOCK_(\d+)__/g, (_full, idx) =>
+      preprocessorBlocks[Number(idx)] ?? "",
+    );
+
+  next = maskPreprocessorBlocks(next);
+
   // GLSL ES 1.00 accepts mat2/mat3/mat4 but not mat2x2/mat3x3/mat4x4 aliases.
   next = next.replace(/\bmat([234])x\1\b/g, "mat$1");
 
@@ -502,6 +553,52 @@ function applyCompatibilityRewrites(source) {
     compactForHeadRe.lastIndex = forStart + replacement.length;
   }
 
+  // GLSL ES 1.00 rejects conditions like:
+  // for(int i=0; i<128 && t<tmax; i++)
+  // Rewrite to canonical loop with an early break.
+  next = next.replace(
+    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<)\s*([^;&)]+?)\s*&&\s*([^;]+?)\s*;\s*\1\s*(\+\+|--|\+=\s*[^)]+|-\=\s*[^)]+)\s*\)\s*\{/g,
+    (_full, loopVar, initExpr, cmpOp, boundExpr, extraCond, stepExpr) =>
+      `for(int ${loopVar}=${String(initExpr).trim()}; ${loopVar}${cmpOp}${String(boundExpr).trim()}; ${loopVar}${String(stepExpr).trim()}){\n  if (!(${String(extraCond).trim()})) break;`,
+  );
+
+  // GLSL ES 1.00 also rejects dynamic-bound index loops like:
+  // for(int i=0; i<samples; i++) { ... }
+  // Rewrite to a constant-count loop and compute i per-iteration.
+  let dynLoopRewriteIndex = 0;
+  next = next.replace(
+    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<|>=|>)\s*([^;]+?)\s*;\s*\1\s*(\+\+|--|\+=\s*[^)]+|-\=\s*[^)]+)\s*\)\s*\{/g,
+    (full, loopVar, initExpr, cmpOp, boundExpr, stepExpr) => {
+      const initTrim = String(initExpr ?? "").trim();
+      const boundTrim = String(boundExpr ?? "").trim();
+      const stepTrim = String(stepExpr ?? "").replace(/\s+/g, "");
+
+      // Preserve truly static loops (numeric bound and numeric init).
+      const looksNumeric = (value) => /^[-+]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(value ?? "").trim());
+      if (looksNumeric(initTrim) && looksNumeric(boundTrim)) return full;
+
+      // Uppercase-only symbols are often compile-time macros/constants; leave them.
+      if (!/[a-z]/.test(initTrim) && !/[a-z]/.test(boundTrim)) return full;
+
+      const iterVar = `cpfxDynLoop${dynLoopRewriteIndex++}`;
+      const maxIters = 1024;
+      let iExpr = `int(${initTrim}) + ${iterVar}`;
+      if (stepTrim === "++") {
+        iExpr = `int(${initTrim}) + ${iterVar}`;
+      } else if (stepTrim === "--") {
+        iExpr = `int(${initTrim}) - ${iterVar}`;
+      } else if (stepTrim.startsWith("+=")) {
+        const stepVal = stepTrim.slice(2).trim() || "1";
+        iExpr = `int(${initTrim}) + ${iterVar}*int(${stepVal})`;
+      } else if (stepTrim.startsWith("-=")) {
+        const stepVal = stepTrim.slice(2).trim() || "1";
+        iExpr = `int(${initTrim}) - ${iterVar}*int(${stepVal})`;
+      }
+
+      return `for(int ${iterVar}=0; ${iterVar}<${maxIters}; ++${iterVar}){\n  int ${loopVar} = ${iExpr};\n  if (!(${loopVar} ${cmpOp} ${boundTrim})) break;`;
+    },
+  );
+
   // GLSL ES 1.00 does not support ES3-style array constructors, for example:
   // const vec2 hp[7] = vec2[7](...);
   // Rewrite these to helper functions and indexed calls.
@@ -569,11 +666,28 @@ function applyCompatibilityRewrites(source) {
     }
     return out;
   };
-  const atom = String.raw`(?:[A-Za-z_]\w*\s*\([^()]*\)|[A-Za-z_]\w*|\d+|\([^()]*\))`;
+  // Handle nested pattern like (((i+3)>>1)&1) before generic binary rewrites.
+  const nestedShiftAndRe =
+    /\(\s*\(\s*([A-Za-z0-9_+\-*/\s.]+?)\s*>>\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g;
+  next = next.replace(
+    nestedShiftAndRe,
+    "cpfx_bitand(cpfx_shr($1, $2), $3)",
+  );
+
+  const atom = String.raw`(?:[A-Za-z_]\w*\s*\([^()]*\)|[A-Za-z_]\w*|\d+(?:\.\d+)?|\([^()]*\))`;
   const shrRe = new RegExp(`(${atom})\\s*>>\\s*(${atom})`, "g");
   const andRe = new RegExp(`(${atom})\\s*&\\s*(${atom})`, "g");
   next = foldBinaryOps(next, shrRe, "cpfx_shr($1, $2)");
   next = foldBinaryOps(next, andRe, "cpfx_bitand($1, $2)");
+  // Catch residual forms like ((cpfx_shr((i+3),1))&1).
+  next = next.replace(
+    /\(\s*\(\s*(cpfx_shr\s*\([^;]+?\))\s*\)\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g,
+    "cpfx_bitand($1, $2)",
+  );
+  next = next.replace(
+    /\(\s*(cpfx_shr\s*\([^;]+?\))\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g,
+    "cpfx_bitand($1, $2)",
+  );
 
   // texelFetch is GLSL ES 3.00; remap common ShaderToy channel fetches.
   next = next.replace(
@@ -596,7 +710,31 @@ function applyCompatibilityRewrites(source) {
     "cuboct = cpfx_set_vec3_component(cuboct, int($1), $2);"
   );
 
+  next = unmaskPreprocessorBlocks(next);
   return next;
+}
+
+function buildCompatMacroPreamble(source) {
+  const text = String(source ?? "");
+  const hasDefine = (name) => new RegExp(`^\\s*#\\s*define\\s+${name}\\b`, "m").test(text);
+  const blocks = [];
+  const addMacro = (name, value) => {
+    if (hasDefine(name)) return;
+    blocks.push(`#ifndef ${name}\n#define ${name}${value}\n#endif`);
+  };
+
+  addMacro("_in", "(T) const T");
+  addMacro("_inout", "(T) inout T");
+  addMacro("_out", "(T) out T");
+  addMacro("_begin", "(type) type(");
+  addMacro("_end", ")");
+  addMacro("_mutable", "(T) T");
+  addMacro("_constant", "(T) const T");
+  if (!hasDefine("mul")) {
+    blocks.push("#ifndef mul\n#define mul(a, b) ((a) * (b))\n#endif");
+  }
+
+  return blocks.length ? `\n${blocks.join("\n")}\n` : "\n";
 }
 
 export function validateShaderToySource(source) {
@@ -625,6 +763,7 @@ export function extractReferencedChannels(source) {
 
 export function adaptShaderToyFragment(source) {
   const body = applyCompatibilityRewrites(validateShaderToySource(source));
+  const compatMacros = buildCompatMacroPreamble(body);
   return `
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable
@@ -659,31 +798,7 @@ uniform float shaderFlipY;
 uniform float cpfxPreserveTransparent;
 uniform float cpfxForceOpaqueCaptureAlpha;
 uniform vec2 resolution;
-
-#ifndef _in
-#define _in(T) const T
-#endif
-#ifndef _inout
-#define _inout(T) inout T
-#endif
-#ifndef _out
-#define _out(T) out T
-#endif
-#ifndef _begin
-#define _begin(type) type(
-#endif
-#ifndef _end
-#define _end )
-#endif
-#ifndef _mutable
-#define _mutable(T) T
-#endif
-#ifndef _constant
-#define _constant(T) const T
-#endif
-#ifndef mul
-#define mul(a, b) ((a) * (b))
-#endif
+${compatMacros}
 
 vec2 cpfxFragCoord;
 #define gl_FragCoord vec4(cpfxFragCoord, 0.0, 1.0)
@@ -900,6 +1015,10 @@ int cpfx_shr(int a, int b) {
   return int(floor(float(aa) / exp2(float(bb))));
 }
 
+float cpfx_shr(float a, float b) { return float(cpfx_shr(int(floor(a)), int(floor(b)))); }
+float cpfx_shr(float a, int b) { return float(cpfx_shr(int(floor(a)), b)); }
+float cpfx_shr(int a, float b) { return float(cpfx_shr(a, int(floor(b)))); }
+
 int cpfx_bitand(int a, int b) {
   int aa = (a < 0) ? 0 : a;
   int bb = (b < 0) ? 0 : b;
@@ -915,6 +1034,10 @@ int cpfx_bitand(int a, int b) {
   }
   return result;
 }
+
+float cpfx_bitand(float a, float b) { return float(cpfx_bitand(int(floor(a)), int(floor(b)))); }
+float cpfx_bitand(float a, int b) { return float(cpfx_bitand(int(floor(a)), b)); }
+float cpfx_bitand(int a, float b) { return float(cpfx_bitand(a, int(floor(b)))); }
 
 float cpfx_dFdx(float v) {
 #ifdef GL_OES_standard_derivatives
@@ -1021,6 +1144,7 @@ void main() {
 
 export function adaptShaderToyBufferFragment(source) {
   const body = applyCompatibilityRewrites(validateShaderToySource(source));
+  const compatMacros = buildCompatMacroPreamble(body);
   return `
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable
@@ -1052,31 +1176,7 @@ uniform float shaderFlipY;
 uniform float cpfxPreserveTransparent;
 uniform float cpfxForceOpaqueCaptureAlpha;
 uniform vec2 resolution;
-
-#ifndef _in
-#define _in(T) const T
-#endif
-#ifndef _inout
-#define _inout(T) inout T
-#endif
-#ifndef _out
-#define _out(T) out T
-#endif
-#ifndef _begin
-#define _begin(type) type(
-#endif
-#ifndef _end
-#define _end )
-#endif
-#ifndef _mutable
-#define _mutable(T) T
-#endif
-#ifndef _constant
-#define _constant(T) const T
-#endif
-#ifndef mul
-#define mul(a, b) ((a) * (b))
-#endif
+${compatMacros}
 
 vec2 cpfxFragCoord;
 #define gl_FragCoord vec4(cpfxFragCoord, 0.0, 1.0)
@@ -1293,6 +1393,10 @@ int cpfx_shr(int a, int b) {
   return int(floor(float(aa) / exp2(float(bb))));
 }
 
+float cpfx_shr(float a, float b) { return float(cpfx_shr(int(floor(a)), int(floor(b)))); }
+float cpfx_shr(float a, int b) { return float(cpfx_shr(int(floor(a)), b)); }
+float cpfx_shr(int a, float b) { return float(cpfx_shr(a, int(floor(b)))); }
+
 int cpfx_bitand(int a, int b) {
   int aa = (a < 0) ? 0 : a;
   int bb = (b < 0) ? 0 : b;
@@ -1308,6 +1412,10 @@ int cpfx_bitand(int a, int b) {
   }
   return result;
 }
+
+float cpfx_bitand(float a, float b) { return float(cpfx_bitand(int(floor(a)), int(floor(b)))); }
+float cpfx_bitand(float a, int b) { return float(cpfx_bitand(int(floor(a)), b)); }
+float cpfx_bitand(int a, float b) { return float(cpfx_bitand(a, int(floor(b)))); }
 
 float cpfx_dFdx(float v) {
 #ifdef GL_OES_standard_derivatives

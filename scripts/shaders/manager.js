@@ -2579,6 +2579,35 @@ export class ShaderManager {
     };
   }
 
+  buildImportedDefinitionOverride(
+    shaderId,
+    sourceOverride,
+    { referencedChannels = null } = {},
+  ) {
+    const record = this.getImportedRecord(shaderId);
+    if (!record) return null;
+
+    const sourceText = String(sourceOverride ?? "");
+    if (!sourceText.trim()) return null;
+    const validatedSource = validateShaderToySource(sourceText);
+    const refs = Array.isArray(referencedChannels)
+      ? referencedChannels
+      : extractReferencedChannels(validatedSource);
+
+    return {
+      id: record.id,
+      label: sanitizeName(record.label ?? record.name),
+      type: "imported",
+      requiresResolution: true,
+      usesNoiseTexture: true,
+      channelConfig: this.getRecordChannelConfig(record),
+      referencedChannels: toArray(refs)
+        .map((v) => Number(v))
+        .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
+      fragment: adaptShaderToyFragment(validatedSource),
+    };
+  }
+
   resolveImportedChannelTexture(channelConfig, depth = 0, options = {}) {
     if (depth > MAX_BUFFER_CHAIN_DEPTH) {
       throw new Error(
