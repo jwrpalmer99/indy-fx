@@ -381,7 +381,45 @@ function rewriteTopLevelRedeclaredLocals(source) {
   return next;
 }
 function applyCompatibilityRewrites(source) {
-  let next = String(source ?? "");
+  const commentBlocks = [];
+  const maskComments = (value) => {
+    const text = String(value ?? "");
+    let out = "";
+    let i = 0;
+    while (i < text.length) {
+      const ch = text[i];
+      const nextCh = text[i + 1];
+      if (ch === "/" && nextCh === "/") {
+        const start = i;
+        i += 2;
+        while (i < text.length && text[i] !== "\n" && text[i] !== "\r") i += 1;
+        const token = `/*__CPFX_COMMENT_${commentBlocks.length}__*/`;
+        commentBlocks.push(text.slice(start, i));
+        out += token;
+        continue;
+      }
+      if (ch === "/" && nextCh === "*") {
+        const start = i;
+        i += 2;
+        while (i + 1 < text.length && !(text[i] === "*" && text[i + 1] === "/")) i += 1;
+        if (i + 1 < text.length) i += 2;
+        else i = text.length;
+        const token = `/*__CPFX_COMMENT_${commentBlocks.length}__*/`;
+        commentBlocks.push(text.slice(start, i));
+        out += token;
+        continue;
+      }
+      out += ch;
+      i += 1;
+    }
+    return out;
+  };
+  const unmaskComments = (value) =>
+    String(value ?? "").replace(/\/\*__CPFX_COMMENT_(\d+)__\*\//g, (_full, idx) =>
+      commentBlocks[Number(idx)] ?? "",
+    );
+
+  let next = maskComments(String(source ?? ""));
   next = rewriteFloatStepLoopsToCountedLoops(next);
   next = rewriteTopLevelRedeclaredLocals(next);
 
@@ -554,6 +592,13 @@ function applyCompatibilityRewrites(source) {
     return out;
   };
 
+  const stripInlineComments = (value) =>
+    String(value ?? "")
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n\r]*/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
   const findMatchingParen = (value, openIndex) => {
     let depth = 0;
     for (let idx = openIndex; idx < value.length; idx += 1) {
@@ -680,6 +725,129 @@ function applyCompatibilityRewrites(source) {
     compactForHeadRe.lastIndex = forStart + replacement.length;
   }
 
+  // GLSL ES 1.00/ANGLE can reject post-increment index writes in the step clause,
+  // for example: for(int i; i<3; O[i++] = expr) body;
+  // Normalize to a canonical loop body + ++i step.
+  const postIndexedStepRe = /for\s*\(/g;
+  while (true) {
+    const m = postIndexedStepRe.exec(next);
+    if (!m) break;
+
+    const forStart = m.index;
+    const openParen = next.indexOf("(", forStart);
+    if (openParen < 0) break;
+    const closeParen = findMatchingParen(next, openParen);
+    if (closeParen < 0) {
+      postIndexedStepRe.lastIndex = forStart + 4;
+      continue;
+    }
+
+    const headerInside = next.slice(openParen + 1, closeParen);
+    const headerParts = splitTopLevelKeepEmpty(headerInside, ";");
+    if (headerParts.length !== 3) {
+      postIndexedStepRe.lastIndex = closeParen + 1;
+      continue;
+    }
+
+    const initPartRaw = String(headerParts[0] ?? "").trim();
+    const condPartRaw = String(headerParts[1] ?? "").trim();
+    const stepPartRaw = String(headerParts[2] ?? "").trim();
+    const initPart = stripInlineComments(initPartRaw);
+    const condPart = stripInlineComments(condPartRaw);
+    const stepPart = stripInlineComments(stepPartRaw);
+
+    const initMatch = initPart.match(/^int\s+([A-Za-z_]\w*)(?:\s*=\s*([\s\S]+))?$/);
+    if (!initMatch || !condPart || !stepPart) {
+      postIndexedStepRe.lastIndex = closeParen + 1;
+      continue;
+    }
+    const loopVar = initMatch[1];
+    const initExpr = String(initMatch[2] ?? "0").trim() || "0";
+
+    const stepMatch = stepPart.match(/^([A-Za-z_]\w*)\s*\[\s*([A-Za-z_]\w*)\s*\+\+\s*\]\s*=\s*([\s\S]+)$/);
+    if (!stepMatch || stepMatch[2] !== loopVar) {
+      postIndexedStepRe.lastIndex = closeParen + 1;
+      continue;
+    }
+    const assignTarget = stepMatch[1];
+    const assignExpr = String(stepMatch[3] ?? "").trim();
+    if (!assignExpr) {
+      postIndexedStepRe.lastIndex = closeParen + 1;
+      continue;
+    }
+
+    let stmtStart = closeParen + 1;
+    while (stmtStart < next.length && /\s/.test(next[stmtStart])) stmtStart += 1;
+    if (stmtStart >= next.length) break;
+
+    let body = "";
+    let sliceEnd = stmtStart;
+    if (next[stmtStart] === "{") {
+      const stmtClose = findMatchingBrace(next, stmtStart);
+      if (stmtClose < 0) {
+        postIndexedStepRe.lastIndex = closeParen + 1;
+        continue;
+      }
+      body = next.slice(stmtStart + 1, stmtClose).trim();
+      sliceEnd = stmtClose + 1;
+    } else {
+      const stmtEnd = findStatementEnd(next, stmtStart);
+      if (stmtEnd < 0) {
+        postIndexedStepRe.lastIndex = closeParen + 1;
+        continue;
+      }
+      body = next.slice(stmtStart, stmtEnd + 1).trim();
+      sliceEnd = stmtEnd + 1;
+    }
+
+    const replacement = `for(int ${loopVar}=${initExpr}; ${condPart}; ++${loopVar}){\n  ${body}\n  ${assignTarget}[${loopVar}] = ${assignExpr};\n}`;
+    next = `${next.slice(0, forStart)}${replacement}${next.slice(sliceEnd)}`;
+    postIndexedStepRe.lastIndex = forStart + replacement.length;
+  }
+
+  // ANGLE/WebGL1 can also reject statement-form indexed post-increment writes:
+  //   p[i++] = expr;
+  // Rewrite as:
+  //   p[i] = expr;
+  //   i += 1;
+  next = next.replace(
+    /([A-Za-z_]\w*(?:\s*\[[^\]]+\])?)\s*\[\s*([A-Za-z_]\w*)\s*\+\+\s*\]\s*=\s*([^;]+);/g,
+    (_full, target, idx, expr) =>
+      `${String(target).trim()}[${String(idx).trim()}] = ${String(expr).trim()}; ${String(idx).trim()} += 1;`,
+  );
+
+  // ANGLE/WebGL1 can reject non-loop-symbol array indexing in writes like:
+  //   arr[i] = expr; i += 1;
+  // when i is not the active loop index. If the array has a known static size,
+  // lower to constant-index branches.
+  const staticArraySizes = new Map();
+  next.replace(
+    /\b(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(?:float|int|vec[234]|ivec[234]|uvec[234]|mat[234])\s+([A-Za-z_]\w*)\s*\[\s*(\d+)\s*\]\s*;/g,
+    (_full, name, sizeRaw) => {
+      const size = Number(sizeRaw);
+      if (Number.isFinite(size) && size > 0 && size <= 64) {
+        staticArraySizes.set(String(name), size);
+      }
+      return _full;
+    },
+  );
+  next = next.replace(
+    /\b([A-Za-z_]\w*)\s*\[\s*([A-Za-z_]\w*)\s*\]\s*=\s*([^;]+);\s*\2\s*\+=\s*1\s*;/g,
+    (full, arrNameRaw, idxRaw, exprRaw) => {
+      const arrName = String(arrNameRaw ?? "").trim();
+      const idx = String(idxRaw ?? "").trim();
+      const expr = String(exprRaw ?? "").trim();
+      const size = staticArraySizes.get(arrName);
+      if (!size || !idx || !expr) return full;
+      let out = "";
+      for (let n = 0; n < size; n += 1) {
+        out += `${n === 0 ? "if" : "else if"} (${idx} == ${n}) ${arrName}[${n}] = ${expr}; `;
+      }
+      out += `${idx} += 1;`;
+      return out;
+    },
+  );
+
   // GLSL ES 1.00 is strict about loop form. Shaders sometimes use:
   // for( ; condition ; step ) statement-or-block;
   // for( initExpr ; condition ; ) statement-or-block;
@@ -712,11 +880,14 @@ function applyCompatibilityRewrites(source) {
     const initPart = String(headerParts[0] ?? "").trim();
     const condPart = String(headerParts[1] ?? "").trim();
     const stepPart = String(headerParts[2] ?? "").trim();
-    if (condPart === "") {
+    const initExpr = stripInlineComments(initPart);
+    const condExpr = stripInlineComments(condPart);
+    const stepExpr = stripInlineComments(stepPart);
+    if (condExpr === "") {
       emptyForHeadRe.lastIndex = closeParen + 1;
       continue;
     }
-    const initHasDeclaration = /^(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(?:int|float|bool|vec[234]|ivec[234]|uvec[234]|mat[234])\b/.test(initPart);
+    const initHasDeclaration = /^(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(?:int|float|bool|vec[234]|ivec[234]|uvec[234]|mat[234])\b/.test(initExpr);
     if (initHasDeclaration) {
       emptyForHeadRe.lastIndex = closeParen + 1;
       continue;
@@ -752,9 +923,9 @@ function applyCompatibilityRewrites(source) {
     }
 
     const iterVar = `cpfxEmptyLoop${emptyForRewriteIndex++}`;
-    const initStmt = initPart ? `${initPart};\n` : "";
-    const stepStmt = stepPart ? `\n  ${stepPart};` : "";
-    const replacement = `${initStmt}for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  if (!(${condPart})) break;\n  ${body}${stepStmt}\n}`;
+    const initStmt = initExpr ? `${initExpr};\n` : "";
+    const stepStmt = stepExpr ? `\n  ${stepExpr};` : "";
+    const replacement = `${initStmt}for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  if (!(${condExpr})) break;\n  ${body}${stepStmt}\n}`;
     next = `${next.slice(0, forStart)}${replacement}${next.slice(sliceEnd)}`;
     emptyForHeadRe.lastIndex = forStart + replacement.length;
   }
@@ -777,7 +948,8 @@ function applyCompatibilityRewrites(source) {
     }
 
     const condPart = String(next.slice(openParen + 1, closeParen) ?? "").trim();
-    if (!condPart) {
+    const condExpr = stripInlineComments(condPart);
+    if (!condExpr) {
       whileHeadRe.lastIndex = closeParen + 1;
       continue;
     }
@@ -807,10 +979,29 @@ function applyCompatibilityRewrites(source) {
     }
 
     const iterVar = `cpfxWhileLoop${whileRewriteIndex++}`;
-    const replacement = `for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  if (!(${condPart})) break;\n  ${body}\n}`;
+    const replacement = `for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  if (!(${condExpr})) break;\n  ${body}\n}`;
     next = `${next.slice(0, whileStart)}${replacement}${next.slice(sliceEnd)}`;
     whileHeadRe.lastIndex = whileStart + replacement.length;
   }
+
+  // Some sources declare a loop index without initializer, which WebGL1 parsers
+  // often reject even though desktop GLSL accepts it.
+  next = next.replace(
+    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*;\s*/g,
+    "for(int $1=0; ",
+  );
+  next = next.replace(
+    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*(?:(?:\/\/[^\n\r]*[\n\r]\s*)|(?:\/\*[\s\S]*?\*\/\s*))*;\s*/g,
+    "for(int $1=0; ",
+  );
+  next = next.replace(
+    /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*;\s*/g,
+    "for(float $1=0.0; ",
+  );
+  next = next.replace(
+    /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*(?:(?:\/\/[^\n\r]*[\n\r]\s*)|(?:\/\*[\s\S]*?\*\/\s*))*;\s*/g,
+    "for(float $1=0.0; ",
+  );
 
   // GLSL ES 1.00 rejects conditions like:
   // for(int i=0; i<128 && t<tmax; i++)
@@ -1048,6 +1239,7 @@ function applyCompatibilityRewrites(source) {
   );
 
   next = unmaskPreprocessorBlocks(next);
+  next = unmaskComments(next);
   return next;
 }
 
