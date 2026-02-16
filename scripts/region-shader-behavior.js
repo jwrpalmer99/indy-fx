@@ -217,7 +217,6 @@ function _ensureShaderChoicesSettingsHook(moduleId, getShaderChoices) {
   if (_shaderChoicesSettingsHookByModule.has(key)) return;
   const shaderLibraryKey = `${key}.shaderLibrary`;
   const shaderLibraryIndexKey = `${key}.shaderLibraryIndex`;
-  const shaderLibraryRecordPrefix = `${key}.shaderRecord_`;
   const shaderPresetKey = `${key}.shaderPreset`;
 
   const hookId = Hooks.on("updateSetting", (setting) => {
@@ -226,8 +225,7 @@ function _ensureShaderChoicesSettingsHook(moduleId, getShaderChoices) {
     if (
       settingKey !== shaderLibraryKey &&
       settingKey !== shaderLibraryIndexKey &&
-      settingKey !== shaderPresetKey &&
-      !settingKey.startsWith(shaderLibraryRecordPrefix)
+      settingKey !== shaderPresetKey
     ) {
       return;
     }

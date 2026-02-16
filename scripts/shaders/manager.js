@@ -2785,9 +2785,13 @@ export class ShaderManager {
       }
     }
     let choicesMayHaveChanged = addedShaderIds.length > 0 || removedShaderIds.length > 0;
+    const prepMs = roundMs(nowMs() - phaseStart);
 
+    phaseStart = nowMs();
     let recordWriteCount = 0;
     let removedRecordWriteCount = 0;
+    let recordSettingsSetMs = 0;
+    let removedRecordSettingsSetMs = 0;
     for (const entry of payload) {
       const id = String(entry.id ?? "").trim();
       if (!id) continue;
@@ -2809,7 +2813,9 @@ export class ShaderManager {
         }
       }
       if (!hasActualRecordChange && !changedIdsSet.has(id)) continue;
+      const writeStart = nowMs();
       await game.settings.set(this.moduleId, indexEntry.settingKey, entry);
+      recordSettingsSetMs += nowMs() - writeStart;
       recordWriteCount += 1;
     }
 
@@ -2819,17 +2825,22 @@ export class ShaderManager {
       const settingKey = String(previousEntry?.settingKey ?? "").trim();
       if (!settingKey) continue;
       this._registerShaderRecordSetting(settingKey);
+      const writeStart = nowMs();
       await game.settings.set(this.moduleId, settingKey, {});
+      removedRecordSettingsSetMs += nowMs() - writeStart;
       removedRecordWriteCount += 1;
     }
 
     let indexWriteCount = 0;
+    let indexSettingsSetMs = 0;
     if (!indexUnchanged) {
+      const writeStart = nowMs();
       await game.settings.set(
         this.moduleId,
         this.shaderLibraryIndexSetting,
         nextIndex,
       );
+      indexSettingsSetMs += nowMs() - writeStart;
       indexWriteCount = 1;
     }
     const settingsSetMs = roundMs(nowMs() - phaseStart);
@@ -2868,6 +2879,10 @@ export class ShaderManager {
       removedShaderIds,
       choicesMayHaveChanged,
       settingsSetMs,
+      prepMs,
+      recordSettingsSetMs: roundMs(recordSettingsSetMs),
+      removedRecordSettingsSetMs: roundMs(removedRecordSettingsSetMs),
+      indexSettingsSetMs: roundMs(indexSettingsSetMs),
       recordWriteCount,
       removedRecordWriteCount,
       indexWriteCount,
