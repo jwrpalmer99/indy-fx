@@ -369,6 +369,45 @@ function applyCompatibilityRewrites(source) {
     "for(int $1=0;",
   );
 
+  // Some shaders use alternate macro names like NON_CONST_ZERO in loop init.
+  // If such macro resolves from runtime values, clamp it to 0 for GLSL ES 1.00.
+  const loopInitMacroNames = new Set();
+  next.replace(
+    /for\s*\(\s*int\s+[A-Za-z_]\w*\s*=\s*\(?\s*([A-Za-z_]\w*)\s*\)?\s*;/g,
+    (_full, macroName) => {
+      if (macroName && macroName !== "ZERO") loopInitMacroNames.add(String(macroName));
+      return _full;
+    },
+  );
+  for (const macroName of loopInitMacroNames) {
+    const defineRe = new RegExp(
+      `^\\s*#\\s*define\\s+${macroName}\\s+([^\\n]+)$`,
+      "gm",
+    );
+    next = next.replace(defineRe, (full, expr) => {
+      const rhs = String(expr ?? "").trim();
+      if (/^[-+]?\d+(?:\.\d+)?$/.test(rhs)) return full;
+      if (
+        /\biFrame\b|\biTime\b|\biMouse\b|\bmin\s*\(|\bmax\s*\(|\bcpfx_min\s*\(|\bcpfx_max\s*\(/.test(
+          rhs,
+        )
+      ) {
+        return `#define ${macroName} 0`;
+      }
+      return full;
+    });
+    const loopStartRe = new RegExp(
+      `for\\s*\\(\\s*int\\s+([A-Za-z_]\\w*)\\s*=\\s*\\(?\\s*${macroName}\\s*\\)?\\s*;`,
+      "g",
+    );
+    next = next.replace(loopStartRe, "for(int $1=0;");
+  }
+  // Direct non-constant init expression in integer loops.
+  next = next.replace(
+    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*([^;]*?(?:\biFrame\b|\biTime\b|\biMouse\b)[^;]*?)\s*;/g,
+    "for(int $1=0;",
+  );
+
   // Do not transform preprocessor lines/macros. Rewrites that inject
   // multi-line loop bodies break #define function macros (for example,
   // DECL_FBM_FUNC(...) with an inline for-loop body).
@@ -408,6 +447,15 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(
     /(\b\d+(?:\.\d*)?|\B\.\d+)([eE][+-]?\d+)?[fF]\b/g,
     "$1$2",
+  );
+
+  // GLSL ES 1.00 has no unsigned scalar/vector types or literal suffixes.
+  // Normalize common ES3 forms into signed equivalents.
+  next = next.replace(/\buvec([234])\b/g, "ivec$1");
+  next = next.replace(/\buint\b/g, "int");
+  next = next.replace(
+    /(\b(?:0x[0-9A-Fa-f]+|\d+))[uU]\b/g,
+    "$1",
   );
 
   // Common Twigl shorthand in some ShaderToy ports.
@@ -647,17 +695,33 @@ function applyCompatibilityRewrites(source) {
   // for(int i=0; i<128 && t<tmax; i++)
   // Rewrite to canonical loop with an early break.
   next = next.replace(
-    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<)\s*([^;&)]+?)\s*&&\s*([^;]+?)\s*;\s*\1\s*(\+\+|--|\+=\s*[^)]+|-\=\s*[^)]+)\s*\)\s*\{/g,
+    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<)\s*([^;&)]+?)\s*&&\s*([^;]+?)\s*;\s*(\+\+\s*\1|--\s*\1|\1\s*\+\+|\1\s*--|\1\s*\+=\s*[^)]+|\1\s*-\=\s*[^)]+)\s*\)\s*\{/g,
     (_full, loopVar, initExpr, cmpOp, boundExpr, extraCond, stepExpr) =>
-      `for(int ${loopVar}=${String(initExpr).trim()}; ${loopVar}${cmpOp}${String(boundExpr).trim()}; ${loopVar}${String(stepExpr).trim()}){\n  if (!(${String(extraCond).trim()})) break;`,
+      `for(int ${loopVar}=${String(initExpr).trim()}; ${loopVar}${cmpOp}${String(boundExpr).trim()}; ${String(stepExpr).trim()}){\n  if (!(${String(extraCond).trim()})) break;`,
   );
 
   // GLSL ES 1.00 also rejects dynamic-bound index loops like:
   // for(int i=0; i<samples; i++) { ... }
   // Rewrite to a constant-count loop and compute i per-iteration.
+  const constScalarNames = new Set();
+  next.replace(
+    /^\s*const\s+(?:(?:lowp|mediump|highp)\s+)?(?:int|float|uint)\s+([A-Za-z_]\w*)\s*=/gm,
+    (_full, name) => {
+      if (name) constScalarNames.add(String(name));
+      return _full;
+    },
+  );
+  const isConstExpr = (value) => {
+    const expr = String(value ?? "").trim();
+    if (!expr) return false;
+    if (/[A-Za-z_]\w*\s*\(/.test(expr)) return false; // function-like call
+    const ids = expr.match(/[A-Za-z_]\w*/g) ?? [];
+    if (!ids.length) return true;
+    return ids.every((id) => constScalarNames.has(id));
+  };
   let dynLoopRewriteIndex = 0;
   next = next.replace(
-    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<|>=|>)\s*([^;]+?)\s*;\s*\1\s*(\+\+|--|\+=\s*[^)]+|-\=\s*[^)]+)\s*\)\s*\{/g,
+    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<|>=|>)\s*([^;]+?)\s*;\s*(\+\+\s*\1|--\s*\1|\1\s*\+\+|\1\s*--|\1\s*\+=\s*[^)]+|\1\s*-\=\s*[^)]+)\s*\)\s*\{/g,
     (full, loopVar, initExpr, cmpOp, boundExpr, stepExpr) => {
       const initTrim = String(initExpr ?? "").trim();
       const boundTrim = String(boundExpr ?? "").trim();
@@ -666,6 +730,8 @@ function applyCompatibilityRewrites(source) {
       // Preserve truly static loops (numeric bound and numeric init).
       const looksNumeric = (value) => /^[-+]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(value ?? "").trim());
       if (looksNumeric(initTrim) && looksNumeric(boundTrim)) return full;
+      // Preserve loops where init/bound are compile-time constants.
+      if (isConstExpr(initTrim) && isConstExpr(boundTrim)) return full;
 
       // Uppercase-only symbols are often compile-time macros/constants; leave them.
       if (!/[a-z]/.test(initTrim) && !/[a-z]/.test(boundTrim)) return full;
@@ -673,15 +739,15 @@ function applyCompatibilityRewrites(source) {
       const iterVar = `cpfxDynLoop${dynLoopRewriteIndex++}`;
       const maxIters = 1024;
       let iExpr = `int(${initTrim}) + ${iterVar}`;
-      if (stepTrim === "++") {
+      if (stepTrim === `++${loopVar}` || stepTrim === `${loopVar}++`) {
         iExpr = `int(${initTrim}) + ${iterVar}`;
-      } else if (stepTrim === "--") {
+      } else if (stepTrim === `--${loopVar}` || stepTrim === `${loopVar}--`) {
         iExpr = `int(${initTrim}) - ${iterVar}`;
-      } else if (stepTrim.startsWith("+=")) {
-        const stepVal = stepTrim.slice(2).trim() || "1";
+      } else if (stepTrim.startsWith(`${loopVar}+=`)) {
+        const stepVal = stepTrim.slice((`${loopVar}+=`).length).trim() || "1";
         iExpr = `int(${initTrim}) + ${iterVar}*int(${stepVal})`;
-      } else if (stepTrim.startsWith("-=")) {
-        const stepVal = stepTrim.slice(2).trim() || "1";
+      } else if (stepTrim.startsWith(`${loopVar}-=`)) {
+        const stepVal = stepTrim.slice((`${loopVar}-=`).length).trim() || "1";
         iExpr = `int(${initTrim}) - ${iterVar}*int(${stepVal})`;
       }
 
@@ -821,8 +887,10 @@ function applyCompatibilityRewrites(source) {
   const atom = String.raw`(?:[A-Za-z_]\w*\s*\([^()]*\)|[A-Za-z_]\w*|\d+(?:\.\d+)?|\([^()]*\))`;
   const shrRe = new RegExp(`(${atom})\\s*>>\\s*(${atom})`, "g");
   const andRe = new RegExp(`(${atom})\\s*&\\s*(${atom})`, "g");
+  const modRe = new RegExp(`(${atom})\\s*%\\s*(${atom})`, "g");
   next = foldBinaryOps(next, shrRe, "cpfx_shr($1, $2)");
   next = foldBinaryOps(next, andRe, "cpfx_bitand($1, $2)");
+  next = foldBinaryOps(next, modRe, "cpfx_mod($1, $2)");
   // Catch residual forms like ((cpfx_shr((i+3),1))&1).
   next = next.replace(
     /\(\s*\(\s*(cpfx_shr\s*\([^;]+?\))\s*\)\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g,
@@ -1255,6 +1323,11 @@ float cpfx_bitand(float a, float b) { return float(cpfx_bitand(int(floor(a)), in
 float cpfx_bitand(float a, int b) { return float(cpfx_bitand(int(floor(a)), b)); }
 float cpfx_bitand(int a, float b) { return float(cpfx_bitand(a, int(floor(b)))); }
 
+float cpfx_mod(float a, float b) { return mod(a, b); }
+float cpfx_mod(float a, int b) { return mod(a, float(b)); }
+float cpfx_mod(int a, float b) { return mod(float(a), b); }
+int cpfx_mod(int a, int b) { return int(mod(float(a), float(b))); }
+
 float cpfx_dFdx(float v) {
 #ifdef GL_OES_standard_derivatives
   return dFdx(v);
@@ -1642,6 +1715,11 @@ int cpfx_bitand(int a, int b) {
 float cpfx_bitand(float a, float b) { return float(cpfx_bitand(int(floor(a)), int(floor(b)))); }
 float cpfx_bitand(float a, int b) { return float(cpfx_bitand(int(floor(a)), b)); }
 float cpfx_bitand(int a, float b) { return float(cpfx_bitand(a, int(floor(b)))); }
+
+float cpfx_mod(float a, float b) { return mod(a, b); }
+float cpfx_mod(float a, int b) { return mod(a, float(b)); }
+float cpfx_mod(int a, float b) { return mod(float(a), b); }
+int cpfx_mod(int a, int b) { return int(mod(float(a), float(b))); }
 
 float cpfx_dFdx(float v) {
 #ifdef GL_OES_standard_derivatives
