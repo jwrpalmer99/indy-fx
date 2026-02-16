@@ -4,6 +4,7 @@ import {
   getNoiseTexture,
   getRadialTexture,
   getSolidTexture,
+  getVolumeNoiseAtlasTexture,
 } from "./textures.js";
 import { noiseShaderDefinition } from "./builtin/noise.js";
 import { torusShaderDefinition } from "./builtin/torus.js";
@@ -37,6 +38,8 @@ const CHANNEL_MODES = new Set([
   "tokenImage",
   "tileImage",
   "image",
+  "cubemap",
+  "volume",
   "buffer",
   "bufferSelf",
 ]);
@@ -363,6 +366,154 @@ function normalizeBufferSize(value, fallback = DEFAULT_BUFFER_SIZE) {
   return Math.max(64, Math.min(2048, Math.round(size)));
 }
 
+function normalizeSamplerFilter(value, fallback = "") {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "nearest" || raw === "point") return "nearest";
+  if (raw === "linear" || raw === "bilinear") return "linear";
+  if (
+    raw === "mipmap" ||
+    raw === "mip" ||
+    raw === "trilinear" ||
+    raw === "linear-mipmap" ||
+    raw === "linear_mipmap"
+  ) {
+    return "mipmap";
+  }
+  return fallback;
+}
+
+function normalizeSamplerWrap(value, fallback = "") {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "clamp" || raw === "clamp_to_edge") return "clamp";
+  if (
+    raw === "mirror" ||
+    raw === "mirrored" ||
+    raw === "mirroredrepeat" ||
+    raw === "mirrorrepeat" ||
+    raw === "mirrored_repeat"
+  ) {
+    return "mirror";
+  }
+  if (raw === "repeat") return "repeat";
+  return fallback;
+}
+
+function getChannelSamplerDefaults(mode) {
+  const normalized = normalizeChannelMode(mode);
+  if (normalized === "cubemap") return { filter: "linear", wrap: "clamp" };
+  if (normalized === "buffer" || normalized === "bufferSelf") {
+    return { filter: "nearest", wrap: "clamp" };
+  }
+  if (
+    normalized === "sceneCapture" ||
+    normalized === "tokenTileImage" ||
+    normalized === "tokenImage" ||
+    normalized === "tileImage" ||
+    normalized === "empty" ||
+    normalized === "white" ||
+    normalized === "none"
+  ) {
+    return { filter: "linear", wrap: "clamp" };
+  }
+  return { filter: "linear", wrap: "repeat" };
+}
+
+function applyChannelSamplerToTexture(texture, channelCfg, mode) {
+  const base = texture?.baseTexture;
+  if (!base) return;
+  const defaults = getChannelSamplerDefaults(mode);
+  const filter = normalizeSamplerFilter(channelCfg?.samplerFilter, defaults.filter);
+  const wrap = normalizeSamplerWrap(channelCfg?.samplerWrap, defaults.wrap);
+
+  if (filter === "nearest") {
+    base.scaleMode = PIXI.SCALE_MODES.NEAREST;
+    base.mipmap = PIXI.MIPMAP_MODES.OFF;
+  } else if (filter === "mipmap") {
+    base.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    base.mipmap = PIXI.MIPMAP_MODES.ON;
+  } else {
+    base.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    base.mipmap = PIXI.MIPMAP_MODES.OFF;
+  }
+
+  if (wrap === "clamp") {
+    base.wrapMode = PIXI.WRAP_MODES.CLAMP;
+  } else if (wrap === "mirror") {
+    base.wrapMode = PIXI.WRAP_MODES.MIRRORED_REPEAT ?? PIXI.WRAP_MODES.REPEAT;
+  } else {
+    base.wrapMode = PIXI.WRAP_MODES.REPEAT;
+  }
+
+  base.update?.();
+}
+
+function normalizePositiveInt(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
+}
+
+function inferVolumeLayoutFromResolution(width, height) {
+  const w = normalizePositiveInt(width, 0);
+  const h = normalizePositiveInt(height, 0);
+  if (w <= 0 || h <= 0) return [1, 1, 1];
+
+  const gcd = (a, b) => {
+    let x = Math.abs(a);
+    let y = Math.abs(b);
+    while (y !== 0) {
+      const t = x % y;
+      x = y;
+      y = t;
+    }
+    return x || 1;
+  };
+  const g = gcd(w, h);
+  const divisors = [];
+  for (let d = 1; d * d <= g; d += 1) {
+    if (g % d !== 0) continue;
+    divisors.push(d);
+    const other = g / d;
+    if (other !== d) divisors.push(other);
+  }
+
+  let best = { score: Number.POSITIVE_INFINITY, s: 1, tx: 1, ty: 1, depth: 1 };
+  for (const s of divisors) {
+    const tilesX = Math.max(1, Math.floor(w / s));
+    const tilesY = Math.max(1, Math.floor(h / s));
+    const depth = Math.max(1, tilesX * tilesY);
+    const ratio = depth / Math.max(1, s);
+    const score = Math.abs(Math.log(ratio));
+    const tieBreak = -depth;
+    const better =
+      score < best.score - 1e-6 ||
+      (Math.abs(score - best.score) <= 1e-6 && tieBreak < -best.depth);
+    if (better) best = { score, s, tx: tilesX, ty: tilesY, depth };
+  }
+  return [best.tx, best.ty, best.depth];
+}
+
+function getChannelTypeFromMode(mode) {
+  const normalized = normalizeChannelMode(mode);
+  if (normalized === "cubemap") return 1;
+  if (normalized === "volume") return 2;
+  return 0;
+}
+
+function resolveVolumeLayoutForChannel(channelCfg, resolution = [1, 1]) {
+  const tx = normalizePositiveInt(channelCfg?.volumeTilesX, 0);
+  const ty = normalizePositiveInt(channelCfg?.volumeTilesY, 0);
+  const dz = normalizePositiveInt(channelCfg?.volumeDepth, 0);
+  if (tx > 0 && ty > 0) {
+    return [tx, ty, dz > 0 ? dz : tx * ty];
+  }
+  const width = Number(resolution?.[0] ?? 1);
+  const height = Number(resolution?.[1] ?? 1);
+  return inferVolumeLayoutFromResolution(width, height);
+}
+
 function normalizeChannelInput(raw, depth = 0) {
   if (!raw || typeof raw !== "object")
     return {
@@ -394,6 +545,15 @@ function normalizeChannelInput(raw, depth = 0) {
     source: String(raw.source ?? "").trim(),
     channels: nested,
     size: normalizeBufferSize(raw.size, DEFAULT_BUFFER_SIZE),
+    volumeTilesX: normalizePositiveInt(raw.volumeTilesX, 0),
+    volumeTilesY: normalizePositiveInt(raw.volumeTilesY, 0),
+    volumeDepth: normalizePositiveInt(raw.volumeDepth, 0),
+    samplerFilter: normalizeSamplerFilter(raw.samplerFilter, ""),
+    samplerWrap: normalizeSamplerWrap(raw.samplerWrap, ""),
+    samplerVflip:
+      raw.samplerVflip === undefined || raw.samplerVflip === null
+        ? null
+        : parseBooleanLike(raw.samplerVflip),
   };
 }
 
@@ -445,6 +605,26 @@ function toShaderToyMediaUrl(src) {
   if (/^https?:\/\//i.test(value)) return value;
   if (value.startsWith("/")) return `${SHADERTOY_MEDIA_ORIGIN}${value}`;
   return `${SHADERTOY_MEDIA_ORIGIN}/${value.replace(/^\/+/, "")}`;
+}
+
+function inferShaderToyVolumeNoiseMode(input, src = "") {
+  const hints = [
+    String(input?.id ?? ""),
+    String(input?.name ?? ""),
+    String(input?.filepath ?? ""),
+    String(input?.previewfilepath ?? ""),
+    String(src ?? ""),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  const looksGray =
+    /\b(gray|grey|grayscale|greyscale|bw|mono|luma|single)\b/.test(hints);
+  const looksColor =
+    /\b(rgba|rgb|color|colour|colou?rful|multi)\b/.test(hints);
+
+  if (looksGray && !looksColor) return "noiseBw";
+  return "noiseRgb";
 }
 
 function stripCodeFence(text) {
@@ -2398,6 +2578,8 @@ export class ShaderManager {
       noiseBw: "Black/White noise",
       noiseRgb: "RGB noise",
       image: "Custom image/video",
+      cubemap: "Cubemap (2D atlas)",
+      volume: "Volume 3D (2D atlas)",
       buffer: "ShaderToy buffer code",
       white: "White",
       empty: "Empty (transparent)",
@@ -3015,6 +3197,9 @@ export class ShaderManager {
         source: "",
         channels: {},
         size: DEFAULT_BUFFER_SIZE,
+        samplerFilter: "",
+        samplerWrap: "",
+        samplerVflip: null,
       };
     }
 
@@ -3055,6 +3240,12 @@ export class ShaderManager {
           source: sourceValue,
           channels: nestedChannels,
           size: normalizeBufferSize(candidate.size, DEFAULT_BUFFER_SIZE),
+          volumeTilesX: candidate.volumeTilesX,
+          volumeTilesY: candidate.volumeTilesY,
+          volumeDepth: candidate.volumeDepth,
+          samplerFilter: candidate.samplerFilter,
+          samplerWrap: candidate.samplerWrap,
+          samplerVflip: candidate.samplerVflip,
         };
       }
     }
@@ -3102,6 +3293,12 @@ export class ShaderManager {
           source: sourceValue,
           channels: nestedChannels,
           size: normalizeBufferSize(candidate.size, DEFAULT_BUFFER_SIZE),
+          volumeTilesX: candidate.volumeTilesX,
+          volumeTilesY: candidate.volumeTilesY,
+          volumeDepth: candidate.volumeDepth,
+          samplerFilter: candidate.samplerFilter,
+          samplerWrap: candidate.samplerWrap,
+          samplerVflip: candidate.samplerVflip,
         };
       }
     }
@@ -3430,10 +3627,18 @@ export class ShaderManager {
             depth + 1,
             options,
           );
+          applyChannelSamplerToTexture(resolved.texture, childCfg, childMode);
           runtimeBuffer.setChannel(
             index,
             resolved.texture,
             resolved.resolution,
+            {
+              channelType: getChannelTypeFromMode(childMode),
+              volumeLayout:
+                childMode === "volume"
+                  ? resolveVolumeLayoutForChannel(childCfg, resolved.resolution)
+                  : [1, 1, 1],
+            },
           );
           if (resolved.runtimeCapture) {
             runtimeCaptureChannels.push({
@@ -3492,7 +3697,42 @@ export class ShaderManager {
       };
     }
 
-    if (mode === "image") {
+    if (mode === "volume") {
+      const isLikelyBinaryVolume = /\.bin(?:[?#].*)?$/i.test(path);
+      if (!path || isLikelyBinaryVolume) {
+        const tx = normalizePositiveInt(channelConfig?.volumeTilesX, 0);
+        const ty = normalizePositiveInt(channelConfig?.volumeTilesY, 0);
+        const dz = normalizePositiveInt(channelConfig?.volumeDepth, 0);
+        const fallbackTilesX = tx > 0 ? tx : 8;
+        const fallbackTilesY = ty > 0 ? ty : 4;
+        const fallbackDepth = dz > 0 ? dz : (fallbackTilesX * fallbackTilesY);
+        const generated = getVolumeNoiseAtlasTexture({
+          tileSize: 32,
+          tilesX: fallbackTilesX,
+          tilesY: fallbackTilesY,
+          depth: fallbackDepth,
+          mode: "rgb",
+          seed: 0,
+        });
+        debugLog(this.moduleId, "volume channel using generated atlas fallback", {
+          path,
+          reason: !path ? "missing-path" : "binary-volume-input",
+          resolution: generated.resolution,
+          layout: generated.layout,
+        });
+        return {
+          texture: generated.texture,
+          resolution: generated.resolution,
+          runtimeCapture: false,
+          runtimeCaptureSize: 0,
+          runtimeCaptureChannels: [],
+          runtimeBuffers: [],
+          runtimeImageChannels: [],
+        };
+      }
+    }
+
+    if (mode === "image" || mode === "cubemap" || mode === "volume") {
       if (!path) {
         console.warn(
           `${this.moduleId} | Imported shader channel is set to image mode but has no path. Falling back to RGB noise.`,
@@ -3512,10 +3752,7 @@ export class ShaderManager {
       const texture = PIXI.Texture.from(path);
       const base = texture?.baseTexture;
       if (base) {
-        base.wrapMode = PIXI.WRAP_MODES.REPEAT;
-        base.scaleMode = PIXI.SCALE_MODES.LINEAR;
-        base.mipmap = PIXI.MIPMAP_MODES.OFF;
-        base.update?.();
+        applyChannelSamplerToTexture(texture, channelConfig, mode);
         base.once?.("error", (err) => {
           console.error(
             `${this.moduleId} | Failed to load imported shader channel image: ${path}`,
@@ -3598,6 +3835,13 @@ export class ShaderManager {
       uniforms.uTime = cfg.uTime ?? uniforms.time ?? 0;
       uniforms.iTime = uniforms.uTime;
       const channelResolution = [];
+      const channelTypes = [0, 0, 0, 0];
+      const volumeLayouts = [
+        [1, 1, 1],
+        [1, 1, 1],
+        [1, 1, 1],
+        [1, 1, 1],
+      ];
       const referencedChannels = new Set(
         toArray(def.referencedChannels)
           .map((v) => Number(v))
@@ -3633,6 +3877,11 @@ export class ShaderManager {
             captureFlipVertical: cfg.captureFlipVertical,
           },
         );
+        applyChannelSamplerToTexture(
+          resolved.texture,
+          effectiveChannelCfg,
+          normalizeChannelMode(effectiveChannelCfg?.mode ?? channelCfg?.mode ?? "none"),
+        );
         uniforms[key] = resolved.texture;
         const resolvedWidth = Number(resolved?.resolution?.[0] ?? 1);
         const resolvedHeight = Number(resolved?.resolution?.[1] ?? 1);
@@ -3641,6 +3890,16 @@ export class ShaderManager {
           resolvedHeight,
           1,
         );
+        const resolvedMode = normalizeChannelMode(
+          effectiveChannelCfg?.mode ?? channelCfg?.mode ?? "none",
+        );
+        channelTypes[index] = getChannelTypeFromMode(resolvedMode);
+        if (channelTypes[index] === 2) {
+          volumeLayouts[index] = resolveVolumeLayoutForChannel(
+            effectiveChannelCfg,
+            [resolvedWidth, resolvedHeight],
+          );
+        }
         if (isDebugLoggingEnabled(this.moduleId)) {
           debugLog(this.moduleId, "makeShader imported channel bind", {
             shaderId: def.id,
@@ -3649,6 +3908,10 @@ export class ShaderManager {
             uniformKey: key,
             requestedMode: normalizeChannelMode(channelCfg?.mode ?? "none"),
             effectiveMode: normalizeChannelMode(effectiveChannelCfg?.mode ?? "none"),
+            channelType: channelTypes[index],
+            volumeLayout: volumeLayouts[index],
+            samplerFilter: normalizeSamplerFilter(effectiveChannelCfg?.samplerFilter, ""),
+            samplerWrap: normalizeSamplerWrap(effectiveChannelCfg?.samplerWrap, ""),
             targetType: cfg.targetType ?? null,
             targetId: cfg.targetId ?? null,
             resolution: [resolvedWidth, resolvedHeight],
@@ -3691,10 +3954,20 @@ export class ShaderManager {
         }
       }
       uniforms.iChannelResolution = channelResolution;
+      uniforms.cpfxChannelType0 = Number(channelTypes[0] ?? 0);
+      uniforms.cpfxChannelType1 = Number(channelTypes[1] ?? 0);
+      uniforms.cpfxChannelType2 = Number(channelTypes[2] ?? 0);
+      uniforms.cpfxChannelType3 = Number(channelTypes[3] ?? 0);
+      uniforms.cpfxVolumeLayout0 = volumeLayouts[0];
+      uniforms.cpfxVolumeLayout1 = volumeLayouts[1];
+      uniforms.cpfxVolumeLayout2 = volumeLayouts[2];
+      uniforms.cpfxVolumeLayout3 = volumeLayouts[3];
       debugLog(this.moduleId, "makeShader imported channel resolutions", {
         shaderId: def.id,
         previewMode: cfg.previewMode === true,
         iChannelResolution: channelResolution,
+        cpfxChannelType: channelTypes,
+        cpfxVolumeLayout: volumeLayouts,
       });
     }
 
@@ -3706,7 +3979,9 @@ export class ShaderManager {
             512,
             cfg.gradientMaskFadeStart ?? cfg.shaderGradientFadeStart ?? 0.8,
           )
-        : getCircleMaskTexture(512);
+        : (def.type === "imported"
+          ? getSolidTexture([255, 255, 255, 255], 2)
+          : getCircleMaskTexture(512));
 
     return {
       shader,
@@ -3779,6 +4054,19 @@ export class ShaderManager {
     return this.getImportedRecord(id) ?? record;
   }
 
+  _parseShaderToySamplerConfig(value) {
+    if (!value || typeof value !== "object") return {};
+    const samplerFilter = normalizeSamplerFilter(value.filter, "");
+    const samplerWrap = normalizeSamplerWrap(value.wrap, "");
+    const hasVflip = Object.prototype.hasOwnProperty.call(value, "vflip");
+    const samplerVflip = hasVflip ? parseBooleanLike(value.vflip) : null;
+    const next = {};
+    if (samplerFilter) next.samplerFilter = samplerFilter;
+    if (samplerWrap) next.samplerWrap = samplerWrap;
+    if (hasVflip) next.samplerVflip = samplerVflip;
+    return next;
+  }
+
   _parseShaderToySizePair(value, depth = 0) {
     if (depth > 3 || value == null) return null;
 
@@ -3842,6 +4130,57 @@ export class ShaderManager {
       }
     }
 
+    return null;
+  }
+
+  _parseShaderToyVolumeLayout(value, depth = 0) {
+    if (depth > 6 || value == null) return null;
+
+    if (Array.isArray(value)) {
+      if (value.length >= 3) {
+        const tx = normalizePositiveInt(value[0], 0);
+        const ty = normalizePositiveInt(value[1], 0);
+        const dz = normalizePositiveInt(value[2], 0);
+        if (tx > 0 && ty > 0 && dz > 0) return [tx, ty, dz];
+      }
+      if (value.length === 1) return this._parseShaderToyVolumeLayout(value[0], depth + 1);
+      return null;
+    }
+
+    if (typeof value === "string") {
+      const parts = value
+        .split(/[x, ]+/i)
+        .map((p) => normalizePositiveInt(p, 0))
+        .filter((v) => v > 0);
+      if (parts.length >= 3) return [parts[0], parts[1], parts[2]];
+      return null;
+    }
+
+    if (typeof value === "object") {
+      const keys = [
+        ["tilesX", "tilesY", "depth"],
+        ["x", "y", "z"],
+        ["width", "height", "depth"],
+        ["w", "h", "d"],
+      ];
+      for (const [kx, ky, kz] of keys) {
+        if (
+          Object.prototype.hasOwnProperty.call(value, kx) &&
+          Object.prototype.hasOwnProperty.call(value, ky) &&
+          Object.prototype.hasOwnProperty.call(value, kz)
+        ) {
+          const tx = normalizePositiveInt(value[kx], 0);
+          const ty = normalizePositiveInt(value[ky], 0);
+          const dz = normalizePositiveInt(value[kz], 0);
+          if (tx > 0 && ty > 0 && dz > 0) return [tx, ty, dz];
+        }
+      }
+      for (const nestedKey of ["size", "resolution", "res", "volume", "layout"]) {
+        if (!Object.prototype.hasOwnProperty.call(value, nestedKey)) continue;
+        const nested = this._parseShaderToyVolumeLayout(value[nestedKey], depth + 1);
+        if (nested) return nested;
+      }
+    }
     return null;
   }
 
@@ -3914,6 +4253,7 @@ export class ShaderManager {
     currentPassKey = null,
   ) {
     const ctype = String(input?.ctype ?? input?.type ?? "").toLowerCase();
+    const samplerCfg = this._parseShaderToySamplerConfig(input?.sampler);
     const src = String(
       input?.src ?? input?.filepath ?? input?.previewfilepath ?? "",
     ).trim();
@@ -3953,7 +4293,7 @@ export class ShaderManager {
           currentPassKey,
           size: bufferSize,
         });
-        return { mode: "bufferSelf", size: bufferSize };
+        return { mode: "bufferSelf", size: bufferSize, ...samplerCfg };
       }
       if (stack.has(passKey)) {
         console.warn(
@@ -3985,12 +4325,54 @@ export class ShaderManager {
         source,
         channels,
         size: bufferSize,
+        ...samplerCfg,
       };
     }
 
-    if (["texture", "cubemap", "volume", "video"].includes(ctype)) {
+    if (
+      ctype === "volume" ||
+      ctype === "3d" ||
+      ctype === "volume3d" ||
+      ctype === "texture3d"
+    ) {
       const path = toShaderToyMediaUrl(src);
-      if (path) return { mode: "image", path };
+      if (!path) {
+        // Graceful fallback for malformed/missing volume media.
+        const mode = inferShaderToyVolumeNoiseMode(input, src);
+        debugLog(this.moduleId, "shaderToy volume input fallback to procedural noise", {
+          inputId: String(input?.id ?? ""),
+          channel: Number(input?.channel),
+          requestedType: ctype,
+          mode,
+          src,
+        });
+        return { mode, ...samplerCfg };
+      }
+      const volumeLayout =
+        this._parseShaderToyVolumeLayout(input?.sampler?.size) ??
+        this._parseShaderToyVolumeLayout(input?.sampler?.resolution) ??
+        this._parseShaderToyVolumeLayout(input?.size) ??
+        this._parseShaderToyVolumeLayout(input?.resolution) ??
+        null;
+      const [volumeTilesX, volumeTilesY, volumeDepth] = volumeLayout ?? [0, 0, 0];
+      return {
+        mode: "volume",
+        path,
+        volumeTilesX,
+        volumeTilesY,
+        volumeDepth,
+        ...samplerCfg,
+      };
+    }
+
+    if (ctype === "cubemap") {
+      const path = toShaderToyMediaUrl(src);
+      if (path) return { mode: "cubemap", path, ...samplerCfg };
+    }
+
+    if (["texture", "video"].includes(ctype)) {
+      const path = toShaderToyMediaUrl(src);
+      if (path) return { mode: "image", path, ...samplerCfg };
     }
 
     if (
@@ -4009,7 +4391,7 @@ export class ShaderManager {
 
     if (!ctype && src) {
       const path = toShaderToyMediaUrl(src);
-      if (path) return { mode: "image", path };
+      if (path) return { mode: "image", path, ...samplerCfg };
     }
 
     return { mode: "none" };

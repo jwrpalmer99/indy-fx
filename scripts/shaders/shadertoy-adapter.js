@@ -751,6 +751,26 @@ function applyCompatibilityRewrites(source) {
   // textureLod is commonly used in ShaderToy WebGL2 shaders.
   next = next.replace(/\btextureLod\s*\(/g, "cpfx_textureLod(");
 
+  // Route direct iChannelN samples through channel-aware wrappers so vec3 sampling
+  // can distinguish cubemap-style lookup vs volume-atlas lookup per channel.
+  for (let channelIndex = 0; channelIndex <= 3; channelIndex += 1) {
+    const textureCompatRe = new RegExp(
+      `\\btextureCompat\\s*\\(\\s*iChannel${channelIndex}\\s*,`,
+      "g",
+    );
+    const textureRe = new RegExp(
+      `\\btexture\\s*\\(\\s*iChannel${channelIndex}\\s*,`,
+      "g",
+    );
+    const textureLodRe = new RegExp(
+      `\\bcpfx_textureLod\\s*\\(\\s*iChannel${channelIndex}\\s*,`,
+      "g",
+    );
+    next = next.replace(textureCompatRe, `cpfx_textureCh${channelIndex}(`);
+    next = next.replace(textureRe, `cpfx_textureCh${channelIndex}(`);
+    next = next.replace(textureLodRe, `cpfx_textureLodCh${channelIndex}(`);
+  }
+
   // GLSL ES 1.00 lacks transpose(); route through compatibility overloads.
   next = next.replace(/\btranspose\s*\(/g, "cpfx_transpose(");
 
@@ -844,7 +864,7 @@ function buildCompatMacroPreamble(source) {
   addMacro("_inout", "(T) inout T");
   addMacro("_out", "(T) out T");
   addMacro("_begin", "(type) type(");
-  addMacro("_end", ")");
+  addMacro("_end", " )");
   addMacro("_mutable", "(T) T");
   addMacro("_constant", "(T) const T");
   if (!hasDefine("mul")) {
@@ -852,6 +872,68 @@ function buildCompatMacroPreamble(source) {
   }
 
   return blocks.length ? `\n${blocks.join("\n")}\n` : "\n";
+}
+
+function buildChannelSamplingHelpers() {
+  const shared = `
+float cpfx_channelType(int idx) {
+  return idx == 0 ? cpfxChannelType0 :
+    (idx == 1 ? cpfxChannelType1 :
+      (idx == 2 ? cpfxChannelType2 : cpfxChannelType3));
+}
+vec3 cpfx_volumeLayout(int idx) {
+  return idx == 0 ? cpfxVolumeLayout0 :
+    (idx == 1 ? cpfxVolumeLayout1 :
+      (idx == 2 ? cpfxVolumeLayout2 : cpfxVolumeLayout3));
+}
+vec2 cpfx_channelResolution(int idx) {
+  return idx == 0 ? iChannelResolution[0].xy :
+    (idx == 1 ? iChannelResolution[1].xy :
+      (idx == 2 ? iChannelResolution[2].xy : iChannelResolution[3].xy));
+}
+
+vec4 cpfx_sampleVolumeAtlas(sampler2D s, vec3 uvw, int idx) {
+  vec3 layout = cpfx_volumeLayout(idx);
+  vec2 atlasRes = max(cpfx_channelResolution(idx), vec2(1.0));
+  float tilesX = max(1.0, floor(layout.x + 0.5));
+  float tilesY = max(1.0, floor(layout.y + 0.5));
+  float depth = max(1.0, floor(layout.z + 0.5));
+
+  vec2 tileSize = vec2(1.0 / tilesX, 1.0 / tilesY);
+  vec2 inset = 0.5 / atlasRes;
+  vec2 inner = max(tileSize - 2.0 * inset, vec2(1e-6));
+  vec2 xy = fract(uvw.xy);
+  float z = clamp(uvw.z, 0.0, 1.0) * (depth - 1.0);
+  float z0 = floor(z);
+  float z1 = min(z0 + 1.0, depth - 1.0);
+  float f = fract(z);
+
+  vec2 tile0 = vec2(mod(z0, tilesX), floor(z0 / tilesX));
+  vec2 tile1 = vec2(mod(z1, tilesX), floor(z1 / tilesX));
+  vec2 uv0 = tile0 * tileSize + inset + xy * inner;
+  vec2 uv1 = tile1 * tileSize + inset + xy * inner;
+  return mix(texture2D(s, uv0), texture2D(s, uv1), f);
+}
+`;
+
+  const channelFns = [];
+  for (let idx = 0; idx <= 3; idx += 1) {
+    channelFns.push(`
+vec4 cpfx_textureCh${idx}(vec2 uv) { return textureCompat(iChannel${idx}, uv); }
+vec4 cpfx_textureCh${idx}(vec2 uv, float bias) { return cpfx_textureCh${idx}(uv); }
+vec4 cpfx_textureCh${idx}(vec3 v) {
+  float t = cpfx_channelType(${idx});
+  if (t > 1.5) return cpfx_sampleVolumeAtlas(iChannel${idx}, v, ${idx});
+  if (t > 0.5) return textureCompat(iChannel${idx}, v);
+  return textureCompat(iChannel${idx}, v.xy);
+}
+vec4 cpfx_textureCh${idx}(vec3 v, float bias) { return cpfx_textureCh${idx}(v); }
+vec4 cpfx_textureLodCh${idx}(vec2 uv, float lod) { return cpfx_textureCh${idx}(uv); }
+vec4 cpfx_textureLodCh${idx}(vec3 v, float lod) { return cpfx_textureCh${idx}(v); }
+`);
+  }
+
+  return `${shared}\n${channelFns.join("\n")}`;
 }
 
 export function validateShaderToySource(source) {
@@ -905,6 +987,14 @@ uniform float iFrameRate;
 uniform vec4 iDate;
 uniform vec3 iChannelResolution[4];
 uniform vec3 iResolution;
+uniform float cpfxChannelType0;
+uniform float cpfxChannelType1;
+uniform float cpfxChannelType2;
+uniform float cpfxChannelType3;
+uniform vec3 cpfxVolumeLayout0;
+uniform vec3 cpfxVolumeLayout1;
+uniform vec3 cpfxVolumeLayout2;
+uniform vec3 cpfxVolumeLayout3;
 uniform float debugMode;
 uniform float intensity;
 uniform float shaderScale;
@@ -1008,6 +1098,8 @@ vec4 cpfx_textureLod(sampler2D s, vec2 uv, float lod) {
 vec4 cpfx_textureLod(sampler2D s, vec3 dir, float lod) {
   return textureCompat(s, dir);
 }
+
+${buildChannelSamplingHelpers()}
 
 vec4 cpfx_texelFetch(sampler2D s, int channelIndex, ivec2 p, int lod) {
   int idx = channelIndex;
@@ -1285,6 +1377,14 @@ uniform float iFrameRate;
 uniform vec4 iDate;
 uniform vec3 iChannelResolution[4];
 uniform vec3 iResolution;
+uniform float cpfxChannelType0;
+uniform float cpfxChannelType1;
+uniform float cpfxChannelType2;
+uniform float cpfxChannelType3;
+uniform vec3 cpfxVolumeLayout0;
+uniform vec3 cpfxVolumeLayout1;
+uniform vec3 cpfxVolumeLayout2;
+uniform vec3 cpfxVolumeLayout3;
 uniform float shaderScale;
 uniform vec2 shaderScaleXY;
 uniform float shaderRotation;
@@ -1386,6 +1486,8 @@ vec4 cpfx_textureLod(sampler2D s, vec2 uv, float lod) {
 vec4 cpfx_textureLod(sampler2D s, vec3 dir, float lod) {
   return textureCompat(s, dir);
 }
+
+${buildChannelSamplingHelpers()}
 
 vec4 cpfx_texelFetch(sampler2D s, int channelIndex, ivec2 p, int lod) {
   int idx = channelIndex;

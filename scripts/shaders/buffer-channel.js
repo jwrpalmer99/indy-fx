@@ -29,19 +29,30 @@ export class ShaderToyBufferChannel {
   constructor({ source, size = 512 } = {}) {
     this.size = Math.max(2, Math.round(Number(size) || 512));
     this.time = 0;
-    this._debugTickCounter = 0;
     this.texture = PIXI.RenderTexture.create({
       width: this.size,
       height: this.size,
       resolution: 1,
-      scaleMode: PIXI.SCALE_MODES.LINEAR,
+      scaleMode: PIXI.SCALE_MODES.NEAREST,
     });
     this._historyTexture = PIXI.RenderTexture.create({
       width: this.size,
       height: this.size,
       resolution: 1,
-      scaleMode: PIXI.SCALE_MODES.LINEAR,
+      scaleMode: PIXI.SCALE_MODES.NEAREST,
     });
+    if (this.texture?.baseTexture) {
+      this.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+      this.texture.baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF;
+      this.texture.baseTexture.wrapMode = PIXI.WRAP_MODES.CLAMP;
+      this.texture.baseTexture.update?.();
+    }
+    if (this._historyTexture?.baseTexture) {
+      this._historyTexture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+      this._historyTexture.baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF;
+      this._historyTexture.baseTexture.wrapMode = PIXI.WRAP_MODES.CLAMP;
+      this._historyTexture.baseTexture.update?.();
+    }
     this._selfChannelIndices = new Set();
 
     this.fallbackTextures = CHANNEL_INDICES.map(() =>
@@ -66,6 +77,14 @@ export class ShaderToyBufferChannel {
       iFrameRate: 60,
       iDate: [0, 0, 0, 0],
       iChannelResolution,
+      cpfxChannelType0: 0,
+      cpfxChannelType1: 0,
+      cpfxChannelType2: 0,
+      cpfxChannelType3: 0,
+      cpfxVolumeLayout0: [1, 1, 1],
+      cpfxVolumeLayout1: [1, 1, 1],
+      cpfxVolumeLayout2: [1, 1, 1],
+      cpfxVolumeLayout3: [1, 1, 1],
       shaderScale: 1.0,
       shaderScaleXY: [1, 1],
       shaderRotation: 0,
@@ -127,7 +146,7 @@ export class ShaderToyBufferChannel {
     uniforms.iChannelResolution = channelRes;
   }
 
-  setChannel(index, texture, resolution = [1, 1]) {
+  setChannel(index, texture, resolution = [1, 1], options = {}) {
     if (!this.mesh?.shader?.uniforms) return;
     if (!Number.isInteger(index) || index < 0 || index > 3) return;
     this._selfChannelIndices.delete(index);
@@ -135,6 +154,17 @@ export class ShaderToyBufferChannel {
     const uniformName = `iChannel${index}`;
     uniforms[uniformName] = texture ?? this.fallbackTextures[index];
     this._setChannelResolution(index, resolution);
+    const channelType = Number(options?.channelType ?? 0);
+    uniforms[`cpfxChannelType${index}`] =
+      Number.isFinite(channelType) && channelType >= 0 ? channelType : 0;
+    const layout = Array.isArray(options?.volumeLayout)
+      ? options.volumeLayout
+      : [1, 1, 1];
+    uniforms[`cpfxVolumeLayout${index}`] = [
+      Math.max(1, Number(layout?.[0]) || 1),
+      Math.max(1, Number(layout?.[1]) || 1),
+      Math.max(1, Number(layout?.[2]) || 1),
+    ];
   }
 
   setChannelSelf(index, resolution = [this.size, this.size]) {
@@ -144,14 +174,15 @@ export class ShaderToyBufferChannel {
     const uniforms = this.mesh.shader.uniforms;
     uniforms[`iChannel${index}`] = this._historyTexture;
     this._setChannelResolution(index, resolution);
+    uniforms[`cpfxChannelType${index}`] = 0;
+    uniforms[`cpfxVolumeLayout${index}`] = [1, 1, 1];
   }
 
   update(dtSeconds = 1 / 60, renderer = canvas?.app?.renderer) {
     if (!this.texture || !this.mesh || !renderer) return;
-    const dtRaw = Number(dtSeconds);
+    const dtValue = Number(dtSeconds);
     // Some ticker paths can report zero dt; keep feedback buffers animated.
-    const dt = Number.isFinite(dtRaw) && dtRaw > 0 ? dtRaw : 1 / 60;
-    const usedFallbackDt = !(Number.isFinite(dtRaw) && dtRaw > 0);
+    const dt = Number.isFinite(dtValue) && dtValue > 0 ? dtValue : 1 / 60;
     const uniforms = this.mesh.shader.uniforms;
 
     const currentFrame = Number.isFinite(Number(uniforms.iFrame))
@@ -177,20 +208,6 @@ export class ShaderToyBufferChannel {
       now.getDate(),
       seconds,
     ];
-    this._debugTickCounter += 1;
-    if (this._debugTickCounter === 1 || this._debugTickCounter % 60 === 0) {
-      debugBufferLog("buffer tick", {
-        frame: currentFrame,
-        nextFrame: currentFrame + 1,
-        iTime: Number(uniforms.iTime ?? 0),
-        dtRaw: Number.isFinite(dtRaw) ? dtRaw : null,
-        dtUsed: dt,
-        usedFallbackDt,
-        selfChannelCount: this._selfChannelIndices.size,
-        iChannelResolution: Array.from(uniforms.iChannelResolution ?? []),
-      });
-    }
-
     for (const index of this._selfChannelIndices) {
       uniforms[`iChannel${index}`] = this._historyTexture;
     }
