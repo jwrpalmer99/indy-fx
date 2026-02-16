@@ -10,7 +10,6 @@ const fx = game.indyFX;
 Additional utilities:
 - `fx.debugDumpShaderContainers(payload?)`
 - `fx.debugDumpShaderContainerParents(payload?)`
-- `fx.rebuildShaderStorageFromLegacy(payload?)`
 
 ## Token FX
 - `fx.shaderOn(tokenId, opts?)`
@@ -94,7 +93,6 @@ Region notes:
 - `fx.shaders.importShaderToy(payload)`
 - `fx.shaders.importShaderToyUrl(payload)`
 - `fx.shaders.importShaderToyJson(payload)`
-- `fx.shaders.rebuildStorageFromLegacy(payload?)`
 - `fx.shaders.updateImportedShader(shaderId, payload)`
 - `fx.shaders.updateImportedChannels(shaderId, payload)`
 - `fx.shaders.duplicateImported(shaderId, payload?)`

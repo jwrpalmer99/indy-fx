@@ -215,7 +215,6 @@ function _resolveValidShaderPreset(moduleId, getShaderChoices, candidate, fallba
 function _ensureShaderChoicesSettingsHook(moduleId, getShaderChoices) {
   const key = String(moduleId ?? "");
   if (_shaderChoicesSettingsHookByModule.has(key)) return;
-  const shaderLibraryKey = `${key}.shaderLibrary`;
   const shaderLibraryIndexKey = `${key}.shaderLibraryIndex`;
   const shaderPresetKey = `${key}.shaderPreset`;
 
@@ -223,7 +222,6 @@ function _ensureShaderChoicesSettingsHook(moduleId, getShaderChoices) {
     const settingKey = String(setting?.key ?? setting?.id ?? "").trim();
     if (!settingKey) return;
     if (
-      settingKey !== shaderLibraryKey &&
       settingKey !== shaderLibraryIndexKey &&
       settingKey !== shaderPresetKey
     ) {

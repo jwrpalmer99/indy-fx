@@ -4747,16 +4747,12 @@ Hooks.once("ready", async () => {
     cancelShaderPlacement: () => cancelShaderPlacement(false),
     debugDumpShaderContainers: (payload = {}) => debugDumpShaderContainers(payload),
     debugDumpShaderContainerParents: (payload = {}) => debugDumpShaderContainers(payload),
-    rebuildShaderStorageFromLegacy: (payload = {}) =>
-      shaderManager.rebuildImportedShaderStorageFromLegacy(payload),
     shaders: {
       list: () => shaderManager.getCombinedEntries(),
       choices: () => shaderManager.getShaderChoices(),
       importShaderToy: (payload = {}) => shaderManager.importShaderToy(payload),
       importShaderToyUrl: (payload = {}) => shaderManager.importShaderToyFromUrl(payload),
       importShaderToyJson: (payload = {}) => shaderManager.importShaderToyJson(payload),
-      rebuildStorageFromLegacy: (payload = {}) =>
-        shaderManager.rebuildImportedShaderStorageFromLegacy(payload),
       updateImportedShader: (shaderId, payload = {}) => shaderManager.updateImportedShader(shaderId, payload),
       updateImportedChannels: (shaderId, payload = {}) => shaderManager.updateImportedShaderChannels(shaderId, payload),
       duplicateImported: (shaderId, payload = {}) => shaderManager.duplicateImportedShader(shaderId, payload),
