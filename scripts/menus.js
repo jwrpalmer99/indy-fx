@@ -1591,13 +1591,19 @@ export function createMenus({ moduleId, shaderManager }) {
       try {
         const payload = shaderManager.exportImportedShadersPayload();
         const text = JSON.stringify(payload, null, 2);
+        const date = new Date();
+        const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}-${String(date.getHours()).padStart(2, "0")}${String(date.getMinutes()).padStart(2, "0")}`;
+        const filename = `indyfx-shaders-${stamp}.json`;
+        if (typeof globalThis.saveDataToFile === "function") {
+          globalThis.saveDataToFile(text, "application/json", filename);
+          return;
+        }
+
         const blob = new Blob([text], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
-        const date = new Date();
-        const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}-${String(date.getHours()).padStart(2, "0")}${String(date.getMinutes()).padStart(2, "0")}`;
         a.href = url;
-        a.download = `indyfx-shaders-${stamp}.json`;
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         a.remove();
