@@ -215,18 +215,28 @@ function _resolveValidShaderPreset(moduleId, getShaderChoices, candidate, fallba
 function _ensureShaderChoicesSettingsHook(moduleId, getShaderChoices) {
   const key = String(moduleId ?? "");
   if (_shaderChoicesSettingsHookByModule.has(key)) return;
+  const shaderLibraryKey = `${key}.shaderLibrary`;
+  const shaderLibraryIndexKey = `${key}.shaderLibraryIndex`;
+  const shaderLibraryRecordPrefix = `${key}.shaderRecord_`;
+  const shaderPresetKey = `${key}.shaderPreset`;
 
   const hookId = Hooks.on("updateSetting", (setting) => {
     const settingKey = String(setting?.key ?? setting?.id ?? "").trim();
     if (!settingKey) return;
-    if (settingKey !== `${key}.shaderLibrary` && settingKey !== `${key}.shaderPreset`) {
+    if (
+      settingKey !== shaderLibraryKey &&
+      settingKey !== shaderLibraryIndexKey &&
+      settingKey !== shaderPresetKey &&
+      !settingKey.startsWith(shaderLibraryRecordPrefix)
+    ) {
       return;
     }
     _refreshShaderChoicesSnapshot(moduleId, getShaderChoices);
   });
 
   // Explicit signal used by the shader library/editor when imported records change.
-  Hooks.on(`${key}.shaderLibraryChanged`, () => {
+  Hooks.on(`${key}.shaderLibraryChanged`, (payload = {}) => {
+    if (payload && payload.choicesMayHaveChanged === false) return;
     _refreshShaderChoicesSnapshot(moduleId, getShaderChoices);
   });
 
