@@ -403,6 +403,13 @@ function applyCompatibilityRewrites(source) {
   // GLSL ES 1.00 accepts mat2/mat3/mat4 but not mat2x2/mat3x3/mat4x4 aliases.
   next = next.replace(/\bmat([234])x\1\b/g, "mat$1");
 
+  // GLSL ES 1.00 does not support float literal suffixes (for example, 1.0f).
+  // Normalize these to plain numeric literals.
+  next = next.replace(
+    /(\b\d+(?:\.\d*)?|\B\.\d+)([eE][+-]?\d+)?[fF]\b/g,
+    "$1$2",
+  );
+
   // Common Twigl shorthand in some ShaderToy ports.
   // Rewritten to ANGLE/WebGL-friendly canonical loop form.
   let loopRewriteIndex = 0;
