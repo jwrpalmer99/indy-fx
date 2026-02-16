@@ -691,7 +691,7 @@ export function createMenus({ moduleId, shaderManager }) {
         id: `${MODULE_ID}-shader-library`,
         tag: "div",
         position: { width: 888, height: "auto" },
-        window: { title: "Shader Library", contentClasses: ["standard-form"] },
+        window: { title: "Shader Library", contentClasses: ["standard-form"], resizable: true },
       },
       { inplace: false },
     );
