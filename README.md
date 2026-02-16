@@ -1,6 +1,6 @@
 # Indy FX
 
-Indy FX adds animated shader effects to Foundry VTT placeables and regions.
+Indy FX adds animated shader effects to Foundry VTT placeables and regions. Import from [shadertoy](https://shadertoy.com/), edit and configure - then drag/drop the shaders onto tokens/tiles/templates. Extensive API provided.
 
 <img width="1333" height="938" alt="image" src="https://github.com/user-attachments/assets/a21c8bf7-b7c9-4186-b51d-ce459b823a8f" />
 
@@ -14,10 +14,11 @@ For macro/API details, see `README_API.md`.
 
 ## Quick Start
 1. Enable the module.
-2. Open **Game Settings -> Module Settings -> Indy FX**.
-3. Open **Shader Library** (from module settings or Scene Controls).
-4. Import a shader (or bundled examples) from shadertoy.
+3. Open **Shader Library** - from Scene Controls (token/tile/template view).
+4. Import a shader (or bundled examples) from shadertoy - click on Import Shadertoy JSON and follow instruction.
 5. Apply the shader to tokens, tiles, templates, or regions.
+6. Edit shaders from button on token/tile/template.
+7. You can also apply shaders to region via indyFX region behaviour.
 
 ## Main Workflows
 ### Shader Library
@@ -25,7 +26,7 @@ For macro/API details, see `README_API.md`.
 - Hover a card to animate preview.
 - Double-click a card to open full shader editor.
 - Right-click a card for: `Add to Selected`, `Create Macro (Tokens/Tiles/Templates)`, `Duplicate`, `Delete`.
-- Drag/drop a card onto the canvas to apply.
+- Drag/drop a card onto a token/tile/template to apply.
 - Import/Export library from the library window.
 - If no imported shaders exist, Indy FX can prompt to import bundled examples from `scripts/shaders.json`.
 
