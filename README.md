@@ -16,7 +16,7 @@ For macro/API details, see `README_API.md`.
 1. Enable the module.
 2. Open **Game Settings -> Module Settings -> Indy FX**.
 3. Open **Shader Library** (from module settings or Scene Controls).
-4. Import a shader (or bundled examples).
+4. Import a shader (or bundled examples) from shadertoy.
 5. Apply the shader to tokens, tiles, templates, or regions.
 
 ## Main Workflows
