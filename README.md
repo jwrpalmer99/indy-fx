@@ -2,6 +2,9 @@
 
 Indy FX adds animated shader effects to Foundry VTT placeables and regions.
 
+<img width="1333" height="938" alt="image" src="https://github.com/user-attachments/assets/a21c8bf7-b7c9-4186-b51d-ce459b823a8f" />
+
+
 This file is the GM/player usage guide.
 For macro/API details, see `README_API.md`.
 
