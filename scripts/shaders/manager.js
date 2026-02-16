@@ -4588,10 +4588,34 @@ export class ShaderManager {
   }
 
   async importShaderToyJson({ json, name = "" } = {}) {
-    const parsed = parseShaderToyJsonPayload(json);
-    const shader = this._normalizeShaderToyApiPayload(parsed);
-    const shaderId = String(shader?.info?.id ?? "").trim();
-    return this._importFromNormalizedShaderToy(shader, { shaderId, name });
+    try {
+      const parsed = parseShaderToyJsonPayload(json);
+      const shader = this._normalizeShaderToyApiPayload(parsed);
+      const shaderId = String(shader?.info?.id ?? "").trim();
+      return this._importFromNormalizedShaderToy(shader, { shaderId, name });
+    } catch (jsonErr) {
+      // Fallback: allow this import path to accept plain ShaderToy source text
+      // when users paste GLSL instead of API JSON.
+      if (typeof json === "string") {
+        try {
+          const source = validateShaderToySource(json);
+          const displayName = sanitizeName(name || "Imported Shader");
+          const record = await this.importShaderToy({
+            name: displayName,
+            source,
+            autoAssignCapture: false,
+          });
+          return {
+            ...record,
+            shaderToyId: null,
+            shaderToyUrl: null,
+          };
+        } catch (_sourceErr) {
+          // Fall through to original JSON-path error for backwards-compatible messaging.
+        }
+      }
+      throw jsonErr;
+    }
   }
 
   _mergeChannelsPreservingNested(existingChannels = {}, incomingChannels = {}) {
