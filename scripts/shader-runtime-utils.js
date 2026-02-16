@@ -177,6 +177,7 @@ export function createFadeAlphaComputer(cfg) {
 export function updateShaderTimeUniforms(shader, dt, speed, timeTicks) {
   shader.uniforms.time = timeTicks * 0.015 * speed;
   if ("uTime" in shader.uniforms) shader.uniforms.uTime = shader.uniforms.time;
+  if ("iTime" in shader.uniforms) shader.uniforms.iTime = shader.uniforms.time;
   if ("iTimeDelta" in shader.uniforms) shader.uniforms.iTimeDelta = dt;
   if ("iFrame" in shader.uniforms) shader.uniforms.iFrame = (shader.uniforms.iFrame ?? 0) + 1;
   if ("iFrameRate" in shader.uniforms) shader.uniforms.iFrameRate = dt > 0 ? (1 / dt) : 60;

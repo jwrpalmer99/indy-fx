@@ -397,6 +397,7 @@ function updatePreviewShaderUniforms(shader, dtSeconds, speed, frameTicker) {
   const dt = Math.max(0, Number(dtSeconds) || 0);
   shader.uniforms.time = frameTicker * 0.015 * speed;
   if ("uTime" in shader.uniforms) shader.uniforms.uTime = shader.uniforms.time;
+  if ("iTime" in shader.uniforms) shader.uniforms.iTime = shader.uniforms.time;
   if ("iTimeDelta" in shader.uniforms) shader.uniforms.iTimeDelta = dt;
   if ("iFrame" in shader.uniforms)
     shader.uniforms.iFrame = (shader.uniforms.iFrame ?? 0) + 1;
@@ -3000,6 +3001,9 @@ export class ShaderManager {
     if (def.requiresResolution) {
       uniforms.resolution = cfg.resolution ?? [1, 1];
     }
+    const resolvedWidth = Number(uniforms?.resolution?.[0] ?? cfg?.resolution?.[0] ?? 1);
+    const resolvedHeight = Number(uniforms?.resolution?.[1] ?? cfg?.resolution?.[1] ?? 1);
+    uniforms.iResolution = [resolvedWidth, resolvedHeight, 1];
     if (def.usesNoiseTexture && def.type !== "imported") {
       uniforms.iChannel0 = getNoiseTexture(256, "gray");
     }
@@ -3010,6 +3014,7 @@ export class ShaderManager {
     const seenRuntimeBuffers = new Set();
     if (def.type === "imported") {
       uniforms.uTime = cfg.uTime ?? uniforms.time ?? 0;
+      uniforms.iTime = uniforms.uTime;
       const channelResolution = [];
       const referencedChannels = new Set(
         toArray(def.referencedChannels)

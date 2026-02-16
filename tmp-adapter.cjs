@@ -1,4 +1,31 @@
-const SHADERTOY_UNIFORM_NAMES = [
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// scripts/shaders/shadertoy-adapter.js
+var shadertoy_adapter_exports = {};
+__export(shadertoy_adapter_exports, {
+  adaptShaderToyBufferFragment: () => adaptShaderToyBufferFragment,
+  adaptShaderToyFragment: () => adaptShaderToyFragment,
+  extractReferencedChannels: () => extractReferencedChannels,
+  validateShaderToySource: () => validateShaderToySource
+});
+module.exports = __toCommonJS(shadertoy_adapter_exports);
+var SHADERTOY_UNIFORM_NAMES = [
   "iResolution",
   "iTime",
   "iTimeDelta",
@@ -12,14 +39,12 @@ const SHADERTOY_UNIFORM_NAMES = [
   "iMouse",
   "iDate"
 ];
-const SHADERTOY_LEGACY_UNIFORM_NAMES = ["resolution"];
-
+var SHADERTOY_LEGACY_UNIFORM_NAMES = ["resolution"];
 function normalizeShaderSource(source) {
   let next = String(source ?? "").replace(/\r\n/g, "\n").trim();
   next = next.replace(/^\s*#version\s+.+$/gm, "");
   next = next.replace(/^\s*precision\s+\w+\s+float\s*;\s*$/gm, "");
   next = next.replace(/^\s*uniform\s+\w+\s+iChannelResolution\s*\[\s*4\s*\]\s*;\s*$/gm, "");
-
   for (const name of [...SHADERTOY_UNIFORM_NAMES, ...SHADERTOY_LEGACY_UNIFORM_NAMES]) {
     const re = new RegExp(
       `^\\s*uniform\\s+(?:(?:lowp|mediump|highp)\\s+)?\\w+\\s+${name}\\s*(?:\\[\\s*\\d+\\s*\\])?\\s*;\\s*$`,
@@ -27,32 +52,21 @@ function normalizeShaderSource(source) {
     );
     next = next.replace(re, "");
   }
-
   return next.trim();
 }
-
 function injectKnownShaderToyDefines(source) {
   let next = String(source ?? "");
-
-  // Some ShaderToy shaders rely on this platform macro in preprocessor branches.
-  // Provide a conservative default when absent so #if expressions remain valid.
-  if (
-    /\bHW_PERFORMANCE\b/.test(next) &&
-    !/^\s*#\s*define\s+HW_PERFORMANCE\b/m.test(next)
-  ) {
+  if (/\bHW_PERFORMANCE\b/.test(next) && !/^\s*#\s*define\s+HW_PERFORMANCE\b/m.test(next)) {
     next = `#ifndef HW_PERFORMANCE
 #define HW_PERFORMANCE 0
 #endif
 ${next}`;
   }
-
   return next;
 }
-
 function coerceMainToMainImage(source) {
   let next = String(source ?? "");
   if (/void\s+mainImage\s*\(/.test(next)) return next;
-
   if (/void\s+main\s*\(\s*\)/.test(next)) {
     next = next.replace(/void\s+main\s*\(\s*\)/, "void mainImage(out vec4 fragColor, in vec2 fragCoord)");
     next = next.replace(/\bgl_FragColor\b/g, "fragColor");
@@ -61,21 +75,17 @@ function coerceMainToMainImage(source) {
   }
   return next;
 }
-
 function rewriteFloatStepLoopsToCountedLoops(source) {
   let next = String(source ?? "");
-
-  const evalNumericExpression = (expr, constants) => {
+  const evalNumericExpression = (expr, constants2) => {
     const raw = String(expr ?? "").trim();
     if (!raw) return NaN;
     if (/[^0-9eE+\-*/().,\sA-Za-z_]/.test(raw)) return NaN;
-
     const substituted = raw.replace(/\b([A-Za-z_]\w*)\b/g, (_full, name) => {
-      if (constants.has(name)) return `(${constants.get(name)})`;
+      if (constants2.has(name)) return `(${constants2.get(name)})`;
       if (name === "float" || name === "int") return "";
       return "NaN";
     });
-
     try {
       const value = Function(`"use strict"; return (${substituted});`)();
       return Number(value);
@@ -83,8 +93,7 @@ function rewriteFloatStepLoopsToCountedLoops(source) {
       return NaN;
     }
   };
-
-  const constants = new Map();
+  const constants = /* @__PURE__ */ new Map();
   const declRe = /^\s*(?:const\s+)?(?:float|int)\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*(?:(?:\/\/.*)|(?:\/\*.*\*\/\s*))?$/gm;
   for (let pass = 0; pass < 4; pass += 1) {
     let learned = false;
@@ -100,7 +109,6 @@ function rewriteFloatStepLoopsToCountedLoops(source) {
     }
     if (!learned) break;
   }
-
   let rewriteIndex = 0;
   const floatForRe = /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<)\s*([^;]+)\s*;\s*\1\s*\+=\s*([^)]+)\)\s*\{/g;
   next = next.replace(floatForRe, (full, loopVar, initExpr, cmpOp, boundExpr, stepExpr) => {
@@ -110,27 +118,22 @@ function rewriteFloatStepLoopsToCountedLoops(source) {
     if (!Number.isFinite(init) || !Number.isFinite(bound) || !Number.isFinite(step) || step <= 0) {
       return full;
     }
-
     let iters = 0;
     if (cmpOp === "<") {
       iters = Math.ceil((bound - init) / step - 1e-8);
     } else {
       iters = Math.floor((bound - init) / step + 1e-8) + 1;
     }
-
     if (!Number.isFinite(iters) || iters <= 0 || iters > 8192) return full;
-
     const iterVar = `cpfxForStep${rewriteIndex++}`;
-    return `for(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){\n  float ${loopVar} = (${String(initExpr).trim()}) + float(${iterVar})*(${String(stepExpr).trim()});`;
+    return `for(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){
+  float ${loopVar} = (${String(initExpr).trim()}) + float(${iterVar})*(${String(stepExpr).trim()});`;
   });
-
   return next;
 }
 function rewriteTopLevelRedeclaredLocals(source) {
   let next = String(source ?? "");
-
   const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
   const findMatchingBrace = (value, openIndex) => {
     let depth = 0;
     for (let i = openIndex; i < value.length; i += 1) {
@@ -143,7 +146,6 @@ function rewriteTopLevelRedeclaredLocals(source) {
     }
     return -1;
   };
-
   const getBraceDepth = (value, endExclusive) => {
     let depth = 0;
     for (let i = 0; i < endExclusive; i += 1) {
@@ -153,26 +155,21 @@ function rewriteTopLevelRedeclaredLocals(source) {
     }
     return depth;
   };
-
   const rewriteFunctionBody = (body) => {
     let result = String(body ?? "");
-    // Avoid unsafe renames across preprocessor branches (#if/#else) where only one declaration exists at runtime.
     if (/^\s*#\s*(?:if|ifdef|ifndef|elif|else|endif)\b/m.test(result)) return result;
     let renamedCount = 0;
-    const seen = new Set();
+    const seen = /* @__PURE__ */ new Set();
     const declRe = /(^|;)\s*((?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(?:float|int|bool|vec[234]|mat[234])\s+)([A-Za-z_]\w*)(?=\s*(?:[=;,\[]))/gm;
-
     const buildCodeMask = (value) => {
       const chars = String(value ?? "").split("");
       let inLine = false;
       let inBlock = false;
       let inSingle = false;
       let inDouble = false;
-
       for (let i = 0; i < chars.length; i += 1) {
         const ch = chars[i];
-        const next = chars[i + 1];
-
+        const next2 = chars[i + 1];
         if (inLine) {
           if (ch === "\n") {
             inLine = false;
@@ -181,9 +178,8 @@ function rewriteTopLevelRedeclaredLocals(source) {
           }
           continue;
         }
-
         if (inBlock) {
-          if (ch === "*" && next === "/") {
+          if (ch === "*" && next2 === "/") {
             chars[i] = " ";
             chars[i + 1] = " ";
             inBlock = false;
@@ -193,7 +189,6 @@ function rewriteTopLevelRedeclaredLocals(source) {
           }
           continue;
         }
-
         if (inSingle) {
           if (ch === "\\") {
             if (ch !== "\n") chars[i] = " ";
@@ -209,7 +204,6 @@ function rewriteTopLevelRedeclaredLocals(source) {
           if (ch !== "\n") chars[i] = " ";
           continue;
         }
-
         if (inDouble) {
           if (ch === "\\") {
             if (ch !== "\n") chars[i] = " ";
@@ -225,44 +219,37 @@ function rewriteTopLevelRedeclaredLocals(source) {
           if (ch !== "\n") chars[i] = " ";
           continue;
         }
-
-        if (ch === "/" && next === "/") {
+        if (ch === "/" && next2 === "/") {
           chars[i] = " ";
           chars[i + 1] = " ";
           inLine = true;
           i += 1;
           continue;
         }
-
-        if (ch === "/" && next === "*") {
+        if (ch === "/" && next2 === "*") {
           chars[i] = " ";
           chars[i + 1] = " ";
           inBlock = true;
           i += 1;
           continue;
         }
-
         if (ch === "'") {
           chars[i] = " ";
           inSingle = true;
           continue;
         }
-
         if (ch === '"') {
           chars[i] = " ";
           inDouble = true;
           continue;
         }
       }
-
       return chars.join("");
     };
-
     const replaceNameInCodeTail = (sourceText, codeMask, fromIndex, fromName, toName) => {
       const tailSource = sourceText.slice(fromIndex);
       const tailMask = codeMask.slice(fromIndex);
       const re = new RegExp(`\\b${escapeRegex(fromName)}\\b`, "g");
-
       let srcOut = sourceText.slice(0, fromIndex);
       let maskOut = codeMask.slice(0, fromIndex);
       let last = 0;
@@ -274,53 +261,45 @@ function rewriteTopLevelRedeclaredLocals(source) {
         maskOut += tailMask.slice(last, s) + toName;
         last = e;
       }
-
       srcOut += tailSource.slice(last);
       maskOut += tailMask.slice(last);
       return { source: srcOut, mask: maskOut };
     };
-
     let scanText = buildCodeMask(result);
     let scanIndex = 0;
     while (true) {
       declRe.lastIndex = scanIndex;
       const match = declRe.exec(scanText);
       if (!match) break;
-
       const depth = getBraceDepth(scanText, match.index);
       if (depth !== 0) {
         scanIndex = declRe.lastIndex;
         continue;
       }
-
       const name = match[3];
       if (!seen.has(name)) {
         seen.add(name);
         scanIndex = declRe.lastIndex;
         continue;
       }
-
       const newName = `${name}_cpfx${renamedCount++}`;
       const nameStart = match.index + String(match[0] ?? "").lastIndexOf(name);
       result = `${result.slice(0, nameStart)}${newName}${result.slice(nameStart + name.length)}`;
       scanText = `${scanText.slice(0, nameStart)}${newName}${scanText.slice(nameStart + name.length)}`;
-
       const replaceFrom = nameStart + newName.length;
       const replaced = replaceNameInCodeTail(
         result,
         scanText,
         replaceFrom,
         name,
-        newName,
+        newName
       );
       result = replaced.source;
       scanText = replaced.mask;
       scanIndex = replaceFrom;
     }
-
     return result;
   };
-
   const functionHeadRe = /\b(?:void|float|int|bool|vec[234]|mat[234])\s+[A-Za-z_]\w*\s*\([^;{}]*\)\s*\{/g;
   const ranges = [];
   let fnMatch;
@@ -332,7 +311,6 @@ function rewriteTopLevelRedeclaredLocals(source) {
     ranges.push({ open, close });
     functionHeadRe.lastIndex = close + 1;
   }
-
   for (let i = ranges.length - 1; i >= 0; i -= 1) {
     const { open, close } = ranges[i];
     const body = next.slice(open + 1, close);
@@ -341,19 +319,13 @@ function rewriteTopLevelRedeclaredLocals(source) {
       next = `${next.slice(0, open + 1)}${rewrittenBody}${next.slice(close)}`;
     }
   }
-
   return next;
 }
 function applyCompatibilityRewrites(source) {
   let next = String(source ?? "");
   next = rewriteFloatStepLoopsToCountedLoops(next);
   next = rewriteTopLevelRedeclaredLocals(next);
-
-  // GLSL ES 1.00 accepts mat2/mat3/mat4 but not mat2x2/mat3x3/mat4x4 aliases.
   next = next.replace(/\bmat([234])x\1\b/g, "mat$1");
-
-  // Common Twigl shorthand in some ShaderToy ports.
-  // Rewritten to ANGLE/WebGL-friendly canonical loop form.
   let loopRewriteIndex = 0;
   const twiglLoopRe = /for\s*\(\s*O\s*\*=\s*i\s*;\s*i\s*<\s*([0-9]*\.?[0-9]+|[0-9]+\.)\s*;\s*i\s*\+=\s*([0-9]*\.?[0-9]+|[0-9]+\.)\s*\)\s*\{/g;
   next = next.replace(twiglLoopRe, (_full, maxRaw, stepRaw) => {
@@ -364,12 +336,10 @@ function applyCompatibilityRewrites(source) {
     }
     const iters = Math.max(1, Math.ceil(maxV / stepV));
     const iterVar = `cpfxLoop${loopRewriteIndex++}`;
-    return `O*=0.0;\nfor(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){\n  i=float(${iterVar})*${stepV};`;
+    return `O*=0.0;
+for(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){
+  i=float(${iterVar})*${stepV};`;
   });
-
-  // Compact loop style used by some one-liner shaders:
-  // for(float a=..., t=..., i; ++i<19.; o+=expr) statement;
-  // ANGLE rejects this; rewrite to a canonical counted loop.
   const splitTopLevel = (value, delimiter) => {
     const out = [];
     let chunk = "";
@@ -388,7 +358,6 @@ function applyCompatibilityRewrites(source) {
     if (chunk.trim()) out.push(chunk.trim());
     return out;
   };
-
   const findMatchingParen = (value, openIndex) => {
     let depth = 0;
     for (let idx = openIndex; idx < value.length; idx += 1) {
@@ -401,7 +370,6 @@ function applyCompatibilityRewrites(source) {
     }
     return -1;
   };
-
   const findStatementEnd = (value, startIndex) => {
     let depth = 0;
     for (let idx = startIndex; idx < value.length; idx += 1) {
@@ -412,65 +380,54 @@ function applyCompatibilityRewrites(source) {
     }
     return -1;
   };
-
   let compactLoopRewriteIndex = 0;
   const compactForHeadRe = /for\s*\(\s*float\s+/g;
   while (true) {
     const m = compactForHeadRe.exec(next);
     if (!m) break;
-
     const forStart = m.index;
     const openParen = next.indexOf("(", forStart);
     if (openParen < 0) break;
-
     const closeParen = findMatchingParen(next, openParen);
     if (closeParen < 0) {
       compactForHeadRe.lastIndex = forStart + 4;
       continue;
     }
-
     const headerInside = next.slice(openParen + 1, closeParen).replace(/^\s*float\s+/, "");
     const headerParts = splitTopLevel(headerInside, ";");
     if (headerParts.length !== 3) {
       compactForHeadRe.lastIndex = closeParen + 1;
       continue;
     }
-
     const conditionMatch = headerParts[1].match(/^\s*\+\+\s*([A-Za-z_]\w*)\s*<\s*([0-9]*\.?[0-9]+|[0-9]+\.)\s*$/);
     if (!conditionMatch) {
       compactForHeadRe.lastIndex = closeParen + 1;
       continue;
     }
-
     const loopVar = conditionMatch[1];
     const maxV = Number(conditionMatch[2]);
     if (!Number.isFinite(maxV) || maxV <= 0) {
       compactForHeadRe.lastIndex = closeParen + 1;
       continue;
     }
-
     let stmtStart = closeParen + 1;
     while (stmtStart < next.length && /\s/.test(next[stmtStart])) stmtStart += 1;
     if (stmtStart >= next.length || next[stmtStart] === "{") {
       compactForHeadRe.lastIndex = closeParen + 1;
       continue;
     }
-
     const stmtEnd = findStatementEnd(next, stmtStart);
     if (stmtEnd < 0) {
       compactForHeadRe.lastIndex = closeParen + 1;
       continue;
     }
-
     const bodyExpr = next.slice(stmtStart, stmtEnd).trim();
     const stepExpr = headerParts[2].trim();
-
     const initParts = splitTopLevel(headerParts[0], ",");
     if (!initParts.length) {
       compactForHeadRe.lastIndex = stmtEnd + 1;
       continue;
     }
-
     const rebuiltParts = [];
     let foundLoopVar = false;
     for (const part of initParts) {
@@ -480,31 +437,27 @@ function applyCompatibilityRewrites(source) {
         rebuiltParts.push(trimmed);
         continue;
       }
-
       const varName = varMatch[1];
       if (varName !== loopVar) {
         rebuiltParts.push(trimmed);
         continue;
       }
-
       foundLoopVar = true;
       if (varMatch[2]) rebuiltParts.push(trimmed);
       else rebuiltParts.push(`${varName}=0.0`);
     }
-
     if (!foundLoopVar) rebuiltParts.push(`${loopVar}=0.0`);
-
     const iterVar = `cpfxCompactLoop${compactLoopRewriteIndex++}`;
     const iters = Math.max(1, Math.ceil(maxV));
-    const replacement = `float ${rebuiltParts.join(", ")};\nfor(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){\n  ${loopVar} += 1.0;\n  ${bodyExpr};\n  ${stepExpr};\n}`;
-
+    const replacement = `float ${rebuiltParts.join(", ")};
+for(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){
+  ${loopVar} += 1.0;
+  ${bodyExpr};
+  ${stepExpr};
+}`;
     next = `${next.slice(0, forStart)}${replacement}${next.slice(stmtEnd + 1)}`;
     compactForHeadRe.lastIndex = forStart + replacement.length;
   }
-
-  // GLSL ES 1.00 does not support ES3-style array constructors, for example:
-  // const vec2 hp[7] = vec2[7](...);
-  // Rewrite these to helper functions and indexed calls.
   let arrayRewriteIndex = 0;
   let arrayHelpers = "";
   const rewrittenArrays = [];
@@ -513,75 +466,55 @@ function applyCompatibilityRewrites(source) {
     const arrayName = String(arrayNameRaw ?? "").trim();
     const count = Number(countRaw);
     if (!arrayName || !Number.isFinite(count) || count <= 0) return full;
-
-    const values = splitTopLevel(String(initRaw ?? ""), ",")
-      .map((v) => v.trim())
-      .filter((v) => v.length > 0)
-      .slice(0, count);
+    const values = splitTopLevel(String(initRaw ?? ""), ",").map((v) => v.trim()).filter((v) => v.length > 0).slice(0, count);
     if (values.length < count) return full;
-
     const helperName = `cpfx_arr2_${arrayRewriteIndex++}`;
-    let helper = `vec2 ${helperName}(int idx){\n`;
+    let helper = `vec2 ${helperName}(int idx){
+`;
     for (let i = 0; i < count; i += 1) {
-      helper += `  if (idx == ${i}) return ${values[i]};\n`;
+      helper += `  if (idx == ${i}) return ${values[i]};
+`;
     }
-    helper += `  return ${values[count - 1]};\n}\n`;
-
+    helper += `  return ${values[count - 1]};
+}
+`;
     arrayHelpers += helper;
     rewrittenArrays.push({ name: arrayName, helperName });
     return "";
   });
-
   if (rewrittenArrays.length > 0) {
     for (const entry of rewrittenArrays) {
       const idxRe = new RegExp(`\\b${entry.name}\\s*\\[\\s*([^\\]]+)\\s*\\]`, "g");
       next = next.replace(idxRe, `${entry.helperName}(int($1))`);
     }
-    next = `${arrayHelpers}\n${next}`;
+    next = `${arrayHelpers}
+${next}`;
   }
-  // WebGL1/GLSL ES 1.00 often lacks these vector intrinsics; route through compatibility overloads.
   next = next.replace(/\btanh\s*\(/g, "cpfx_tanh(");
   next = next.replace(/\bsinh\s*\(/g, "cpfx_sinh(");
   next = next.replace(/\bcosh\s*\(/g, "cpfx_cosh(");
   next = next.replace(/\bround\s*\(/g, "cpfx_round(");
-
-  // textureLod is commonly used in ShaderToy WebGL2 shaders.
   next = next.replace(/\btextureLod\s*\(/g, "cpfx_textureLod(");
-
-  // GLSL ES 1.00 lacks transpose(); route through compatibility overloads.
   next = next.replace(/\btranspose\s*\(/g, "cpfx_transpose(");
-
-  // Derivatives are extension-gated in GLSL ES 1.00; route through wrappers.
-  next = next.replace(/\bdFdx\s*\(/g, "cpfx_dFdx(");
-  next = next.replace(/\bdFdy\s*\(/g, "cpfx_dFdy(");
-
-  // texelFetch is GLSL ES 3.00; remap common ShaderToy channel fetches.
   next = next.replace(
     /\btexelFetch\s*\(\s*iChannel([0-3])\s*,/g,
     "cpfx_texelFetch(iChannel$1, $1,"
   );
-  // textureSize is GLSL ES 3.00; remap channel lookups.
   next = next.replace(
     /\btextureSize\s*\(\s*iChannel([0-3])\s*,/g,
     "cpfx_textureSize(iChannel$1, $1,"
   );
-
-  // GLSL ES 1.00 has no mat4x3; rewrite common multiplication form.
   const mat4x3MulRe = /mat4x3\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)\s*\*\s*(\([^;\n]+\)|[A-Za-z_]\w*)/g;
   next = next.replace(mat4x3MulRe, "cpfx_mul_mat4x3_vec4($1, $2, $3, $4, $5)");
-
-  // Targeted fix for OpenSimplex common code pattern that writes vec3 by dynamic index.
   next = next.replace(
     /\bcuboct\s*\[\s*int\s*\(\s*([^)]+)\s*\)\s*\]\s*=\s*([^;]+);/g,
     "cuboct = cpfx_set_vec3_component(cuboct, int($1), $2);"
   );
-
   return next;
 }
-
-export function validateShaderToySource(source) {
+function validateShaderToySource(source) {
   const normalized = injectKnownShaderToyDefines(
-    coerceMainToMainImage(normalizeShaderSource(source)),
+    coerceMainToMainImage(normalizeShaderSource(source))
   );
   if (!normalized) {
     throw new Error("Shader source is empty.");
@@ -591,10 +524,9 @@ export function validateShaderToySource(source) {
   }
   return normalized;
 }
-
-export function extractReferencedChannels(source) {
+function extractReferencedChannels(source) {
   const normalized = applyCompatibilityRewrites(validateShaderToySource(source));
-  const found = new Set();
+  const found = /* @__PURE__ */ new Set();
   const re = /\biChannel([0-3])\b/g;
   let match;
   while ((match = re.exec(normalized)) !== null) {
@@ -602,13 +534,9 @@ export function extractReferencedChannels(source) {
   }
   return [...found].sort((a, b) => a - b);
 }
-
-export function adaptShaderToyFragment(source) {
+function adaptShaderToyFragment(source) {
   const body = applyCompatibilityRewrites(validateShaderToySource(source));
   return `
-#ifdef GL_OES_standard_derivatives
-#extension GL_OES_standard_derivatives : enable
-#endif
 #ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
 #else
@@ -622,13 +550,11 @@ uniform sampler2D iChannel2;
 uniform sampler2D iChannel3;
 uniform vec4 iMouse;
 uniform float uTime;
-uniform float iTime;
 uniform float iTimeDelta;
 uniform float iFrame;
 uniform float iFrameRate;
 uniform vec4 iDate;
 uniform vec3 iChannelResolution[4];
-uniform vec3 iResolution;
 uniform float debugMode;
 uniform float intensity;
 uniform float shaderScale;
@@ -640,31 +566,8 @@ uniform float cpfxPreserveTransparent;
 uniform float cpfxForceOpaqueCaptureAlpha;
 uniform vec2 resolution;
 
-#ifndef _in
-#define _in(T) const T
-#endif
-#ifndef _inout
-#define _inout(T) inout T
-#endif
-#ifndef _out
-#define _out(T) out T
-#endif
-#ifndef _begin
-#define _begin(type) type(
-#endif
-#ifndef _end
-#define _end )
-#endif
-#ifndef _mutable
-#define _mutable(T) T
-#endif
-#ifndef _constant
-#define _constant(T) const T
-#endif
-#ifndef mul
-#define mul(a, b) ((a) * (b))
-#endif
-
+#define iTime uTime
+#define iResolution vec3(resolution, 1.0)
 vec2 cpfxFragCoord;
 #define gl_FragCoord vec4(cpfxFragCoord, 0.0, 1.0)
 
@@ -814,64 +717,6 @@ mat4 cpfx_transpose(mat4 m) {
     m[0][2], m[1][2], m[2][2], m[3][2],
     m[0][3], m[1][3], m[2][3], m[3][3]
   );
-}
-
-float cpfx_dFdx(float v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdx(v);
-#else
-  return 0.0;
-#endif
-}
-vec2 cpfx_dFdx(vec2 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdx(v);
-#else
-  return vec2(0.0);
-#endif
-}
-vec3 cpfx_dFdx(vec3 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdx(v);
-#else
-  return vec3(0.0);
-#endif
-}
-vec4 cpfx_dFdx(vec4 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdx(v);
-#else
-  return vec4(0.0);
-#endif
-}
-
-float cpfx_dFdy(float v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdy(v);
-#else
-  return 0.0;
-#endif
-}
-vec2 cpfx_dFdy(vec2 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdy(v);
-#else
-  return vec2(0.0);
-#endif
-}
-vec3 cpfx_dFdy(vec3 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdy(v);
-#else
-  return vec3(0.0);
-#endif
-}
-vec4 cpfx_dFdy(vec4 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdy(v);
-#else
-  return vec4(0.0);
-#endif
 }
 
 #define texture textureCompat
@@ -918,13 +763,9 @@ void main() {
   gl_FragColor = vec4(shaderColor.rgb * a * intensity, a);
 }`;
 }
-
-export function adaptShaderToyBufferFragment(source) {
+function adaptShaderToyBufferFragment(source) {
   const body = applyCompatibilityRewrites(validateShaderToySource(source));
   return `
-#ifdef GL_OES_standard_derivatives
-#extension GL_OES_standard_derivatives : enable
-#endif
 #ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
 #else
@@ -937,13 +778,11 @@ uniform sampler2D iChannel2;
 uniform sampler2D iChannel3;
 uniform vec4 iMouse;
 uniform float uTime;
-uniform float iTime;
 uniform float iTimeDelta;
 uniform float iFrame;
 uniform float iFrameRate;
 uniform vec4 iDate;
 uniform vec3 iChannelResolution[4];
-uniform vec3 iResolution;
 uniform float shaderScale;
 uniform vec2 shaderScaleXY;
 uniform float shaderRotation;
@@ -953,31 +792,8 @@ uniform float cpfxPreserveTransparent;
 uniform float cpfxForceOpaqueCaptureAlpha;
 uniform vec2 resolution;
 
-#ifndef _in
-#define _in(T) const T
-#endif
-#ifndef _inout
-#define _inout(T) inout T
-#endif
-#ifndef _out
-#define _out(T) out T
-#endif
-#ifndef _begin
-#define _begin(type) type(
-#endif
-#ifndef _end
-#define _end )
-#endif
-#ifndef _mutable
-#define _mutable(T) T
-#endif
-#ifndef _constant
-#define _constant(T) const T
-#endif
-#ifndef mul
-#define mul(a, b) ((a) * (b))
-#endif
-
+#define iTime uTime
+#define iResolution vec3(resolution, 1.0)
 vec2 cpfxFragCoord;
 #define gl_FragCoord vec4(cpfxFragCoord, 0.0, 1.0)
 
@@ -1129,64 +945,6 @@ mat4 cpfx_transpose(mat4 m) {
   );
 }
 
-float cpfx_dFdx(float v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdx(v);
-#else
-  return 0.0;
-#endif
-}
-vec2 cpfx_dFdx(vec2 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdx(v);
-#else
-  return vec2(0.0);
-#endif
-}
-vec3 cpfx_dFdx(vec3 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdx(v);
-#else
-  return vec3(0.0);
-#endif
-}
-vec4 cpfx_dFdx(vec4 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdx(v);
-#else
-  return vec4(0.0);
-#endif
-}
-
-float cpfx_dFdy(float v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdy(v);
-#else
-  return 0.0;
-#endif
-}
-vec2 cpfx_dFdy(vec2 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdy(v);
-#else
-  return vec2(0.0);
-#endif
-}
-vec3 cpfx_dFdy(vec3 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdy(v);
-#else
-  return vec3(0.0);
-#endif
-}
-vec4 cpfx_dFdy(vec4 v) {
-#ifdef GL_OES_standard_derivatives
-  return dFdy(v);
-#else
-  return vec4(0.0);
-#endif
-}
-
 #define texture textureCompat
 
 ${body}
@@ -1203,5 +961,10 @@ void main() {
   gl_FragColor = shaderColor;
 }`;
 }
-
-
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  adaptShaderToyBufferFragment,
+  adaptShaderToyFragment,
+  extractReferencedChannels,
+  validateShaderToySource
+});
