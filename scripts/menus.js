@@ -135,6 +135,15 @@ export function createMenus({ moduleId, shaderManager }) {
       windowContent.style.overflowX = "hidden";
       windowContent.style.minHeight = "0";
     }
+    const resetScrollTop = () => {
+      if (host instanceof HTMLElement) host.scrollTop = 0;
+      if (windowContent instanceof HTMLElement) windowContent.scrollTop = 0;
+      for (const form of root.querySelectorAll("form")) {
+        if (form instanceof HTMLElement) form.scrollTop = 0;
+      }
+    };
+    resetScrollTop();
+    requestAnimationFrame(() => resetScrollTop());
   }
   function collectSearchRoots(start) {
     const roots = [];

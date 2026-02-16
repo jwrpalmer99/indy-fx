@@ -840,6 +840,21 @@ float cpfx_min(float a, float b) { return min(a, b); }
 vec2 cpfx_min(vec2 a, vec2 b) { return min(a, b); }
 vec3 cpfx_min(vec3 a, vec3 b) { return min(a, b); }
 vec4 cpfx_min(vec4 a, vec4 b) { return min(a, b); }
+vec2 cpfx_min(vec2 a, float b) { return min(a, vec2(b)); }
+vec2 cpfx_min(float a, vec2 b) { return min(vec2(a), b); }
+vec3 cpfx_min(vec3 a, float b) { return min(a, vec3(b)); }
+vec3 cpfx_min(float a, vec3 b) { return min(vec3(a), b); }
+vec4 cpfx_min(vec4 a, float b) { return min(a, vec4(b)); }
+vec4 cpfx_min(float a, vec4 b) { return min(vec4(a), b); }
+ivec2 cpfx_min(ivec2 a, ivec2 b) { return ivec2((a.x < b.x) ? a.x : b.x, (a.y < b.y) ? a.y : b.y); }
+ivec3 cpfx_min(ivec3 a, ivec3 b) { return ivec3((a.x < b.x) ? a.x : b.x, (a.y < b.y) ? a.y : b.y, (a.z < b.z) ? a.z : b.z); }
+ivec4 cpfx_min(ivec4 a, ivec4 b) { return ivec4((a.x < b.x) ? a.x : b.x, (a.y < b.y) ? a.y : b.y, (a.z < b.z) ? a.z : b.z, (a.w < b.w) ? a.w : b.w); }
+ivec2 cpfx_min(ivec2 a, int b) { return cpfx_min(a, ivec2(b)); }
+ivec2 cpfx_min(int a, ivec2 b) { return cpfx_min(ivec2(a), b); }
+ivec3 cpfx_min(ivec3 a, int b) { return cpfx_min(a, ivec3(b)); }
+ivec3 cpfx_min(int a, ivec3 b) { return cpfx_min(ivec3(a), b); }
+ivec4 cpfx_min(ivec4 a, int b) { return cpfx_min(a, ivec4(b)); }
+ivec4 cpfx_min(int a, ivec4 b) { return cpfx_min(ivec4(a), b); }
 int cpfx_min(int a, int b) { return (a < b) ? a : b; }
 int cpfx_min(int a, float b) {
   int bi = int(floor(b));
@@ -854,6 +869,21 @@ float cpfx_max(float a, float b) { return max(a, b); }
 vec2 cpfx_max(vec2 a, vec2 b) { return max(a, b); }
 vec3 cpfx_max(vec3 a, vec3 b) { return max(a, b); }
 vec4 cpfx_max(vec4 a, vec4 b) { return max(a, b); }
+vec2 cpfx_max(vec2 a, float b) { return max(a, vec2(b)); }
+vec2 cpfx_max(float a, vec2 b) { return max(vec2(a), b); }
+vec3 cpfx_max(vec3 a, float b) { return max(a, vec3(b)); }
+vec3 cpfx_max(float a, vec3 b) { return max(vec3(a), b); }
+vec4 cpfx_max(vec4 a, float b) { return max(a, vec4(b)); }
+vec4 cpfx_max(float a, vec4 b) { return max(vec4(a), b); }
+ivec2 cpfx_max(ivec2 a, ivec2 b) { return ivec2((a.x > b.x) ? a.x : b.x, (a.y > b.y) ? a.y : b.y); }
+ivec3 cpfx_max(ivec3 a, ivec3 b) { return ivec3((a.x > b.x) ? a.x : b.x, (a.y > b.y) ? a.y : b.y, (a.z > b.z) ? a.z : b.z); }
+ivec4 cpfx_max(ivec4 a, ivec4 b) { return ivec4((a.x > b.x) ? a.x : b.x, (a.y > b.y) ? a.y : b.y, (a.z > b.z) ? a.z : b.z, (a.w > b.w) ? a.w : b.w); }
+ivec2 cpfx_max(ivec2 a, int b) { return cpfx_max(a, ivec2(b)); }
+ivec2 cpfx_max(int a, ivec2 b) { return cpfx_max(ivec2(a), b); }
+ivec3 cpfx_max(ivec3 a, int b) { return cpfx_max(a, ivec3(b)); }
+ivec3 cpfx_max(int a, ivec3 b) { return cpfx_max(ivec3(a), b); }
+ivec4 cpfx_max(ivec4 a, int b) { return cpfx_max(a, ivec4(b)); }
+ivec4 cpfx_max(int a, ivec4 b) { return cpfx_max(ivec4(a), b); }
 int cpfx_max(int a, int b) { return (a > b) ? a : b; }
 int cpfx_max(int a, float b) {
   int bi = int(floor(b));
@@ -1203,6 +1233,21 @@ float cpfx_min(float a, float b) { return min(a, b); }
 vec2 cpfx_min(vec2 a, vec2 b) { return min(a, b); }
 vec3 cpfx_min(vec3 a, vec3 b) { return min(a, b); }
 vec4 cpfx_min(vec4 a, vec4 b) { return min(a, b); }
+vec2 cpfx_min(vec2 a, float b) { return min(a, vec2(b)); }
+vec2 cpfx_min(float a, vec2 b) { return min(vec2(a), b); }
+vec3 cpfx_min(vec3 a, float b) { return min(a, vec3(b)); }
+vec3 cpfx_min(float a, vec3 b) { return min(vec3(a), b); }
+vec4 cpfx_min(vec4 a, float b) { return min(a, vec4(b)); }
+vec4 cpfx_min(float a, vec4 b) { return min(vec4(a), b); }
+ivec2 cpfx_min(ivec2 a, ivec2 b) { return ivec2((a.x < b.x) ? a.x : b.x, (a.y < b.y) ? a.y : b.y); }
+ivec3 cpfx_min(ivec3 a, ivec3 b) { return ivec3((a.x < b.x) ? a.x : b.x, (a.y < b.y) ? a.y : b.y, (a.z < b.z) ? a.z : b.z); }
+ivec4 cpfx_min(ivec4 a, ivec4 b) { return ivec4((a.x < b.x) ? a.x : b.x, (a.y < b.y) ? a.y : b.y, (a.z < b.z) ? a.z : b.z, (a.w < b.w) ? a.w : b.w); }
+ivec2 cpfx_min(ivec2 a, int b) { return cpfx_min(a, ivec2(b)); }
+ivec2 cpfx_min(int a, ivec2 b) { return cpfx_min(ivec2(a), b); }
+ivec3 cpfx_min(ivec3 a, int b) { return cpfx_min(a, ivec3(b)); }
+ivec3 cpfx_min(int a, ivec3 b) { return cpfx_min(ivec3(a), b); }
+ivec4 cpfx_min(ivec4 a, int b) { return cpfx_min(a, ivec4(b)); }
+ivec4 cpfx_min(int a, ivec4 b) { return cpfx_min(ivec4(a), b); }
 int cpfx_min(int a, int b) { return (a < b) ? a : b; }
 int cpfx_min(int a, float b) {
   int bi = int(floor(b));
@@ -1217,6 +1262,21 @@ float cpfx_max(float a, float b) { return max(a, b); }
 vec2 cpfx_max(vec2 a, vec2 b) { return max(a, b); }
 vec3 cpfx_max(vec3 a, vec3 b) { return max(a, b); }
 vec4 cpfx_max(vec4 a, vec4 b) { return max(a, b); }
+vec2 cpfx_max(vec2 a, float b) { return max(a, vec2(b)); }
+vec2 cpfx_max(float a, vec2 b) { return max(vec2(a), b); }
+vec3 cpfx_max(vec3 a, float b) { return max(a, vec3(b)); }
+vec3 cpfx_max(float a, vec3 b) { return max(vec3(a), b); }
+vec4 cpfx_max(vec4 a, float b) { return max(a, vec4(b)); }
+vec4 cpfx_max(float a, vec4 b) { return max(vec4(a), b); }
+ivec2 cpfx_max(ivec2 a, ivec2 b) { return ivec2((a.x > b.x) ? a.x : b.x, (a.y > b.y) ? a.y : b.y); }
+ivec3 cpfx_max(ivec3 a, ivec3 b) { return ivec3((a.x > b.x) ? a.x : b.x, (a.y > b.y) ? a.y : b.y, (a.z > b.z) ? a.z : b.z); }
+ivec4 cpfx_max(ivec4 a, ivec4 b) { return ivec4((a.x > b.x) ? a.x : b.x, (a.y > b.y) ? a.y : b.y, (a.z > b.z) ? a.z : b.z, (a.w > b.w) ? a.w : b.w); }
+ivec2 cpfx_max(ivec2 a, int b) { return cpfx_max(a, ivec2(b)); }
+ivec2 cpfx_max(int a, ivec2 b) { return cpfx_max(ivec2(a), b); }
+ivec3 cpfx_max(ivec3 a, int b) { return cpfx_max(a, ivec3(b)); }
+ivec3 cpfx_max(int a, ivec3 b) { return cpfx_max(ivec3(a), b); }
+ivec4 cpfx_max(ivec4 a, int b) { return cpfx_max(a, ivec4(b)); }
+ivec4 cpfx_max(int a, ivec4 b) { return cpfx_max(ivec4(a), b); }
 int cpfx_max(int a, int b) { return (a > b) ? a : b; }
 int cpfx_max(int a, float b) {
   int bi = int(floor(b));
