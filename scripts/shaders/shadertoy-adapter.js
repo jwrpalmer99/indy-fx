@@ -762,6 +762,17 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(/\bmin\s*\(/g, "cpfx_min(");
   next = next.replace(/\bmax\s*\(/g, "cpfx_max(");
 
+  // GLSL ES 1.00 is strict about scalar comparison types.
+  // iFrame is provided as float; normalize common int-literal comparisons.
+  next = next.replace(
+    /\biFrame\s*(==|!=|<=|>=|<|>)\s*([+-]?\d+)(?![\d.])/g,
+    (_full, op, rhs) => `iFrame ${op} ${rhs}.0`,
+  );
+  next = next.replace(
+    /([+-]?\d+)(?![\d.])\s*(==|!=|<=|>=|<|>)\s*iFrame\b/g,
+    (_full, lhs, op) => `${lhs}.0 ${op} iFrame`,
+  );
+
   // GLSL ES 1.00 has no bitwise operators. Rewrite common patterns.
   const foldBinaryOps = (input, regex, replacement) => {
     let out = String(input ?? "");

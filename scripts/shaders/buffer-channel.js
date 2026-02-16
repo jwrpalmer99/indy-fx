@@ -154,11 +154,16 @@ export class ShaderToyBufferChannel {
     const usedFallbackDt = !(Number.isFinite(dtRaw) && dtRaw > 0);
     const uniforms = this.mesh.shader.uniforms;
 
+    const currentFrame = Number.isFinite(Number(uniforms.iFrame))
+      ? Number(uniforms.iFrame)
+      : 0;
     this.time += dt;
     uniforms.uTime = this.time;
     uniforms.iTime = this.time;
     uniforms.iTimeDelta = dt;
-    uniforms.iFrame = (uniforms.iFrame ?? 0) + 1;
+    // ShaderToy buffer shaders frequently branch on iFrame==0 for one-time init.
+    // Present current frame to this render, then increment after rendering.
+    uniforms.iFrame = currentFrame;
     uniforms.iFrameRate = dt > 0 ? 1 / dt : 60;
     const now = new Date();
     const seconds =
@@ -175,7 +180,8 @@ export class ShaderToyBufferChannel {
     this._debugTickCounter += 1;
     if (this._debugTickCounter === 1 || this._debugTickCounter % 60 === 0) {
       debugBufferLog("buffer tick", {
-        frame: Number(uniforms.iFrame ?? 0),
+        frame: currentFrame,
+        nextFrame: currentFrame + 1,
         iTime: Number(uniforms.iTime ?? 0),
         dtRaw: Number.isFinite(dtRaw) ? dtRaw : null,
         dtUsed: dt,
@@ -201,6 +207,7 @@ export class ShaderToyBufferChannel {
         clear: true,
       });
     }
+    uniforms.iFrame = currentFrame + 1;
   }
 
   destroy() {
