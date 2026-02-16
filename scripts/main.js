@@ -1310,7 +1310,9 @@ function documentHasEnabledShader(target) {
 }
 
 function resolveHudRoot(targetType, app, html) {
-  const preferClass = targetType === "tile" ? "tile-hud" : "token-hud";
+  const preferClass = targetType === "tile"
+    ? "tile-hud"
+    : (targetType === "template" ? "template-hud" : "token-hud");
   const coerceElement = (value) => {
     const direct = value?.[0] ?? value;
     if (direct instanceof HTMLElement) return direct;
@@ -1352,7 +1354,9 @@ function resolveHudRoot(targetType, app, html) {
   const fallback = document.querySelector(
     targetType === "tile"
       ? ".placeable-hud.tile-hud, #hud .tile-hud, #tile-hud"
-      : ".placeable-hud.token-hud, #hud .token-hud, #token-hud",
+      : (targetType === "template"
+        ? ".placeable-hud.template-hud, #hud .template-hud, #template-hud"
+        : ".placeable-hud.token-hud, #hud .token-hud, #token-hud"),
   );
   if (fallback instanceof HTMLElement) return fallback;
 
@@ -1365,6 +1369,7 @@ function resolveHudPlaceableId(targetType, app, data) {
     app?.object?.document?.id ??
     app?.token?.id ??
     app?.tile?.id ??
+    app?.template?.id ??
     data?._id ??
     data?.id ??
     null;
@@ -1373,15 +1378,16 @@ function resolveHudPlaceableId(targetType, app, data) {
   if (!id) return null;
   if (targetType === "token") return resolveTokenId(id);
   if (targetType === "tile") return resolveTileId(id);
+  if (targetType === "template") return resolveTemplateId(id);
   return id;
 }
 
-function addIndyFxHudRemoveButton({ targetType, app, html, data } = {}) {
-  if (targetType !== "token" && targetType !== "tile") return;
+function addIndyFxHudEditButton({ targetType, app, html, data } = {}) {
+  if (targetType !== "token" && targetType !== "tile" && targetType !== "template") return;
 
   const id = resolveHudPlaceableId(targetType, app, data);
   if (!id) {
-    debugLog("hud remove button skipped: no placeable id", {
+    debugLog("hud edit button skipped: no placeable id", {
       targetType,
       appClass: app?.constructor?.name ?? null,
       dataId: data?._id ?? data?.id ?? null,
@@ -1392,9 +1398,11 @@ function addIndyFxHudRemoveButton({ targetType, app, html, data } = {}) {
   const doc =
     targetType === "token"
       ? getTokenShaderDocument(id)
-      : getTileShaderDocument(id);
+      : (targetType === "tile"
+        ? getTileShaderDocument(id)
+        : getTemplateShaderDocument(id));
   if (!doc) {
-    debugLog("hud remove button skipped: no document", {
+    debugLog("hud edit button skipped: no document", {
       targetType,
       id,
       appClass: app?.constructor?.name ?? null,
@@ -1406,12 +1414,15 @@ function addIndyFxHudRemoveButton({ targetType, app, html, data } = {}) {
     targetType,
     id,
     doc,
-    flagKey: targetType === "token" ? TOKEN_SHADER_FLAG : TILE_SHADER_FLAG,
+    flagKey:
+      targetType === "token"
+        ? TOKEN_SHADER_FLAG
+        : (targetType === "tile" ? TILE_SHADER_FLAG : TEMPLATE_SHADER_FLAG),
   };
 
   const root = resolveHudRoot(targetType, app, html);
   if (!(root instanceof HTMLElement)) {
-    debugLog("hud remove button skipped: no root element", {
+    debugLog("hud edit button skipped: no root element", {
       targetType,
       id,
       appClass: app?.constructor?.name ?? null,
@@ -1419,7 +1430,7 @@ function addIndyFxHudRemoveButton({ targetType, app, html, data } = {}) {
     return;
   }
 
-  const actionName = "indyfx-remove-shader";
+  const actionName = "indyfx-edit-shader";
   const existing = root.querySelector(`[data-action="${actionName}"]`);
 
   const runtimeActive = isDocumentShaderRuntimeActive(target);
@@ -1428,7 +1439,7 @@ function addIndyFxHudRemoveButton({ targetType, app, html, data } = {}) {
 
   if (!documentHasAnyShader(target)) {
     existing?.remove?.();
-    debugLog("hud remove button skipped: no shader", {
+    debugLog("hud edit button skipped: no shader", {
       targetType,
       id,
       runtimeActive,
@@ -1439,7 +1450,7 @@ function addIndyFxHudRemoveButton({ targetType, app, html, data } = {}) {
   }
 
   if (existing instanceof HTMLElement) {
-    debugLog("hud remove button already present", {
+    debugLog("hud edit button already present", {
       targetType,
       id,
       runtimeActive,
@@ -1455,7 +1466,7 @@ function addIndyFxHudRemoveButton({ targetType, app, html, data } = {}) {
     root.querySelector(".control-icons") ??
     root;
   if (!(host instanceof HTMLElement)) {
-    debugLog("hud remove button skipped: no host", {
+    debugLog("hud edit button skipped: no host", {
       targetType,
       id,
       rootTag: root?.tagName ?? null,
@@ -1465,32 +1476,19 @@ function addIndyFxHudRemoveButton({ targetType, app, html, data } = {}) {
 
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "control-icon indyfx-hud-remove-shader";
+  button.className = "control-icon indyfx-hud-edit-shader";
   button.dataset.action = actionName;
-  button.title = "Remove indyFX";
-  button.setAttribute("data-tooltip", "Remove indyFX");
-  button.innerHTML = '<i class="fa-solid fa-trash" inert></i>';
+  button.title = "Edit indyFX";
+  button.setAttribute("data-tooltip", "Edit indyFX");
+  button.innerHTML = '<i class="fa-solid fa-pen-to-square" inert></i>';
   button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-
-    const gmOnly = game.settings.get(MODULE_ID, "gmOnlyBroadcast") === true;
-    if (gmOnly && !game.user?.isGM) {
-      ui.notifications?.warn?.("Only the GM can broadcast this FX.");
-      return;
-    }
-
-    if (targetType === "token") {
-      broadcastShaderOff({ tokenId: id });
-    } else {
-      broadcastShaderOffTile({ tileId: id });
-    }
-    button.remove();
-    ui.notifications?.info?.("indyFX effect removed.");
+    void openDocumentShaderConfigDialog({ document: doc, object: app?.object ?? null });
   });
 
   host.appendChild(button);
-  debugLog("hud remove button inserted", {
+  debugLog("hud edit button inserted", {
     targetType,
     id,
     runtimeActive,
@@ -4079,7 +4077,7 @@ Hooks.on("renderTokenHUD", (app, html, data) => {
     dataId: data?._id ?? data?.id ?? null,
     objectId: app?.object?.id ?? app?.object?.document?.id ?? null,
   });
-  addIndyFxHudRemoveButton({ targetType: "token", app, html, data });
+  addIndyFxHudEditButton({ targetType: "token", app, html, data });
 });
 Hooks.on("renderTileHUD", (app, html, data) => {
   debugLog("renderTileHUD fired", {
@@ -4087,7 +4085,24 @@ Hooks.on("renderTileHUD", (app, html, data) => {
     dataId: data?._id ?? data?.id ?? null,
     objectId: app?.object?.id ?? app?.object?.document?.id ?? null,
   });
-  addIndyFxHudRemoveButton({ targetType: "tile", app, html, data });
+  addIndyFxHudEditButton({ targetType: "tile", app, html, data });
+});
+// Foundry/system variants may emit one of these for measured template HUD rendering.
+Hooks.on("renderMeasuredTemplateHUD", (app, html, data) => {
+  debugLog("renderMeasuredTemplateHUD fired", {
+    appClass: app?.constructor?.name ?? null,
+    dataId: data?._id ?? data?.id ?? null,
+    objectId: app?.object?.id ?? app?.object?.document?.id ?? null,
+  });
+  addIndyFxHudEditButton({ targetType: "template", app, html, data });
+});
+Hooks.on("renderTemplateHUD", (app, html, data) => {
+  debugLog("renderTemplateHUD fired", {
+    appClass: app?.constructor?.name ?? null,
+    dataId: data?._id ?? data?.id ?? null,
+    objectId: app?.object?.id ?? app?.object?.document?.id ?? null,
+  });
+  addIndyFxHudEditButton({ targetType: "template", app, html, data });
 });
 
 Hooks.on("getSceneControlButtons", (controls) => {

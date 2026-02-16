@@ -555,6 +555,26 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(/\bdFdx\s*\(/g, "cpfx_dFdx(");
   next = next.replace(/\bdFdy\s*\(/g, "cpfx_dFdy(");
 
+  // Route min/max through mixed-type-safe wrappers.
+  next = next.replace(/\bmin\s*\(/g, "cpfx_min(");
+  next = next.replace(/\bmax\s*\(/g, "cpfx_max(");
+
+  // GLSL ES 1.00 has no bitwise operators. Rewrite common patterns.
+  const foldBinaryOps = (input, regex, replacement) => {
+    let out = String(input ?? "");
+    while (true) {
+      const prev = out;
+      out = out.replace(regex, replacement);
+      if (out === prev) break;
+    }
+    return out;
+  };
+  const atom = String.raw`(?:[A-Za-z_]\w*\s*\([^()]*\)|[A-Za-z_]\w*|\d+|\([^()]*\))`;
+  const shrRe = new RegExp(`(${atom})\\s*>>\\s*(${atom})`, "g");
+  const andRe = new RegExp(`(${atom})\\s*&\\s*(${atom})`, "g");
+  next = foldBinaryOps(next, shrRe, "cpfx_shr($1, $2)");
+  next = foldBinaryOps(next, andRe, "cpfx_bitand($1, $2)");
+
   // texelFetch is GLSL ES 3.00; remap common ShaderToy channel fetches.
   next = next.replace(
     /\btexelFetch\s*\(\s*iChannel([0-3])\s*,/g,
@@ -814,6 +834,56 @@ mat4 cpfx_transpose(mat4 m) {
     m[0][2], m[1][2], m[2][2], m[3][2],
     m[0][3], m[1][3], m[2][3], m[3][3]
   );
+}
+
+float cpfx_min(float a, float b) { return min(a, b); }
+vec2 cpfx_min(vec2 a, vec2 b) { return min(a, b); }
+vec3 cpfx_min(vec3 a, vec3 b) { return min(a, b); }
+vec4 cpfx_min(vec4 a, vec4 b) { return min(a, b); }
+int cpfx_min(int a, int b) { return (a < b) ? a : b; }
+int cpfx_min(int a, float b) {
+  int bi = int(floor(b));
+  return (a < bi) ? a : bi;
+}
+int cpfx_min(float a, int b) {
+  int ai = int(floor(a));
+  return (ai < b) ? ai : b;
+}
+
+float cpfx_max(float a, float b) { return max(a, b); }
+vec2 cpfx_max(vec2 a, vec2 b) { return max(a, b); }
+vec3 cpfx_max(vec3 a, vec3 b) { return max(a, b); }
+vec4 cpfx_max(vec4 a, vec4 b) { return max(a, b); }
+int cpfx_max(int a, int b) { return (a > b) ? a : b; }
+int cpfx_max(int a, float b) {
+  int bi = int(floor(b));
+  return (a > bi) ? a : bi;
+}
+int cpfx_max(float a, int b) {
+  int ai = int(floor(a));
+  return (ai > b) ? ai : b;
+}
+
+int cpfx_shr(int a, int b) {
+  int aa = (a < 0) ? 0 : a;
+  int bb = (b < 0) ? 0 : b;
+  return int(floor(float(aa) / exp2(float(bb))));
+}
+
+int cpfx_bitand(int a, int b) {
+  int aa = (a < 0) ? 0 : a;
+  int bb = (b < 0) ? 0 : b;
+  int result = 0;
+  int bit = 1;
+  for (int k = 0; k < 24; ++k) {
+    int abit = int(mod(float(aa), 2.0));
+    int bbit = int(mod(float(bb), 2.0));
+    if (abit == 1 && bbit == 1) result += bit;
+    aa = int(floor(float(aa) * 0.5));
+    bb = int(floor(float(bb) * 0.5));
+    bit += bit;
+  }
+  return result;
 }
 
 float cpfx_dFdx(float v) {
@@ -1127,6 +1197,56 @@ mat4 cpfx_transpose(mat4 m) {
     m[0][2], m[1][2], m[2][2], m[3][2],
     m[0][3], m[1][3], m[2][3], m[3][3]
   );
+}
+
+float cpfx_min(float a, float b) { return min(a, b); }
+vec2 cpfx_min(vec2 a, vec2 b) { return min(a, b); }
+vec3 cpfx_min(vec3 a, vec3 b) { return min(a, b); }
+vec4 cpfx_min(vec4 a, vec4 b) { return min(a, b); }
+int cpfx_min(int a, int b) { return (a < b) ? a : b; }
+int cpfx_min(int a, float b) {
+  int bi = int(floor(b));
+  return (a < bi) ? a : bi;
+}
+int cpfx_min(float a, int b) {
+  int ai = int(floor(a));
+  return (ai < b) ? ai : b;
+}
+
+float cpfx_max(float a, float b) { return max(a, b); }
+vec2 cpfx_max(vec2 a, vec2 b) { return max(a, b); }
+vec3 cpfx_max(vec3 a, vec3 b) { return max(a, b); }
+vec4 cpfx_max(vec4 a, vec4 b) { return max(a, b); }
+int cpfx_max(int a, int b) { return (a > b) ? a : b; }
+int cpfx_max(int a, float b) {
+  int bi = int(floor(b));
+  return (a > bi) ? a : bi;
+}
+int cpfx_max(float a, int b) {
+  int ai = int(floor(a));
+  return (ai > b) ? ai : b;
+}
+
+int cpfx_shr(int a, int b) {
+  int aa = (a < 0) ? 0 : a;
+  int bb = (b < 0) ? 0 : b;
+  return int(floor(float(aa) / exp2(float(bb))));
+}
+
+int cpfx_bitand(int a, int b) {
+  int aa = (a < 0) ? 0 : a;
+  int bb = (b < 0) ? 0 : b;
+  int result = 0;
+  int bit = 1;
+  for (int k = 0; k < 24; ++k) {
+    int abit = int(mod(float(aa), 2.0));
+    int bbit = int(mod(float(bb), 2.0));
+    if (abit == 1 && bbit == 1) result += bit;
+    aa = int(floor(float(aa) * 0.5));
+    bb = int(floor(float(bb) * 0.5));
+    bit += bit;
+  }
+  return result;
 }
 
 float cpfx_dFdx(float v) {
