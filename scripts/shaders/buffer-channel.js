@@ -3,6 +3,21 @@ import { getSolidTexture } from "./textures.js";
 import { adaptShaderToyBufferFragment } from "./shadertoy-adapter.js";
 
 const CHANNEL_INDICES = [0, 1, 2, 3];
+const MODULE_ID = "indy-fx";
+
+function isBufferDebugEnabled() {
+  try {
+    return game?.settings?.get?.(MODULE_ID, "shaderDebug") === true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function debugBufferLog(message, payload = undefined) {
+  if (!isBufferDebugEnabled()) return;
+  if (payload === undefined) console.debug(`${MODULE_ID} | ${message}`);
+  else console.debug(`${MODULE_ID} | ${message}`, payload);
+}
 
 function getTextureSize(texture, fallback = 2) {
   const w = texture?.baseTexture?.realWidth ?? texture?.width ?? fallback;
@@ -14,6 +29,7 @@ export class ShaderToyBufferChannel {
   constructor({ source, size = 512 } = {}) {
     this.size = Math.max(2, Math.round(Number(size) || 512));
     this.time = 0;
+    this._debugTickCounter = 0;
     this.texture = PIXI.RenderTexture.create({
       width: this.size,
       height: this.size,
@@ -44,6 +60,7 @@ export class ShaderToyBufferChannel {
       iChannel3: this.fallbackTextures[3],
       iMouse: [0, 0, 0, 0],
       uTime: 0,
+      iTime: 0,
       iTimeDelta: 1 / 60,
       iFrame: 0,
       iFrameRate: 60,
@@ -56,6 +73,9 @@ export class ShaderToyBufferChannel {
       shaderFlipY: 0,
       cpfxPreserveTransparent: 1,
       cpfxForceOpaqueCaptureAlpha: 0,
+      // Shadertoy-compatible buffer shaders commonly use iResolution.xy.
+      // Keep it in sync with the internal buffer resolution.
+      iResolution: [this.size, this.size, 1],
       resolution: [this.size, this.size],
     };
 
@@ -88,6 +108,10 @@ export class ShaderToyBufferChannel {
     this._historyCopySprite.height = this.size;
 
     this.update(0);
+    debugBufferLog("buffer channel created", {
+      size: this.size,
+      selfChannelCount: this._selfChannelIndices.size,
+    });
   }
 
   _setChannelResolution(index, resolution = [1, 1]) {
@@ -124,11 +148,15 @@ export class ShaderToyBufferChannel {
 
   update(dtSeconds = 1 / 60, renderer = canvas?.app?.renderer) {
     if (!this.texture || !this.mesh || !renderer) return;
-    const dt = Number.isFinite(dtSeconds) ? Math.max(0, dtSeconds) : 1 / 60;
+    const dtRaw = Number(dtSeconds);
+    // Some ticker paths can report zero dt; keep feedback buffers animated.
+    const dt = Number.isFinite(dtRaw) && dtRaw > 0 ? dtRaw : 1 / 60;
+    const usedFallbackDt = !(Number.isFinite(dtRaw) && dtRaw > 0);
     const uniforms = this.mesh.shader.uniforms;
 
     this.time += dt;
     uniforms.uTime = this.time;
+    uniforms.iTime = this.time;
     uniforms.iTimeDelta = dt;
     uniforms.iFrame = (uniforms.iFrame ?? 0) + 1;
     uniforms.iFrameRate = dt > 0 ? 1 / dt : 60;
@@ -144,6 +172,18 @@ export class ShaderToyBufferChannel {
       now.getDate(),
       seconds,
     ];
+    this._debugTickCounter += 1;
+    if (this._debugTickCounter === 1 || this._debugTickCounter % 60 === 0) {
+      debugBufferLog("buffer tick", {
+        frame: Number(uniforms.iFrame ?? 0),
+        iTime: Number(uniforms.iTime ?? 0),
+        dtRaw: Number.isFinite(dtRaw) ? dtRaw : null,
+        dtUsed: dt,
+        usedFallbackDt,
+        selfChannelCount: this._selfChannelIndices.size,
+        iChannelResolution: Array.from(uniforms.iChannelResolution ?? []),
+      });
+    }
 
     for (const index of this._selfChannelIndices) {
       uniforms[`iChannel${index}`] = this._historyTexture;
