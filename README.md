@@ -58,6 +58,7 @@ Notes:
 - Preview backgrounds used for scene/placeable capture channels are configurable in module settings.
 - Const/#Define variables in the shader will be exposed in Edit Variables dialog
 - Look at how the example shaders are set up with regard to filling in tokens/tiles and respecting alpha/rotation etc.
+- The majority of shadertoy shaders should import and compile OK - check console log for shader compile issues.
 
 ## Persistence
 - Token/Tile/Template effects persist when `displayTimeMs = 0`.
