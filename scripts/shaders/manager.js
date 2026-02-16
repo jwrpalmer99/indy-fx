@@ -48,6 +48,7 @@ const PLACEABLE_IMAGE_PREVIEW_SIZE = 512;
 const SHADERTOY_MEDIA_ORIGIN = "https://www.shadertoy.com";
 const THUMBNAIL_SIZE = 256;
 const THUMBNAIL_CAPTURE_SECONDS = 1.0;
+const THUMBNAIL_WEBP_QUALITY = 0.78;
 const BACKGROUND_COMPILE_SIZE = 96;
 const PREVIEW_SCENE_CAPTURE_TEXTURE = "modules/indy-fx/images/indyFX_solid.webp";
 const PREVIEW_PLACEABLE_CAPTURE_TEXTURE = "modules/indy-fx/images/indyFX.webp";
@@ -104,6 +105,21 @@ function debugLog(moduleId, message, payload = undefined) {
   else console.debug(`${moduleId} | ${message}`, payload);
 }
 
+function nowMs() {
+  try {
+    if (typeof globalThis?.performance?.now === "function") return globalThis.performance.now();
+  } catch (_err) {
+    // Fall through.
+  }
+  return Date.now();
+}
+
+function roundMs(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 1000) / 1000;
+}
+
 function toFiniteNumber(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -156,6 +172,137 @@ function slugify(input) {
 function toArray(value) {
   if (Array.isArray(value)) return value;
   return [];
+}
+
+function encodeThumbnailDataUrlFromCanvas(
+  canvas,
+  { webpQuality = THUMBNAIL_WEBP_QUALITY } = {},
+) {
+  const fallback = "";
+  if (!(canvas instanceof HTMLCanvasElement)) return fallback;
+  try {
+    const webp = String(
+      canvas.toDataURL("image/webp", Number(webpQuality) || THUMBNAIL_WEBP_QUALITY) ?? "",
+    ).trim();
+    if (webp.startsWith("data:image/webp") && webp.length > 24) return webp;
+  } catch (_err) {
+    // Fall through to PNG.
+  }
+  try {
+    return String(canvas.toDataURL("image/png") ?? "").trim();
+  } catch (_err) {
+    return fallback;
+  }
+}
+
+function safeJsonLength(value) {
+  try {
+    return JSON.stringify(value).length;
+  } catch (_err) {
+    return 0;
+  }
+}
+
+function collectChannelConfigStats(channelConfig) {
+  const stats = {
+    channelEntryCount: 0,
+    bufferChannelCount: 0,
+    maxBufferDepth: 0,
+    channelSourceBytes: 0,
+    channelPathBytes: 0,
+  };
+  const walkChannel = (entry, depth = 1) => {
+    if (!entry || typeof entry !== "object") return;
+    stats.channelEntryCount += 1;
+    stats.maxBufferDepth = Math.max(stats.maxBufferDepth, depth);
+    if (typeof entry.source === "string") {
+      stats.channelSourceBytes += entry.source.length;
+    }
+    if (typeof entry.path === "string") {
+      stats.channelPathBytes += entry.path.length;
+    }
+    const mode = normalizeChannelMode(entry.mode ?? "auto");
+    if (mode === "buffer") stats.bufferChannelCount += 1;
+    const nested = entry.channels;
+    if (!nested || typeof nested !== "object") return;
+    for (const index of CHANNEL_INDICES) {
+      const child = nested[`iChannel${index}`] ?? nested[index];
+      if (child && typeof child === "object") walkChannel(child, depth + 1);
+    }
+  };
+
+  if (channelConfig && typeof channelConfig === "object") {
+    for (const index of CHANNEL_INDICES) {
+      const entry = channelConfig[`iChannel${index}`] ?? channelConfig[index];
+      if (entry && typeof entry === "object") walkChannel(entry, 1);
+    }
+  }
+  return stats;
+}
+
+function buildShaderLibraryPayloadDiagnostics(records) {
+  const list = toArray(records);
+  const summary = {
+    totalSourceBytes: 0,
+    totalThumbnailBytes: 0,
+    totalDefaultsBytes: 0,
+    totalChannelConfigBytes: 0,
+    totalChannelSourceBytes: 0,
+    totalChannelPathBytes: 0,
+    totalChannelEntries: 0,
+    totalBufferChannels: 0,
+    maxBufferDepth: 0,
+    thumbnailCount: 0,
+    thumbnailWebpCount: 0,
+    thumbnailPngCount: 0,
+    thumbnailOtherCount: 0,
+    topRecordsByBytes: [],
+  };
+
+  const recordsBySize = [];
+  for (const record of list) {
+    if (!record || typeof record !== "object") continue;
+    const id = String(record.id ?? "");
+    const sourceBytes = typeof record.source === "string" ? record.source.length : 0;
+    const thumbnail = typeof record.thumbnail === "string" ? record.thumbnail : "";
+    const thumbnailBytes = thumbnail.length;
+    const defaultsBytes = safeJsonLength(record.defaults ?? {});
+    const channelConfigBytes = safeJsonLength(record.channels ?? {});
+    const channelStats = collectChannelConfigStats(record.channels ?? {});
+    const totalBytes = safeJsonLength(record);
+
+    summary.totalSourceBytes += sourceBytes;
+    summary.totalThumbnailBytes += thumbnailBytes;
+    summary.totalDefaultsBytes += defaultsBytes;
+    summary.totalChannelConfigBytes += channelConfigBytes;
+    summary.totalChannelSourceBytes += channelStats.channelSourceBytes;
+    summary.totalChannelPathBytes += channelStats.channelPathBytes;
+    summary.totalChannelEntries += channelStats.channelEntryCount;
+    summary.totalBufferChannels += channelStats.bufferChannelCount;
+    summary.maxBufferDepth = Math.max(summary.maxBufferDepth, channelStats.maxBufferDepth);
+
+    if (thumbnailBytes > 0) {
+      summary.thumbnailCount += 1;
+      if (thumbnail.startsWith("data:image/webp")) summary.thumbnailWebpCount += 1;
+      else if (thumbnail.startsWith("data:image/png")) summary.thumbnailPngCount += 1;
+      else summary.thumbnailOtherCount += 1;
+    }
+
+    recordsBySize.push({
+      id,
+      totalBytes,
+      sourceBytes,
+      thumbnailBytes,
+      defaultsBytes,
+      channelConfigBytes,
+      channelSourceBytes: channelStats.channelSourceBytes,
+      bufferChannelCount: channelStats.bufferChannelCount,
+    });
+  }
+
+  recordsBySize.sort((a, b) => Number(b.totalBytes || 0) - Number(a.totalBytes || 0));
+  summary.topRecordsByBytes = recordsBySize.slice(0, 5);
+  return summary;
 }
 
 function normalizeChannelMode(mode) {
@@ -440,6 +587,7 @@ export class ShaderManager {
     this._thumbnailRenderer = null;
     this._thumbnailRendererCanvas = null;
     this._thumbnailRendererSize = 0;
+    this._lastSetImportedRecordsMetrics = null;
   
     this._ensurePreviewReferenceTexturesLoaded();
   }
@@ -2120,7 +2268,9 @@ export class ShaderManager {
         this._thumbnailRendererCanvas instanceof HTMLCanvasElement
           ? this._thumbnailRendererCanvas
           : (renderer?.view instanceof HTMLCanvasElement ? renderer.view : null);
-      const thumbnail = String(renderedCanvas?.toDataURL?.("image/png") ?? "").trim();
+      const thumbnail = encodeThumbnailDataUrlFromCanvas(renderedCanvas, {
+        webpQuality: THUMBNAIL_WEBP_QUALITY,
+      });
       if (!thumbnail) return null;
 
       const current = this.getImportedRecord(shaderId);
@@ -2141,7 +2291,16 @@ export class ShaderManager {
         thumbnail,
         thumbnailUpdatedAt: Date.now(),
       };
-      await this.setImportedRecords(records);
+      debugLog(this.moduleId, "thumbnail regenerate encoded", {
+        shaderId,
+        format: thumbnail.startsWith("data:image/webp")
+          ? "webp"
+          : (thumbnail.startsWith("data:image/png") ? "png" : "other"),
+        bytes: thumbnail.length,
+      });
+      await this.setImportedRecords(records, {
+        context: "regenerateImportedShaderThumbnail",
+      });
       return records[idx];
     } finally {
       preview.destroy();
@@ -2215,15 +2374,55 @@ export class ShaderManager {
   }
 
 
-  async setImportedRecords(records) {
+  async setImportedRecords(records, { context = "unspecified" } = {}) {
+    const payload = toArray(records);
+    let payloadBytes = 0;
+    try {
+      payloadBytes = JSON.stringify(payload).length;
+    } catch (_err) {
+      payloadBytes = -1;
+    }
+    const debugEnabled = isDebugLoggingEnabled(this.moduleId);
+    let payloadDiagnostics = null;
+    let payloadDiagnosticsMs = 0;
+    if (debugEnabled) {
+      const diagnosticsStart = nowMs();
+      payloadDiagnostics = buildShaderLibraryPayloadDiagnostics(payload);
+      payloadDiagnosticsMs = roundMs(nowMs() - diagnosticsStart);
+    }
+
+    const totalStart = nowMs();
+    let phaseStart = nowMs();
     await game.settings.set(
       this.moduleId,
       this.shaderLibrarySetting,
-      toArray(records),
+      payload,
     );
+    const settingsSetMs = roundMs(nowMs() - phaseStart);
+
+    phaseStart = nowMs();
     this._shaderLibraryRevision += 1;
     this._invalidateShaderChoiceCaches();
+    const cacheInvalidateMs = roundMs(nowMs() - phaseStart);
+
+    phaseStart = nowMs();
     Hooks.callAll(`${this.moduleId}.shaderLibraryChanged`);
+    const hooksMs = roundMs(nowMs() - phaseStart);
+
+    const metrics = {
+      context: String(context ?? "unspecified"),
+      recordCount: payload.length,
+      payloadBytes,
+      settingsSetMs,
+      cacheInvalidateMs,
+      hooksMs,
+      totalMs: roundMs(nowMs() - totalStart),
+      payloadDiagnosticsMs,
+      ...(payloadDiagnostics ?? {}),
+    };
+    this._lastSetImportedRecordsMetrics = metrics;
+    debugLog(this.moduleId, "setImportedRecords timing", metrics);
+    return metrics;
   }
 
 
@@ -3707,12 +3906,22 @@ export class ShaderManager {
       autoAssignCapture = true,
     } = {},
   ) {
+    const saveStart = nowMs();
+    const timings = {};
+    const sourceProvided = source != null;
+
+    let phaseStart = nowMs();
     const records = this.getImportedRecords();
+    timings.readRecordsMs = roundMs(nowMs() - phaseStart);
+
+    phaseStart = nowMs();
     const idx = records.findIndex((entry) => entry.id === shaderId);
     if (idx < 0) {
       throw new Error("Imported shader not found.");
     }
+    timings.findRecordMs = roundMs(nowMs() - phaseStart);
 
+    phaseStart = nowMs();
     const record = records[idx];
     const nextName =
       name == null ? sanitizeName(record.name) : sanitizeName(name);
@@ -3720,9 +3929,19 @@ export class ShaderManager {
       label == null
         ? sanitizeName(record.label ?? nextName)
         : sanitizeName(label);
+    timings.normalizeNamesMs = roundMs(nowMs() - phaseStart);
+    const nameChanged = nextName !== String(record.name ?? "");
+    const labelChanged = nextLabel !== String(record.label ?? nextName);
+
+    phaseStart = nowMs();
     const nextSource =
       source == null ? record.source : validateShaderToySource(source);
+    timings.validateSourceMs = roundMs(nowMs() - phaseStart);
+    const sourceChanged = nextSource !== record.source;
+
+    phaseStart = nowMs();
     adaptShaderToyFragment(nextSource);
+    timings.adapterCompileCheckMs = roundMs(nowMs() - phaseStart);
     debugLog(this.moduleId, "shader text compile", {
       shaderId,
       context: "editor-save",
@@ -3730,32 +3949,128 @@ export class ShaderManager {
       sourceLength: String(nextSource ?? "").length,
     });
 
+    phaseStart = nowMs();
     const channelInput =
       channels == null
         ? foundry.utils.deepClone(record.channels ?? {})
         : this._mergeChannelsPreservingNested(record.channels ?? {}, channels ?? {});
+    timings.collectChannelInputMs = roundMs(nowMs() - phaseStart);
+
+    phaseStart = nowMs();
     const nextChannels = this.buildChannelConfig({
       source: nextSource,
       channels: channelInput,
       autoAssignCapture,
     });
+    timings.buildChannelConfigMs = roundMs(nowMs() - phaseStart);
+    const channelsChanged =
+      JSON.stringify(nextChannels ?? {}) !==
+      JSON.stringify(record.channels ?? {});
 
-    records[idx] = {
-      ...record,
-      name: nextName,
-      label: nextLabel,
-      source: nextSource,
-      channels: nextChannels,
-      defaults: this.normalizeImportedShaderDefaults(
-        defaults ?? record.defaults,
-        this.getDefaultImportedShaderDefaults(),
-      ),
-      referencedChannels: extractReferencedChannels(nextSource),
-      updatedAt: Date.now(),
-    };
+    phaseStart = nowMs();
+    const normalizedDefaults = this.normalizeImportedShaderDefaults(
+      defaults ?? record.defaults,
+      this.getDefaultImportedShaderDefaults(),
+    );
+    timings.normalizeDefaultsMs = roundMs(nowMs() - phaseStart);
+    const defaultsChanged =
+      JSON.stringify(normalizedDefaults ?? {}) !==
+      JSON.stringify(record.defaults ?? {});
 
-    await this.setImportedRecords(records);
-    this._queueImportedShaderThumbnailRegeneration(shaderId);
+    phaseStart = nowMs();
+    const referencedChannels = extractReferencedChannels(nextSource);
+    timings.extractReferencedChannelsMs = roundMs(nowMs() - phaseStart);
+    const previousReferencedChannels = Array.isArray(record.referencedChannels)
+      ? record.referencedChannels
+      : extractReferencedChannels(String(record.source ?? ""));
+    const referencedChannelsChanged =
+      JSON.stringify(referencedChannels ?? []) !==
+      JSON.stringify(previousReferencedChannels ?? []);
+    const shouldPersist =
+      nameChanged ||
+      labelChanged ||
+      sourceChanged ||
+      channelsChanged ||
+      defaultsChanged ||
+      referencedChannelsChanged;
+    const shouldRegenerateThumbnail =
+      sourceChanged || channelsChanged || defaultsChanged;
+
+    if (shouldPersist) {
+      phaseStart = nowMs();
+      records[idx] = {
+        ...record,
+        name: nextName,
+        label: nextLabel,
+        source: nextSource,
+        channels: nextChannels,
+        defaults: normalizedDefaults,
+        referencedChannels,
+        updatedAt: Date.now(),
+      };
+      timings.buildRecordMs = roundMs(nowMs() - phaseStart);
+
+      phaseStart = nowMs();
+      const persistMetrics = await this.setImportedRecords(records, {
+        context: "updateImportedShader",
+      });
+      timings.persistSettingsMs = roundMs(nowMs() - phaseStart);
+      timings.persistGameSettingsSetMs = roundMs(
+        Number(persistMetrics?.settingsSetMs ?? 0),
+      );
+      timings.persistCacheInvalidateMs = roundMs(
+        Number(persistMetrics?.cacheInvalidateMs ?? 0),
+      );
+      timings.persistHooksMs = roundMs(
+        Number(persistMetrics?.hooksMs ?? 0),
+      );
+      timings.persistPayloadBytes = Number(
+        persistMetrics?.payloadBytes ?? 0,
+      );
+      timings.persistRecordCount = Number(
+        persistMetrics?.recordCount ?? 0,
+      );
+    } else {
+      timings.buildRecordMs = 0;
+      timings.persistSettingsMs = 0;
+      timings.persistGameSettingsSetMs = 0;
+      timings.persistCacheInvalidateMs = 0;
+      timings.persistHooksMs = 0;
+      timings.persistPayloadBytes = 0;
+      timings.persistRecordCount = Number(records.length ?? 0);
+      timings.persistSkipped = true;
+    }
+
+    phaseStart = nowMs();
+    if (shouldPersist && shouldRegenerateThumbnail) {
+      this._queueImportedShaderThumbnailRegeneration(shaderId);
+      timings.queueThumbnailMs = roundMs(nowMs() - phaseStart);
+    } else {
+      timings.queueThumbnailMs = 0;
+      timings.queueThumbnailSkipped = true;
+    }
+    timings.totalMs = roundMs(nowMs() - saveStart);
+
+    debugLog(this.moduleId, "shader save timing", {
+      shaderId,
+      sourceProvided,
+      sourceChanged: sourceProvided && sourceChanged,
+      sourceLength: String(nextSource ?? "").length,
+      channelInputKeys: Object.keys(channelInput ?? {}).length,
+      referencedChannelsCount: Array.isArray(referencedChannels)
+        ? referencedChannels.length
+        : 0,
+      nameChanged,
+      labelChanged,
+      channelsChanged,
+      defaultsChanged,
+      referencedChannelsChanged,
+      shouldPersist,
+      shouldRegenerateThumbnail,
+      ...timings,
+    });
+
+    if (!shouldPersist) return record;
     return this.getImportedRecord(shaderId) ?? records[idx];
   }
 
@@ -3785,7 +4100,9 @@ export class ShaderManager {
       updatedAt: Date.now(),
     };
 
-    await this.setImportedRecords(records);
+    await this.setImportedRecords(records, {
+      context: "updateImportedShaderChannels",
+    });
     this._queueImportedShaderThumbnailRegeneration(shaderId);
     return this.getImportedRecord(shaderId) ?? records[idx];
   }
@@ -3814,12 +4131,11 @@ export class ShaderManager {
     clone.label = nextLabel;
     clone.createdAt = Date.now();
     clone.updatedAt = Date.now();
-    delete clone.thumbnail;
-    delete clone.thumbnailUpdatedAt;
 
     records.push(clone);
-    await this.setImportedRecords(records);
-    this._queueImportedShaderThumbnailRegeneration(id);
+    await this.setImportedRecords(records, {
+      context: "duplicateImportedShader",
+    });
     return this.getImportedRecord(id) ?? clone;
   }
 
@@ -3841,10 +4157,15 @@ export class ShaderManager {
       updatedAt: now,
     };
 
-    await this.setImportedRecords(records);
+    await this.setImportedRecords(records, {
+      context: "setImportedShaderThumbnail",
+    });
     debugLog(this.moduleId, "thumbnail manual save", {
       shaderId: id,
       length: dataUrl.length,
+      format: dataUrl.startsWith("data:image/webp")
+        ? "webp"
+        : (dataUrl.startsWith("data:image/png") ? "png" : "other"),
       updatedAt: now,
     });
     return this.getImportedRecord(id) ?? records[idx];
@@ -3855,7 +4176,9 @@ export class ShaderManager {
     const next = records.filter((entry) => entry.id !== shaderId);
     if (next.length === records.length) return false;
 
-    await this.setImportedRecords(next);
+    await this.setImportedRecords(next, {
+      context: "removeImportedShader",
+    });
     await this.enforceValidSelection();
     return true;
   }
