@@ -2,8 +2,7 @@
 
 Indy FX adds animated shader effects to Foundry VTT placeables and regions. Import from [shadertoy](https://shadertoy.com/), edit and configure - then drag/drop the shaders onto tokens/tiles/templates. Extensive API provided.
 
-<img width="1333" height="938" alt="image" src="https://github.com/user-attachments/assets/a21c8bf7-b7c9-4186-b51d-ce459b823a8f" />
-
+<img width="1351" height="1024" alt="image" src="https://github.com/user-attachments/assets/e174e564-509f-426e-b4b9-65c5b96a4cd6" />
 
 This file is the GM/player usage guide.
 For macro/API details, see `README_API.md`.
@@ -57,6 +56,8 @@ Imported shader channels (`iChannel0..iChannel3`) support:
 Notes:
 - `tokenTileImage` is placeable-target specific and not suitable for region usage.
 - Preview backgrounds used for scene/placeable capture channels are configurable in module settings.
+- Const/#Define variables in the shader will be exposed in Edit Variables dialog
+- Look at how the example shaders are set up with regard to filling in tokens/tiles and respecting alpha/rotation etc.
 
 ## Persistence
 - Token/Tile/Template effects persist when `displayTimeMs = 0`.
