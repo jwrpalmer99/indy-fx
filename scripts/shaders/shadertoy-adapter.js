@@ -684,33 +684,56 @@ function applyCompatibilityRewrites(source) {
 
   // GLSL ES 1.00 does not support ES3-style array constructors, for example:
   // const vec2 hp[7] = vec2[7](...);
+  // const float[8] periods = float[8](...);
+  // const int[8] ids = int[8](...);
   // Rewrite these to helper functions and indexed calls.
   let arrayRewriteIndex = 0;
   let arrayHelpers = "";
   const rewrittenArrays = [];
-  const constVec2ArrayCtorRe = /const\s+vec2\s+([A-Za-z_]\w*)\s*\[\s*(\d+)\s*\]\s*=\s*vec2\s*\[\s*\d+\s*\]\s*\(([\s\S]*?)\)\s*;/g;
-  next = next.replace(constVec2ArrayCtorRe, (full, arrayNameRaw, countRaw, initRaw) => {
-    const arrayName = String(arrayNameRaw ?? "").trim();
-    const count = Number(countRaw);
-    if (!arrayName || !Number.isFinite(count) || count <= 0) return full;
+  const constArrayCtorRe =
+    /const\s+(float|int|vec2|vec3|vec4)\s*(?:\[\s*(\d+)\s*\])?\s+([A-Za-z_]\w*)\s*(?:\[\s*(\d+)\s*\])?\s*=\s*\1\s*\[\s*(\d+)\s*\]\s*\(([\s\S]*?)\)\s*;/g;
+  next = next.replace(
+    constArrayCtorRe,
+    (
+      full,
+      valueTypeRaw,
+      typeCountRaw,
+      arrayNameRaw,
+      nameCountRaw,
+      ctorCountRaw,
+      initRaw,
+    ) => {
+      const valueType = String(valueTypeRaw ?? "").trim();
+      const arrayName = String(arrayNameRaw ?? "").trim();
+      const typeCount = Number(typeCountRaw);
+      const nameCount = Number(nameCountRaw);
+      const ctorCount = Number(ctorCountRaw);
+      const count =
+        Number.isFinite(typeCount) && typeCount > 0
+          ? typeCount
+          : Number.isFinite(nameCount) && nameCount > 0
+            ? nameCount
+            : ctorCount;
+      if (!arrayName || !valueType || !Number.isFinite(count) || count <= 0) return full;
 
-    const values = splitTopLevel(String(initRaw ?? ""), ",")
-      .map((v) => v.trim())
-      .filter((v) => v.length > 0)
-      .slice(0, count);
-    if (values.length < count) return full;
+      const values = splitTopLevel(String(initRaw ?? ""), ",")
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0)
+        .slice(0, count);
+      if (values.length < count) return full;
 
-    const helperName = `cpfx_arr2_${arrayRewriteIndex++}`;
-    let helper = `vec2 ${helperName}(int idx){\n`;
-    for (let i = 0; i < count; i += 1) {
-      helper += `  if (idx == ${i}) return ${values[i]};\n`;
-    }
-    helper += `  return ${values[count - 1]};\n}\n`;
+      const helperName = `cpfx_arr_${valueType}_${arrayRewriteIndex++}`;
+      let helper = `${valueType} ${helperName}(int idx){\n`;
+      for (let i = 0; i < count; i += 1) {
+        helper += `  if (idx == ${i}) return ${values[i]};\n`;
+      }
+      helper += `  return ${values[count - 1]};\n}\n`;
 
-    arrayHelpers += helper;
-    rewrittenArrays.push({ name: arrayName, helperName });
-    return "";
-  });
+      arrayHelpers += helper;
+      rewrittenArrays.push({ name: arrayName, helperName });
+      return "";
+    },
+  );
 
   if (rewrittenArrays.length > 0) {
     for (const entry of rewrittenArrays) {
