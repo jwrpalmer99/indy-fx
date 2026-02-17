@@ -681,6 +681,116 @@ function applyCompatibilityRewrites(source) {
     return -1;
   };
 
+  // GLSL ES 1.00 (WebGL1) does not support switch/case.
+  // Lower simple switch blocks to if/else chains.
+  const startsWithWordAt = (text, index, word) => {
+    const before = index > 0 ? text[index - 1] : "";
+    const after = text[index + word.length] ?? "";
+    if (/\w/.test(before)) return false;
+    if (/\w/.test(after)) return false;
+    return text.slice(index, index + word.length) === word;
+  };
+  const parseSwitchBody = (body) => {
+    const cases = [];
+    let defaultBlock = "";
+    let pos = 0;
+    while (pos < body.length) {
+      while (pos < body.length && /\s/.test(body[pos])) pos += 1;
+      if (pos >= body.length) break;
+      let isDefault = false;
+      if (startsWithWordAt(body, pos, "case")) {
+        pos += 4;
+      } else if (startsWithWordAt(body, pos, "default")) {
+        isDefault = true;
+        pos += 7;
+      } else {
+        pos += 1;
+        continue;
+      }
+      while (pos < body.length && /\s/.test(body[pos])) pos += 1;
+      let label = "";
+      if (!isDefault) {
+        const colon = body.indexOf(":", pos);
+        if (colon < 0) break;
+        label = body.slice(pos, colon).trim();
+        pos = colon + 1;
+      } else {
+        if (body[pos] === ":") pos += 1;
+      }
+
+      let start = pos;
+      let depth = 0;
+      while (pos < body.length) {
+        const ch = body[pos];
+        if (ch === "{" || ch === "(" || ch === "[") depth += 1;
+        else if (ch === "}" || ch === ")" || ch === "]") depth = Math.max(0, depth - 1);
+        if (depth === 0 && (startsWithWordAt(body, pos, "case") || startsWithWordAt(body, pos, "default"))) {
+          break;
+        }
+        pos += 1;
+      }
+
+      let block = body.slice(start, pos).trim();
+      block = block.replace(/\bbreak\s*;\s*$/m, "").trim();
+      if (isDefault) defaultBlock = block;
+      else if (label) cases.push({ label, block });
+    }
+    return { cases, defaultBlock };
+  };
+  let switchRewriteIndex = 0;
+  const switchHeadRe = /\bswitch\s*\(/g;
+  while (true) {
+    const m = switchHeadRe.exec(next);
+    if (!m) break;
+    const switchStart = m.index;
+    const openParen = next.indexOf("(", switchStart);
+    if (openParen < 0) break;
+    const closeParen = findMatchingParen(next, openParen);
+    if (closeParen < 0) {
+      switchHeadRe.lastIndex = switchStart + 6;
+      continue;
+    }
+    const switchExpr = next.slice(openParen + 1, closeParen).trim();
+    let bodyOpen = closeParen + 1;
+    while (bodyOpen < next.length && /\s/.test(next[bodyOpen])) bodyOpen += 1;
+    if (next[bodyOpen] !== "{") {
+      switchHeadRe.lastIndex = closeParen + 1;
+      continue;
+    }
+    const bodyClose = findMatchingBrace(next, bodyOpen);
+    if (bodyClose < 0) {
+      switchHeadRe.lastIndex = bodyOpen + 1;
+      continue;
+    }
+
+    const body = next.slice(bodyOpen + 1, bodyClose);
+    const parsed = parseSwitchBody(body);
+    if (!parsed.cases.length && !parsed.defaultBlock) {
+      switchHeadRe.lastIndex = bodyClose + 1;
+      continue;
+    }
+
+    const selector = `cpfxSwitch${switchRewriteIndex++}`;
+    let lowered = `{\n  int ${selector} = int(${switchExpr});\n`;
+    for (let i = 0; i < parsed.cases.length; i += 1) {
+      const prefix = i === 0 ? "if" : "else if";
+      const c = parsed.cases[i];
+      lowered += `  ${prefix} (${selector} == int(${c.label})) {\n`;
+      if (c.block) lowered += `    ${c.block}\n`;
+      lowered += "  }\n";
+    }
+    if (parsed.defaultBlock) {
+      if (parsed.cases.length) lowered += "  else {\n";
+      else lowered += "  {\n";
+      lowered += `    ${parsed.defaultBlock}\n`;
+      lowered += "  }\n";
+    }
+    lowered += "}";
+
+    next = `${next.slice(0, switchStart)}${lowered}${next.slice(bodyClose + 1)}`;
+    switchHeadRe.lastIndex = switchStart + lowered.length;
+  }
+
   let compactLoopRewriteIndex = 0;
   const compactForHeadRe = /for\s*\(\s*float\s+/g;
   while (true) {
@@ -1374,6 +1484,8 @@ function applyCompatibilityRewrites(source) {
 
   // GLSL ES 1.00 lacks transpose(); route through compatibility overloads.
   next = next.replace(/\btranspose\s*\(/g, "cpfx_transpose(");
+  // GLSL ES 1.00 lacks inverse(); route through compatibility overloads.
+  next = next.replace(/\binverse\s*\(/g, "cpfx_inverse(");
 
   // Derivatives are extension-gated in GLSL ES 1.00; route through wrappers.
   next = next.replace(/\bdFdx\s*\(/g, "cpfx_dFdx(");
@@ -1391,6 +1503,15 @@ function applyCompatibilityRewrites(source) {
   );
   next = next.replace(
     /([+-]?\d+)(?![\d.])\s*(==|!=|<=|>=|<|>)\s*iFrame\b/g,
+    (_full, lhs, op) => `${lhs}.0 ${op} iFrame`,
+  );
+  // Also normalize arithmetic with integer literals, e.g. iFrame + 1.
+  next = next.replace(
+    /\biFrame\s*([+\-*/])\s*([+-]?\d+)(?![\d.])/g,
+    (_full, op, rhs) => `iFrame ${op} ${rhs}.0`,
+  );
+  next = next.replace(
+    /([+-]?\d+)(?![\d.])\s*([+\-*/])\s*iFrame\b/g,
     (_full, lhs, op) => `${lhs}.0 ${op} iFrame`,
   );
 
@@ -1412,9 +1533,11 @@ function applyCompatibilityRewrites(source) {
     "cpfx_bitand(cpfx_shr($1, $2), $3)",
   );
 
-  const identifierAtom = String.raw`[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[\s*[^][]+\s*\])?`;
+  const identifierAtom = String.raw`\b[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[\s*[^][]+\s*\])?`;
+  const callableIdentifierAtom = String.raw`(?!(?:return|if|for|while|switch|case|default|else|do)\b)${identifierAtom}`;
   const parenAtom = String.raw`\((?:[^()]|\([^()]*\))*\)`;
-  const atom = String.raw`(?:${identifierAtom}\s*\([^()]*\)|${identifierAtom}|[+-]?\d+(?:\.\d+)?|${parenAtom})`;
+  const functionCallAtom = String.raw`${callableIdentifierAtom}\s*\((?:[^()]|\([^()]*\))*\)`;
+  const atom = String.raw`(?:${functionCallAtom}|${identifierAtom}|[+-]?\d+(?:\.\d+)?|${parenAtom})`;
   const shrRe = new RegExp(`(${atom})\\s*>>\\s*(${atom})`, "g");
   const andRe = new RegExp(`(${atom})\\s*&\\s*(${atom})`, "g");
   const xorRe = new RegExp(`(${atom})\\s*\\^\\s*(${atom})`, "g");
@@ -1431,6 +1554,17 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(
     /\(\s*(cpfx_shr\s*\([^;]+?\))\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g,
     "cpfx_bitand($1, $2)",
+  );
+  // Catch residual XOR forms with wrapped operands where nested function calls
+  // can defeat the simpler atom-based regex above.
+  next = next.replace(
+    /\(\s*(\([^;\n]+?\)|(?!(?:return|if|for|while|switch|case|default|else|do)\b)\b[A-Za-z_]\w*(?:\s*\([^;\n]*?\))?)\s*\^\s*([A-Za-z_]\w*|\([^;\n]+?\))\s*\)/g,
+    "cpfx_bitxor($1, $2)",
+  );
+  // Final conservative XOR sweep for simple binary operands.
+  next = next.replace(
+    /(\b[A-Za-z_]\w*\b|\([^()]*\))\s*\^\s*(\b[A-Za-z_]\w*\b|\([^()]*\))/g,
+    "cpfx_bitxor($1, $2)",
   );
 
   // texelFetch is GLSL ES 3.00; remap common ShaderToy channel fetches.
@@ -1773,6 +1907,72 @@ mat4 cpfx_transpose(mat4 m) {
     m[0][1], m[1][1], m[2][1], m[3][1],
     m[0][2], m[1][2], m[2][2], m[3][2],
     m[0][3], m[1][3], m[2][3], m[3][3]
+  );
+}
+
+mat2 cpfx_inverse(mat2 m) {
+  float det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+  if (abs(det) < 1e-8) return mat2(1.0);
+  float invDet = 1.0 / det;
+  return mat2(
+    m[1][1] * invDet, -m[0][1] * invDet,
+    -m[1][0] * invDet, m[0][0] * invDet
+  );
+}
+
+mat3 cpfx_inverse(mat3 m) {
+  vec3 a = m[0];
+  vec3 b = m[1];
+  vec3 c = m[2];
+  vec3 r0 = cross(b, c);
+  vec3 r1 = cross(c, a);
+  vec3 r2 = cross(a, b);
+  float det = dot(a, r0);
+  if (abs(det) < 1e-8) return mat3(1.0);
+  float invDet = 1.0 / det;
+  return mat3(r0 * invDet, r1 * invDet, r2 * invDet);
+}
+
+mat4 cpfx_inverse(mat4 m) {
+  float a00 = m[0][0], a01 = m[0][1], a02 = m[0][2], a03 = m[0][3];
+  float a10 = m[1][0], a11 = m[1][1], a12 = m[1][2], a13 = m[1][3];
+  float a20 = m[2][0], a21 = m[2][1], a22 = m[2][2], a23 = m[2][3];
+  float a30 = m[3][0], a31 = m[3][1], a32 = m[3][2], a33 = m[3][3];
+
+  float b00 = a00 * a11 - a01 * a10;
+  float b01 = a00 * a12 - a02 * a10;
+  float b02 = a00 * a13 - a03 * a10;
+  float b03 = a01 * a12 - a02 * a11;
+  float b04 = a01 * a13 - a03 * a11;
+  float b05 = a02 * a13 - a03 * a12;
+  float b06 = a20 * a31 - a21 * a30;
+  float b07 = a20 * a32 - a22 * a30;
+  float b08 = a20 * a33 - a23 * a30;
+  float b09 = a21 * a32 - a22 * a31;
+  float b10 = a21 * a33 - a23 * a31;
+  float b11 = a22 * a33 - a23 * a32;
+
+  float det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  if (abs(det) < 1e-8) return mat4(1.0);
+  float invDet = 1.0 / det;
+
+  return mat4(
+    (a11 * b11 - a12 * b10 + a13 * b09) * invDet,
+    (a02 * b10 - a01 * b11 - a03 * b09) * invDet,
+    (a31 * b05 - a32 * b04 + a33 * b03) * invDet,
+    (a22 * b04 - a21 * b05 - a23 * b03) * invDet,
+    (a12 * b08 - a10 * b11 - a13 * b07) * invDet,
+    (a00 * b11 - a02 * b08 + a03 * b07) * invDet,
+    (a32 * b02 - a30 * b05 - a33 * b01) * invDet,
+    (a20 * b05 - a22 * b02 + a23 * b01) * invDet,
+    (a10 * b10 - a11 * b08 + a13 * b06) * invDet,
+    (a01 * b08 - a00 * b10 - a03 * b06) * invDet,
+    (a30 * b04 - a31 * b02 + a33 * b00) * invDet,
+    (a21 * b02 - a20 * b04 - a23 * b00) * invDet,
+    (a11 * b07 - a10 * b09 - a12 * b06) * invDet,
+    (a00 * b09 - a01 * b07 + a02 * b06) * invDet,
+    (a31 * b01 - a30 * b03 - a32 * b00) * invDet,
+    (a20 * b03 - a21 * b01 + a22 * b00) * invDet
   );
 }
 
@@ -2213,6 +2413,72 @@ mat4 cpfx_transpose(mat4 m) {
     m[0][1], m[1][1], m[2][1], m[3][1],
     m[0][2], m[1][2], m[2][2], m[3][2],
     m[0][3], m[1][3], m[2][3], m[3][3]
+  );
+}
+
+mat2 cpfx_inverse(mat2 m) {
+  float det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+  if (abs(det) < 1e-8) return mat2(1.0);
+  float invDet = 1.0 / det;
+  return mat2(
+    m[1][1] * invDet, -m[0][1] * invDet,
+    -m[1][0] * invDet, m[0][0] * invDet
+  );
+}
+
+mat3 cpfx_inverse(mat3 m) {
+  vec3 a = m[0];
+  vec3 b = m[1];
+  vec3 c = m[2];
+  vec3 r0 = cross(b, c);
+  vec3 r1 = cross(c, a);
+  vec3 r2 = cross(a, b);
+  float det = dot(a, r0);
+  if (abs(det) < 1e-8) return mat3(1.0);
+  float invDet = 1.0 / det;
+  return mat3(r0 * invDet, r1 * invDet, r2 * invDet);
+}
+
+mat4 cpfx_inverse(mat4 m) {
+  float a00 = m[0][0], a01 = m[0][1], a02 = m[0][2], a03 = m[0][3];
+  float a10 = m[1][0], a11 = m[1][1], a12 = m[1][2], a13 = m[1][3];
+  float a20 = m[2][0], a21 = m[2][1], a22 = m[2][2], a23 = m[2][3];
+  float a30 = m[3][0], a31 = m[3][1], a32 = m[3][2], a33 = m[3][3];
+
+  float b00 = a00 * a11 - a01 * a10;
+  float b01 = a00 * a12 - a02 * a10;
+  float b02 = a00 * a13 - a03 * a10;
+  float b03 = a01 * a12 - a02 * a11;
+  float b04 = a01 * a13 - a03 * a11;
+  float b05 = a02 * a13 - a03 * a12;
+  float b06 = a20 * a31 - a21 * a30;
+  float b07 = a20 * a32 - a22 * a30;
+  float b08 = a20 * a33 - a23 * a30;
+  float b09 = a21 * a32 - a22 * a31;
+  float b10 = a21 * a33 - a23 * a31;
+  float b11 = a22 * a33 - a23 * a32;
+
+  float det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  if (abs(det) < 1e-8) return mat4(1.0);
+  float invDet = 1.0 / det;
+
+  return mat4(
+    (a11 * b11 - a12 * b10 + a13 * b09) * invDet,
+    (a02 * b10 - a01 * b11 - a03 * b09) * invDet,
+    (a31 * b05 - a32 * b04 + a33 * b03) * invDet,
+    (a22 * b04 - a21 * b05 - a23 * b03) * invDet,
+    (a12 * b08 - a10 * b11 - a13 * b07) * invDet,
+    (a00 * b11 - a02 * b08 + a03 * b07) * invDet,
+    (a32 * b02 - a30 * b05 - a33 * b01) * invDet,
+    (a20 * b05 - a22 * b02 + a23 * b01) * invDet,
+    (a10 * b10 - a11 * b08 + a13 * b06) * invDet,
+    (a01 * b08 - a00 * b10 - a03 * b06) * invDet,
+    (a30 * b04 - a31 * b02 + a33 * b00) * invDet,
+    (a21 * b02 - a20 * b04 - a23 * b00) * invDet,
+    (a11 * b07 - a10 * b09 - a12 * b06) * invDet,
+    (a00 * b09 - a01 * b07 + a02 * b06) * invDet,
+    (a31 * b01 - a30 * b03 - a32 * b00) * invDet,
+    (a20 * b03 - a21 * b01 + a22 * b00) * invDet
   );
 }
 
