@@ -7,46 +7,49 @@ Indy FX project content is licensed under:
 
 ## ShaderToy Source References
 
-Imported shader source entries in `scripts/shaders.json` reference the following ShaderToy pages:
+Imported shader from `scripts/shaders.json` reference the following ShaderToy pages:
 
-- https://www.shadertoy.com/view/4d2GzV
-- https://www.shadertoy.com/view/4dfGDH
-- https://www.shadertoy.com/view/4djSRW
-- https://www.shadertoy.com/view/4dl3R4
-- https://www.shadertoy.com/view/4sSSW3
-- https://www.shadertoy.com/view/4sSXzD
-- https://www.shadertoy.com/view/4sfGzS
-- https://www.shadertoy.com/view/4tB3zV
-- https://www.shadertoy.com/view/4tdGWM
-- https://www.shadertoy.com/view/4ts3z2
-- https://www.shadertoy.com/view/MdKXzc
-- https://www.shadertoy.com/view/MdXSzS
-- https://www.shadertoy.com/view/Ml2XRD
-- https://www.shadertoy.com/view/MlfSzn
-- https://www.shadertoy.com/view/MlycD3
-- https://www.shadertoy.com/view/MsKGzw
-- https://www.shadertoy.com/view/WlKyzW
-- https://www.shadertoy.com/view/WsBfWt
-- https://www.shadertoy.com/view/Xds3zN
-- https://www.shadertoy.com/view/Xl2XWt
-- https://www.shadertoy.com/view/XlVcWz
-- https://www.shadertoy.com/view/Xljczw
-- https://www.shadertoy.com/view/Xltfzj
-- https://www.shadertoy.com/view/Xs3GRB
-- https://www.shadertoy.com/view/XsX3zB
-- https://www.shadertoy.com/view/Xsc3R4
-- https://www.shadertoy.com/view/XslBDl
-- https://www.shadertoy.com/view/XtVGWG
-- https://www.shadertoy.com/view/XtfSWX
-- https://www.shadertoy.com/view/ld2SzK
-- https://www.shadertoy.com/view/ld3yRn
-- https://www.shadertoy.com/view/ldl3W8
-- https://www.shadertoy.com/view/ldsGDn
-- https://www.shadertoy.com/view/ll2GD3
-- https://www.shadertoy.com/view/ls2GDR
-- https://www.shadertoy.com/view/lsj3Dw
-- https://www.shadertoy.com/view/lsySzd
-- https://www.shadertoy.com/view/ltffzl
+Bulge https://www.shadertoy.com/view/XsVSW1
+Butterflies Coloured https://www.shadertoy.com/view/ld23z3
+Campfire at night https://www.shadertoy.com/view/Wtc3W2
+Cartoon https://www.shadertoy.com/view/XtSfW1
+Charmed Token https://www.shadertoy.com/view/wXtfD2
+Drawing https://www.shadertoy.com/view/XtVGD1
+Entangled Vines https://www.shadertoy.com/view/MlBSDW
+Fire https://www.shadertoy.com/view/MtcGD7
+Flame https://www.shadertoy.com/view/MtcGD7
+Flame2 https://www.shadertoy.com/view/MtcGD7
+Flame2 for  Token https://www.shadertoy.com/view/MtcGD7
+FlameEye https://www.shadertoy.com/view/ltBfDt
+FlowNoiseFire https://www.shadertoy.com/view/Md23Wc 
+fractal pyramid https://www.shadertoy.com/view/tsXBzS
+Fractured Orb https://www.shadertoy.com/view/ttycWW
+Galaxy of Universes https://www.shadertoy.com/view/MdXSzS
+Geodesic https://www.shadertoy.com/view/llVXRd
+Geodesic 5ft https://www.shadertoy.com/view/llVXRd
+Heart Fireworks https://www.shadertoy.com/view/wssfzr
+hexagons https://www.shadertoy.com/view/Xd2GR3
+hexgrid https://www.shadertoy.com/view/Dl3fRl
+hexgrid 5ft https://www.shadertoy.com/view/Dl3fRl
+Inverted entanglement https://www.shadertoy.com/view/wlSXWc
+JustSnow https://www.shadertoy.com/view/ldsGDn
+LowFog https://www.shadertoy.com/view/XfSfWR
+Marble https://www.shadertoy.com/view/MtX3Ws
+metalshield https://www.shadertoy.com/view/4sdcDN
+Particle Experiment 7 https://www.shadertoy.com/view/MddGWN
+Promethean https://www.shadertoy.com/view/4tB3zV
+Pyroclastic fireball https://www.shadertoy.com/view/MtXSzS
+Rain Ripple https://www.shadertoy.com/view/w3tfzN
+rainglass https://www.shadertoy.com/view/WdlyDN
+Snow
+Spiral Blue
+squishy noise https://www.shadertoy.com/view/3tGyzh
+Tiny Planet Clouds https://www.shadertoy.com/view/ldyXRw
+VCR distortion https://www.shadertoy.com/view/ldjGzV
+Volumetric explosion https://www.shadertoy.com/view/lsySzd
+Voronoi Portal https://www.shadertoy.com/view/4tsSWs
+water https://www.shadertoy.com/view/MdlXz8
+Zippy https://www.shadertoy.com/view/XXyGzh
 
 ## Notes
 
