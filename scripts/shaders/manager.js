@@ -1794,7 +1794,7 @@ export class ShaderManager {
       lightIlluminationIntensity: Math.max(
         0,
         Math.min(
-          5,
+          20,
           toFiniteNumber(
             source.lightIlluminationIntensity,
             toFiniteNumber(base.lightIlluminationIntensity, 1),
@@ -1804,7 +1804,7 @@ export class ShaderManager {
       lightBackgroundIntensity: Math.max(
         0,
         Math.min(
-          5,
+          20,
           toFiniteNumber(
             source.lightBackgroundIntensity,
             toFiniteNumber(base.lightBackgroundIntensity, 1),

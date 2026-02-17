@@ -481,6 +481,148 @@ function buildImportedLightChannelUniformDefaults({
   return result;
 }
 
+function buildImportedLightRuntimeChannels({
+  sourceText = "",
+  shaderId = "",
+  shaderLabel = "",
+  channelConfig = {},
+} = {}) {
+  const textures = {};
+  const runtimeBuffers = [];
+  const runtimeImageChannels = [];
+  const seenBuffers = new Set();
+  const seenImageChannels = new Set();
+  const referenced = Array.isArray(extractReferencedChannels(sourceText))
+    ? extractReferencedChannels(sourceText)
+    : [];
+  const refs = new Set(
+    referenced
+      .map((v) => Number(v))
+      .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
+  );
+
+  for (const index of [0, 1, 2, 3]) {
+    const key = `iChannel${index}`;
+    const cfgRaw =
+      channelConfig?.[key] ??
+      {
+        mode: "none",
+        path: "",
+        source: "",
+        channels: {},
+        size: 512,
+      };
+    const modeOriginal = String(cfgRaw?.mode ?? "none").trim().toLowerCase();
+    const modeRaw =
+      modeOriginal === "tokentileimage" ||
+      modeOriginal === "tokenimage" ||
+      modeOriginal === "tileimage"
+        ? "scenecapture"
+        : modeOriginal;
+    let effectiveCfg = cfgRaw;
+    if (modeRaw !== modeOriginal) {
+      effectiveCfg = { ...cfgRaw, mode: "sceneCapture" };
+    }
+    if (modeRaw === "scenecapture") {
+      textures[key] = null;
+      continue;
+    }
+    if (modeRaw === "none" && index === 0 && refs.has(0)) {
+      effectiveCfg = { ...cfgRaw, mode: "noiseRgb" };
+    }
+    if (modeRaw === "bufferself") {
+      // bufferSelf is only meaningful as a child channel of mode=buffer.
+      continue;
+    }
+    try {
+      const resolved = shaderManager.resolveImportedChannelTexture(
+        effectiveCfg,
+        0,
+        {
+          shaderId,
+          shaderLabel,
+          channelKey: key,
+          previewMode: false,
+        },
+      );
+      if (resolved?.texture) textures[key] = resolved.texture;
+      for (const runtimeBuffer of resolved?.runtimeBuffers ?? []) {
+        if (!runtimeBuffer || typeof runtimeBuffer.update !== "function") continue;
+        if (seenBuffers.has(runtimeBuffer)) continue;
+        seenBuffers.add(runtimeBuffer);
+        runtimeBuffers.push(runtimeBuffer);
+      }
+      for (const runtimeImageChannel of resolved?.runtimeImageChannels ?? []) {
+        if (!runtimeImageChannel || typeof runtimeImageChannel !== "object") continue;
+        if (seenImageChannels.has(runtimeImageChannel)) continue;
+        seenImageChannels.add(runtimeImageChannel);
+        runtimeImageChannels.push(runtimeImageChannel);
+      }
+    } catch (_err) {
+      // Keep white fallback on channel resolve failures.
+    }
+  }
+
+  return {
+    textures,
+    runtimeBuffers,
+    runtimeImageChannels,
+  };
+}
+
+function initializeImportedLightLayerChannels(layer) {
+  if (!layer || typeof layer !== "object") return;
+  if (layer._indyFxLightChannelsInitialized === true) return;
+  const shader = layer?.shader ?? null;
+  const uniforms = shader?.uniforms;
+  if (!uniforms || typeof uniforms !== "object") return;
+  const ctor = shader?.constructor ?? null;
+  const sourceText = String(ctor?.indyFxSourceText ?? "").trim();
+  if (!sourceText) {
+    layer._indyFxLightChannelsInitialized = true;
+    return;
+  }
+  const runtimeChannels = buildImportedLightRuntimeChannels({
+    sourceText,
+    shaderId: String(ctor?.indyFxShaderId ?? "").trim(),
+    shaderLabel: String(ctor?.indyFxShaderLabel ?? "").trim(),
+    channelConfig: ctor?.indyFxChannelConfig ?? {},
+  });
+  const textures = runtimeChannels?.textures ?? {};
+  for (const key of ["iChannel0", "iChannel1", "iChannel2", "iChannel3"]) {
+    if (!Object.prototype.hasOwnProperty.call(textures, key)) continue;
+    uniforms[key] = textures[key];
+  }
+  layer._indyFxRuntimeBuffers = Array.isArray(runtimeChannels?.runtimeBuffers)
+    ? runtimeChannels.runtimeBuffers
+    : [];
+  layer._indyFxRuntimeImageChannels = Array.isArray(runtimeChannels?.runtimeImageChannels)
+    ? runtimeChannels.runtimeImageChannels
+    : [];
+  layer._indyFxLightChannelsInitialized = true;
+}
+
+function destroyImportedLightLayerRuntimeChannels(layer) {
+  if (!layer || typeof layer !== "object") return;
+  for (const runtimeBuffer of layer?._indyFxRuntimeBuffers ?? []) {
+    try {
+      runtimeBuffer?.destroy?.();
+    } catch (_err) {
+      // Non-fatal.
+    }
+  }
+  for (const runtimeImageChannel of layer?._indyFxRuntimeImageChannels ?? []) {
+    try {
+      runtimeImageChannel?.destroy?.();
+    } catch (_err) {
+      // Non-fatal.
+    }
+  }
+  delete layer._indyFxRuntimeBuffers;
+  delete layer._indyFxRuntimeImageChannels;
+  delete layer._indyFxLightChannelsInitialized;
+}
+
 function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
   if (!source || typeof source !== "object") return;
   const layers = source.layers ?? {};
@@ -532,6 +674,21 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
   for (const layer of Object.values(layers)) {
     const uniforms = layer?.shader?.uniforms;
     if (!uniforms || typeof uniforms !== "object") continue;
+    initializeImportedLightLayerChannels(layer);
+    const runtimeBuffers = Array.isArray(layer?._indyFxRuntimeBuffers)
+      ? layer._indyFxRuntimeBuffers
+      : [];
+    if (runtimeBuffers.length > 0) {
+      const renderer = canvas?.app?.renderer;
+      const bufferDt = dtSeconds > 0 ? dtSeconds : (1 / 60);
+      for (const runtimeBuffer of runtimeBuffers) {
+        try {
+          runtimeBuffer?.update?.(bufferDt, renderer);
+        } catch (_err) {
+          // Non-fatal.
+        }
+      }
+    }
 
     const classBaseSpeed = toFiniteLightNumber(
       layer?.shader?.constructor?.indyFxBaseSpeed,
@@ -805,6 +962,10 @@ function createImportedLightShaderClass({
     static indyFxBaseSpeed = Math.max(0, resolvedDefaultSpeed);
     static indyFxLightFalloffMode = resolvedDefaultLightFalloffMode;
     static indyFxLayerType = normalizedLayerType;
+    static indyFxSourceText = sourceText;
+    static indyFxShaderId = String(shaderId ?? "");
+    static indyFxShaderLabel = String(shaderLabel ?? "");
+    static indyFxChannelConfig = foundry.utils.deepClone(channelConfig ?? {});
     static indyFxColorationIntensity = resolvedDefaultLightColorationIntensity;
     static indyFxIlluminationIntensity = resolvedDefaultLightIlluminationIntensity;
     static indyFxBackgroundIntensity = resolvedDefaultLightBackgroundIntensity;
@@ -1068,6 +1229,7 @@ async function refreshImportedLightSources({
 
       for (const layer of Object.values(activeSource?.layers ?? {})) {
         if (!layer || typeof layer !== "object") continue;
+        destroyImportedLightLayerRuntimeChannels(layer);
         delete layer._indyFxBaseIntensity;
         delete layer._indyFxBaseSpeed;
         delete layer._indyFxLightFalloffMode;
