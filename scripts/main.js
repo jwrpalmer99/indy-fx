@@ -148,27 +148,81 @@ function normalizeImportedLightFalloffMode(value) {
   return "brightDim";
 }
 
+function sceneUnitsToPixelsSafe(distanceUnits) {
+  const n = Number(distanceUnits);
+  if (!Number.isFinite(n)) return NaN;
+  if (n <= 0) return 0;
+  return Math.max(0, toFiniteLightNumber(sceneUnitsToPixels(n), 0));
+}
+
 function resolveImportedLightSourceRadii(source) {
+  const sourceData = source?.data ?? {};
+  const dataDim = toFiniteLightNumber(sourceData?.dim, NaN);
+  const dataBright = toFiniteLightNumber(sourceData?.bright, NaN);
+  const dataRadius = toFiniteLightNumber(sourceData?.radius, NaN);
+  const dataExternalRadius = toFiniteLightNumber(sourceData?.externalRadius, NaN);
+  const dataInnerRadius = toFiniteLightNumber(sourceData?.innerRadius, NaN);
+
+  const doc = source?.object?.document ?? null;
+  const docLightData =
+    (doc?.config && typeof doc.config === "object")
+      ? doc.config
+      : ((doc?.light && typeof doc.light === "object") ? doc.light : {});
+  const docDimUnits = toFiniteLightNumber(docLightData?.dim, NaN);
+  const docBrightUnits = toFiniteLightNumber(docLightData?.bright, NaN);
+  const docRadiusUnits = toFiniteLightNumber(docLightData?.radius, NaN);
+  const docDimPixels = sceneUnitsToPixelsSafe(docDimUnits);
+  const docBrightPixels = sceneUnitsToPixelsSafe(docBrightUnits);
+  const docRadiusPixels = sceneUnitsToPixelsSafe(docRadiusUnits);
+
   const fallbackRadius = Math.max(
     0,
     toFiniteLightNumber(
-      source?.data?.radius,
-      toFiniteLightNumber(source?.object?.document?.config?.dim, 0),
+      dataRadius,
+      toFiniteLightNumber(
+        dataExternalRadius,
+        toFiniteLightNumber(
+          docDimPixels,
+          toFiniteLightNumber(docRadiusPixels, 0),
+        ),
+      ),
     ),
   );
   const dimRadius = Math.max(
     0,
     toFiniteLightNumber(
-      source?.data?.dim,
-      toFiniteLightNumber(source?.object?.document?.config?.dim, fallbackRadius),
+      dataDim,
+      toFiniteLightNumber(
+        dataExternalRadius,
+        toFiniteLightNumber(docDimPixels, fallbackRadius),
+      ),
     ),
   );
   const brightRaw = toFiniteLightNumber(
-    source?.data?.bright,
-    toFiniteLightNumber(source?.object?.document?.config?.bright, dimRadius),
+    dataBright,
+    toFiniteLightNumber(
+      dataInnerRadius,
+      toFiniteLightNumber(docBrightPixels, dimRadius),
+    ),
   );
   const brightRadius = Math.max(0, Math.min(dimRadius, brightRaw));
-  return { brightRadius, dimRadius };
+  return {
+    brightRadius,
+    dimRadius,
+    raw: {
+      dataDim,
+      dataBright,
+      dataRadius,
+      dataExternalRadius,
+      dataInnerRadius,
+      docDimUnits,
+      docBrightUnits,
+      docRadiusUnits,
+      docDimPixels,
+      docBrightPixels,
+      docRadiusPixels,
+    },
+  };
 }
 
 function resolveImportedLightFalloffParams(mode, radii) {
@@ -461,6 +515,7 @@ function debugLogImportedLightState(source, { dtSeconds = 0 } = {}) {
     intensityScale: toFiniteLightNumber(source?._indyFxFoundryIntensityScale, null),
     brightRadius: toFiniteLightNumber(source?._indyFxFoundryBrightRadius, null),
     dimRadius: toFiniteLightNumber(source?._indyFxFoundryDimRadius, null),
+    rawRadii: source?._indyFxFoundryRawRadii ?? null,
     dtSeconds: toFiniteLightNumber(dtSeconds, null),
     frameCounter: toFiniteLightNumber(source?._indyFxLightFrameCounter, null),
     layerStates,
@@ -511,6 +566,7 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
   source._indyFxFoundryIntensityScale = intensityScale;
   source._indyFxFoundryBrightRadius = radii.brightRadius;
   source._indyFxFoundryDimRadius = radii.dimRadius;
+  source._indyFxFoundryRawRadii = radii?.raw ?? null;
   const frame = source._indyFxLightFrameCounter;
   const frameRate = dtSeconds > 0 ? (1 / dtSeconds) : 60;
 
@@ -940,7 +996,7 @@ function collectActiveLightSources() {
     ? canvas.lighting.placeables
     : [];
   for (const ambient of ambientLights) {
-    pushSource(ambient?.lightSource ?? ambient?.source);
+    pushSource(ambient?.lightSource);
   }
 
   return out;
@@ -967,7 +1023,7 @@ function refreshImportedLightSources({
     ? canvas.lighting.placeables
     : [];
   for (const ambient of ambientLights) {
-    const ambientSource = ambient?.lightSource ?? ambient?.source ?? null;
+    const ambientSource = ambient?.lightSource ?? null;
     const rawId = String(ambient?.id ?? ambient?.document?.id ?? "").trim();
     const sidCandidates = [
       String(ambientSource?.sourceId ?? "").trim(),
@@ -1010,17 +1066,16 @@ function refreshImportedLightSources({
         null;
       let activeSource =
         lightObject?.lightSource ??
-        lightObject?.source ??
         source;
       const sourceMethods = [];
       if (typeof lightObject?.initializeLightSource === "function") {
         sourceMethods.push("object.initializeLightSource");
         lightObject.initializeLightSource({ deleted: false });
-        activeSource = lightObject?.lightSource ?? lightObject?.source ?? activeSource;
+        activeSource = lightObject?.lightSource ?? activeSource;
       } else if (typeof lightObject?.updateSource === "function") {
         sourceMethods.push("object.updateSource");
         lightObject.updateSource({ defer: true, deleted: false });
-        activeSource = lightObject?.lightSource ?? lightObject?.source ?? activeSource;
+        activeSource = lightObject?.lightSource ?? activeSource;
       }
 
       for (const layer of Object.values(activeSource?.layers ?? {})) {
@@ -1054,15 +1109,6 @@ function refreshImportedLightSources({
       if (typeof lightObject?.refresh === "function") {
         sourceMethods.push("object.refresh");
         lightObject.refresh();
-      }
-      if (typeof lightObject?.renderFlags?.set === "function") {
-        sourceMethods.push("object.renderFlags.set");
-        lightObject.renderFlags.set({
-          refreshField: true,
-          refreshState: true,
-          refreshPosition: true,
-          refreshElevation: true,
-        });
       }
       if (sourceMethods.length > 0) {
         refreshedCount += 1;
@@ -1132,12 +1178,29 @@ const INDYFX_ICON_CLASS = "fa-jelly fa-regular fa-sparkles";
 let _shaderLibraryMenuApp = null;
 let _shaderLibraryMenuOpening = null;
 
+function bringApplicationToFront(app) {
+  if (!app) return;
+  if (typeof app.bringToFront === "function") {
+    app.bringToFront();
+    return;
+  }
+  if (typeof app.bringToTop === "function") {
+    app.bringToTop();
+  }
+}
+
+function handleShaderLibraryToolChange(...args) {
+  const activeState = args.find((value) => typeof value === "boolean");
+  if (activeState === false) return;
+  void openShaderLibraryWindow();
+}
+
 async function openShaderLibraryWindow() {
   try {
     const existing = _shaderLibraryMenuApp;
     if (existing) {
       if (existing.rendered) {
-        existing.bringToTop?.();
+        bringApplicationToFront(existing);
         return existing;
       }
       if (!_shaderLibraryMenuOpening) {
@@ -1146,7 +1209,7 @@ async function openShaderLibraryWindow() {
         });
       }
       await _shaderLibraryMenuOpening;
-      existing.bringToTop?.();
+      bringApplicationToFront(existing);
       return existing;
     }
 
@@ -1166,7 +1229,7 @@ async function openShaderLibraryWindow() {
       _shaderLibraryMenuOpening = null;
     });
     await _shaderLibraryMenuOpening;
-    app.bringToTop?.();
+    bringApplicationToFront(app);
     return app;
   } catch (err) {
     console.error(`${MODULE_ID} | Failed to open shader library`, err);
@@ -5628,7 +5691,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
         icon: INDYFX_ICON_CLASS,
         button: true,
         visible: true,
-        onClick: () => openShaderLibraryWindow(),
+        onChange: (...args) => handleShaderLibraryToolChange(...args),
       });
     }
     return;
@@ -5643,7 +5706,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
       icon: INDYFX_ICON_CLASS,
       button: true,
       visible: true,
-      onClick: () => openShaderLibraryWindow(),
+      onChange: (...args) => handleShaderLibraryToolChange(...args),
     });
   }
 });
