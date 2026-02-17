@@ -819,6 +819,13 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
       defaultBackgroundGlow: defaults?.backgroundGlow,
     });
     if (backgroundShader) config.backgroundShader = backgroundShader;
+    else {
+      debugLog("imported light background shader unavailable", {
+        shaderId: id,
+        label: labelText,
+        lightUseBackgroundShader: true,
+      });
+    }
   }
 
   return { key, config };
@@ -843,6 +850,7 @@ function syncImportedShaderLightAnimations({ reason = "unspecified" } = {}) {
 
   let removedCount = 0;
   let upsertCount = 0;
+  let desiredBackgroundShaderCount = 0;
   for (const registry of registries) {
     for (const key of Object.keys(registry)) {
       if (!key.startsWith(INDYFX_LIGHT_ANIMATION_PREFIX)) continue;
@@ -854,6 +862,7 @@ function syncImportedShaderLightAnimations({ reason = "unspecified" } = {}) {
   }
 
   for (const [key, config] of desired.entries()) {
+    if (config?.backgroundShader) desiredBackgroundShaderCount += 1;
     for (const registry of registries) {
       registry[key] = config;
     }
@@ -864,6 +873,7 @@ function syncImportedShaderLightAnimations({ reason = "unspecified" } = {}) {
   debugLog("imported light animation sync", {
     reason: String(reason ?? "unspecified"),
     desiredCount: desired.size,
+    desiredBackgroundShaderCount,
     registryCount: registries.length,
     upsertCount,
     removedCount,
