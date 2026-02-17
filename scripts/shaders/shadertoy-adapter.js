@@ -2187,12 +2187,6 @@ void main() {
   vec4 shaderColor = vec4(0.0, 0.0, 0.0, 1.0);
   mainImage(shaderColor, fragCoord);
   float srcAlpha = shaderColor.a;
-  // Some ShaderToy ports compute RGB but leave alpha at 0.0 (alpha is ignored there).
-  // If transparency is preserved and RGB is non-zero, treat as opaque for visibility.
-  if (cpfxPreserveTransparent > 0.5 && srcAlpha <= 0.0001) {
-    float rgbEnergy = dot(abs(shaderColor.rgb), vec3(1.0));
-    if (rgbEnergy > 0.0001) srcAlpha = 1.0;
-  }
   if (debugMode > 2.5 && debugMode < 3.5) {
     gl_FragColor = vec4(vec3(srcAlpha), srcAlpha);
     return;

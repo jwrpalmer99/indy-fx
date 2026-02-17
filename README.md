@@ -98,7 +98,7 @@ Notes:
 - Confirm shader is enabled for that target.
 - Check `alpha`, `intensity`, `layer`, and mask settings.
 - Confirm selected channel modes are valid for that target type.
-- Confirm that shader doesnt have 0 alpha explicitly set on output. 
+- Confirm that shader doesnt have 0 alpha explicitly set on output (try adding "fragColor.a = 1.;" at end) 
 - If using light conversion, confirm **Convert to Light Source** is enabled and the light animation is selected on the light.
 - For converted lights, verify `Light Coloration Intensity` / `Light Illumination Intensity` are non-zero.
 
