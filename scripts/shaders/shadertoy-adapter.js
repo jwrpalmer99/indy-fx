@@ -2261,7 +2261,7 @@ export function adaptShaderToyLightFragment(
       : "clamp(srcAlpha, 0.0, 1.0)";
   const depthExpression =
     resolvedLayer === "coloration"
-      ? `vec4 depthColor = texture2D(depthTexture, vUvs);
+      ? `vec4 depthColor = texture2D(depthTexture, cpfxSamplerUv);
   float depth = smoothstep(0.0, 1.0, vDepth)
     * step(depthColor.g, depthElevation)
     * step(depthElevation, (254.5 / 255.0) - depthColor.r);`
@@ -2273,6 +2273,11 @@ export function adaptShaderToyLightFragment(
     "varying vec2 vUvs;\nvarying vec2 vSamplerUvs;\nvarying float vDepth;",
   );
   fragment = fragment.replace(/\bvTextureCoord\b/g, "vUvs");
+  fragment = fragment.replace(
+    /vec2 stUvRaw = vec2\(vUvs\.x, 1\.0 - vUvs\.y\);/,
+    `vec2 cpfxSamplerUv = vSamplerUvs;
+  vec2 stUvRaw = vec2(vUvs.x, 1.0 - vUvs.y);`,
+  );
   fragment = fragment.replace(
     /uniform\s+vec2\s+resolution\s*;/,
     `uniform vec2 resolution;
@@ -2299,7 +2304,7 @@ uniform vec3 color;`,
   if (srcAlpha > 0.0001) {
     cpfxShaderRgb = clamp(shaderColor.rgb / srcAlpha, vec3(0.0), vec3(8.0));
   }
-  vec4 baseColor = texture2D(primaryTexture, vUvs);
+  vec4 baseColor = texture2D(primaryTexture, cpfxSamplerUv);
   float dist = distance(vUvs, vec2(0.5)) * 2.0;
   ${depthExpression}
   float d = clamp(dist, 0.0, 1.0);

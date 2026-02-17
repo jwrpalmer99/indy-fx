@@ -521,8 +521,18 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
       [lightDiameter, lightDiameter],
     );
     const [resX, resY] = [
-      Math.max(1, toFiniteLightNumber(fallbackResolution[0], lightDiameter)),
-      Math.max(1, toFiniteLightNumber(fallbackResolution[1], lightDiameter)),
+      Math.max(
+        1,
+        toFiniteLightNumber(fallbackResolution[0], lightDiameter) > 1
+          ? toFiniteLightNumber(fallbackResolution[0], lightDiameter)
+          : lightDiameter,
+      ),
+      Math.max(
+        1,
+        toFiniteLightNumber(fallbackResolution[1], lightDiameter) > 1
+          ? toFiniteLightNumber(fallbackResolution[1], lightDiameter)
+          : lightDiameter,
+      ),
     ];
     const ch0 = uniforms.iChannel0 ?? sharedTexture;
     const ch1 = uniforms.iChannel1 ?? sharedTexture;
