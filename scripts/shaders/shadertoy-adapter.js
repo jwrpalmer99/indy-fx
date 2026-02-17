@@ -2242,7 +2242,7 @@ function getLightLayerColorExpression(layerType) {
   if (layerType === "illumination")
     return "cpfxShaderRgb * max(cpfxIlluminationIntensity, 0.0)";
   if (layerType === "background") {
-    return "mix(baseColor.rgb, shaderColor.rgb, clamp(backgroundAlpha, 0.0, 1.0)) + (shaderColor.rgb * max(backgroundGlow, 0.0))";
+    return "(mix(baseColor.rgb, shaderColor.rgb, clamp(backgroundAlpha, 0.0, 1.0)) + (shaderColor.rgb * max(backgroundGlow, 0.0))) * max(cpfxBackgroundIntensity, 0.0)";
   }
   return "shaderColor.rgb * color * colorationAlpha * max(cpfxColorationIntensity, 0.0)";
 }
@@ -2288,6 +2288,7 @@ uniform float backgroundAlpha;
 uniform float backgroundGlow;
 uniform float cpfxColorationIntensity;
 uniform float cpfxIlluminationIntensity;
+uniform float cpfxBackgroundIntensity;
 uniform vec3 color;`,
   );
 

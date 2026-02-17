@@ -346,6 +346,7 @@ function buildImportedLightAdapterUniformDefaults(baseUniforms = {}) {
     cpfxLightExponentialPower: toFiniteLightNumber(safeBase.cpfxLightExponentialPower, 2.2),
     cpfxColorationIntensity: toFiniteLightNumber(safeBase.cpfxColorationIntensity, 1),
     cpfxIlluminationIntensity: toFiniteLightNumber(safeBase.cpfxIlluminationIntensity, 1),
+    cpfxBackgroundIntensity: toFiniteLightNumber(safeBase.cpfxBackgroundIntensity, 1),
     backgroundGlow: toFiniteLightNumber(safeBase.backgroundGlow, 0),
     debugMode: toFiniteLightNumber(safeBase.debugMode, 0),
     attenuation: toFiniteLightNumber(safeBase.attenuation, INDYFX_LIGHT_FALLOFF_DEFAULT),
@@ -615,6 +616,20 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     layer._indyFxLightIlluminationIntensity = baseIlluminationIntensity;
     uniforms.cpfxIlluminationIntensity =
       classLayerType === "illumination" ? baseIlluminationIntensity : 1;
+    const classBackgroundIntensity = toFiniteLightNumber(
+      layer?.shader?.constructor?.indyFxBackgroundIntensity,
+      toFiniteLightNumber(
+        layer?.shader?.constructor?.defaultUniforms?.cpfxBackgroundIntensity,
+        1,
+      ),
+    );
+    const baseBackgroundIntensity = Math.max(
+      0,
+      toFiniteLightNumber(layer?._indyFxLightBackgroundIntensity, classBackgroundIntensity),
+    );
+    layer._indyFxLightBackgroundIntensity = baseBackgroundIntensity;
+    uniforms.cpfxBackgroundIntensity =
+      classLayerType === "background" ? baseBackgroundIntensity : 1;
     const classFalloffMode = normalizeImportedLightFalloffMode(
       layer?.shader?.constructor?.indyFxLightFalloffMode,
     );
@@ -655,6 +670,7 @@ function createImportedLightShaderClass({
   defaultLightFalloffMode = "brightDim",
   defaultLightColorationIntensity = 1,
   defaultLightIlluminationIntensity = 1,
+  defaultLightBackgroundIntensity = 1,
   defaultBackgroundGlow = 0,
 } = {}) {
   const normalizedLayerType = normalizeImportedLightLayerType(layerType);
@@ -696,6 +712,10 @@ function createImportedLightShaderClass({
     0,
     toFiniteLightNumber(defaultLightIlluminationIntensity, 1),
   );
+  const resolvedDefaultLightBackgroundIntensity = Math.max(
+    0,
+    toFiniteLightNumber(defaultLightBackgroundIntensity, 1),
+  );
   const resolvedDefaultBackgroundGlow = Math.max(
     0,
     toFiniteLightNumber(defaultBackgroundGlow, 0),
@@ -709,6 +729,7 @@ function createImportedLightShaderClass({
     resolvedDefaultLightFalloffMode === "exponential" ? 2.2 : 1.0;
   uniformDefaults.cpfxColorationIntensity = resolvedDefaultLightColorationIntensity;
   uniformDefaults.cpfxIlluminationIntensity = resolvedDefaultLightIlluminationIntensity;
+  uniformDefaults.cpfxBackgroundIntensity = resolvedDefaultLightBackgroundIntensity;
   uniformDefaults.backgroundGlow = resolvedDefaultBackgroundGlow;
   if (normalizedLayerType === "background") {
     const baseBackgroundAlpha = toFiniteLightNumber(uniformDefaults.backgroundAlpha, 1);
@@ -742,6 +763,7 @@ function createImportedLightShaderClass({
     static indyFxLayerType = normalizedLayerType;
     static indyFxColorationIntensity = resolvedDefaultLightColorationIntensity;
     static indyFxIlluminationIntensity = resolvedDefaultLightIlluminationIntensity;
+    static indyFxBackgroundIntensity = resolvedDefaultLightBackgroundIntensity;
     static forceDefaultColor =
       normalizedLayerType === "coloration"
         ? true
@@ -773,6 +795,7 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
     defaultLightFalloffMode: defaults?.lightFalloffMode,
     defaultLightColorationIntensity: defaults?.lightColorationIntensity,
     defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
+    defaultLightBackgroundIntensity: defaults?.lightBackgroundIntensity,
     defaultBackgroundGlow: defaults?.backgroundGlow,
   });
   if (!colorationShader) return null;
@@ -797,6 +820,7 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
       defaultLightFalloffMode: defaults?.lightFalloffMode,
       defaultLightColorationIntensity: defaults?.lightColorationIntensity,
       defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
+      defaultLightBackgroundIntensity: defaults?.lightBackgroundIntensity,
       defaultBackgroundGlow: defaults?.backgroundGlow,
     });
     if (illuminationShader) config.illuminationShader = illuminationShader;
@@ -816,6 +840,7 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
       defaultLightFalloffMode: defaults?.lightFalloffMode,
       defaultLightColorationIntensity: defaults?.lightColorationIntensity,
       defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
+      defaultLightBackgroundIntensity: defaults?.lightBackgroundIntensity,
       defaultBackgroundGlow: defaults?.backgroundGlow,
     });
     if (backgroundShader) config.backgroundShader = backgroundShader;
@@ -1003,6 +1028,7 @@ function refreshImportedLightSources({
         delete layer._indyFxLightFalloffMode;
         delete layer._indyFxLightColorationIntensity;
         delete layer._indyFxLightIlluminationIntensity;
+        delete layer._indyFxLightBackgroundIntensity;
       }
 
       const sourceData =

@@ -131,6 +131,7 @@ const IMPORTED_SHADER_DEFAULT_KEYS = [
   "lightFalloffMode",
   "lightColorationIntensity",
   "lightIlluminationIntensity",
+  "lightBackgroundIntensity",
   "backgroundGlow",
   "preloadShader",
 ];
@@ -1513,6 +1514,7 @@ export class ShaderManager {
       lightFalloffMode: "brightDim",
       lightColorationIntensity: 1.0,
       lightIlluminationIntensity: 1.0,
+      lightBackgroundIntensity: 1.0,
       backgroundGlow: 0.0,
       preloadShader: false,
     };
@@ -1758,6 +1760,16 @@ export class ShaderManager {
           toFiniteNumber(
             source.lightIlluminationIntensity,
             toFiniteNumber(base.lightIlluminationIntensity, 1),
+          ),
+        ),
+      ),
+      lightBackgroundIntensity: Math.max(
+        0,
+        Math.min(
+          5,
+          toFiniteNumber(
+            source.lightBackgroundIntensity,
+            toFiniteNumber(base.lightBackgroundIntensity, 1),
           ),
         ),
       ),
