@@ -1441,7 +1441,7 @@
       "channels": {
         "iChannel0": {
           "mode": "empty",
-          "path": "https://www.shadertoy.com/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png",
+          "path": "modules/indy-fx/images/smallout.webp",
           "source": "",
           "channels": {},
           "size": 512
@@ -4205,7 +4205,7 @@
             },
             "iChannel1": {
               "mode": "image",
-              "path": "https://www.shadertoy.com/media/a/3871e838723dd6b166e490664eead8ec60aedd6b8d95bc8e2fe3f882f0fd90f0.jpg",
+              "path": "modules/indy-fx/images/terrain1.webp",
               "source": "",
               "channels": {},
               "size": 512,
@@ -4218,7 +4218,7 @@
             },
             "iChannel2": {
               "mode": "image",
-              "path": "https://www.shadertoy.com/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg",
+              "path": "modules/indy-fx/images/rocklichen.webp",
               "source": "",
               "channels": {},
               "size": 512,
@@ -4231,7 +4231,7 @@
             },
             "iChannel3": {
               "mode": "cubemap",
-              "path": "https://www.shadertoy.com/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png",
+              "path": "modules/indy-fx/images/smallout.webp",
               "source": "",
               "channels": {},
               "size": 512,
@@ -4348,7 +4348,7 @@
           "channels": {
             "iChannel0": {
               "mode": "image",
-              "path": "https://www.shadertoy.com/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png",
+              "path": "modules/indy-fx/images/rgbnoise.png",
               "source": "",
               "channels": {},
               "size": 512,
@@ -4492,3 +4492,4 @@
     }
   ]
 }
+

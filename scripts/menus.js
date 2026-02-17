@@ -842,6 +842,9 @@ export function createMenus({ moduleId, shaderManager }) {
         "rotateWithToken",
         "captureFlipHorizontal",
         "captureFlipVertical",
+        "convertToLightSource",
+        "lightUseIlluminationShader",
+        "lightUseBackgroundShader",
         "preloadShader",
       ]);
       for (const key of shaderManager.getImportedShaderDefaultKeys()) {

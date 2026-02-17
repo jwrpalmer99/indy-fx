@@ -49,6 +49,40 @@ const IMPORTED_NOISE_TEXTURE_SIZE = 1024;
 const PLACEABLE_IMAGE_CAPTURE_SIZE = 1024;
 const PLACEABLE_IMAGE_PREVIEW_SIZE = 512;
 const SHADERTOY_MEDIA_ORIGIN = "https://www.shadertoy.com";
+const SHADERTOY_MEDIA_REPLACEMENTS = new Map([
+  [
+    "https://www.shadertoy.com/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png",
+    "modules/indy-fx/images/rgbnoise.webp",
+  ],
+  [
+    "https://www.shadertoy.com/media/a/3871e838723dd6b166e490664eead8ec60aedd6b8d95bc8e2fe3f882f0fd90f0.jpg",
+    "modules/indy-fx/images/terrain1.webp",
+  ],
+  [
+    "https://www.shadertoy.com/media/a/fb918796edc3d2221218db0811e240e72e340350008338b0c07a52bd353666a6.jpg",
+    "modules/indy-fx/images/rocklichen.webp",
+  ],
+  [
+    "https://www.shadertoy.com/media/a/94284d43be78f00eb6b298e6d78656a1b34e2b91b34940d02f1ca8b22310e8a0.png",
+    "modules/indy-fx/images/smallout.webp",
+  ],
+  [
+    "https://www.shadertoy.com/media/a/cd4c518bc6ef165c39d4405b347b51ba40f8d7a065ab0e8d2e4f422cbc1e8a43.jpg",
+    "modules/indy-fx/images/bark.webp",
+  ],
+  [
+    "https://www.shadertoy.com/media/a/0c7bf5fe9462d5bffbd11126e82908e39be3ce56220d900f633d58fb432e56f5.png",
+    "modules/indy-fx/images/bwnoisesmall.webp",
+  ],
+  [
+    "https://www.shadertoy.com/media/a/f735bee5b64ef98879dc618b016ecf7939a5756040c2cde21ccb15e69a6e1cfb.png",
+    "modules/indy-fx/images/rgbnoisesmall.webp",
+  ],
+  [
+    "https://www.shadertoy.com/media/a/1f7dca9c22f324751f2a5a59c9b181dfe3b5564a04b724c657732d0bf09c99db.jpg",
+    "modules/indy-fx/images/desk.webp",
+  ],
+]);
 const THUMBNAIL_SIZE = 256;
 const THUMBNAIL_CAPTURE_SECONDS = 1.0;
 const THUMBNAIL_WEBP_QUALITY = 0.78;
@@ -91,7 +125,10 @@ const IMPORTED_SHADER_DEFAULT_KEYS = [
   "displayTimeMs",
   "easeInMs",
   "easeOutMs",
-"preloadShader",
+  "convertToLightSource",
+  "lightUseIlluminationShader",
+  "lightUseBackgroundShader",
+  "preloadShader",
 ];
 
 function isDebugLoggingEnabled(moduleId = "indy-fx") {
@@ -541,7 +578,7 @@ function normalizeChannelInput(raw, depth = 0) {
   }
   return {
     mode: normalizeChannelMode(raw.mode),
-    path: String(raw.path ?? "").trim(),
+    path: applyKnownShaderToyMediaReplacement(String(raw.path ?? "").trim()),
     source: String(raw.source ?? "").trim(),
     channels: nested,
     size: normalizeBufferSize(raw.size, DEFAULT_BUFFER_SIZE),
@@ -599,12 +636,43 @@ function extractShaderToyId(input) {
   return "";
 }
 
+function normalizeShaderToyMediaLookupKey(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+
+  let candidate = raw;
+  if (/^\/?media\//i.test(raw)) {
+    candidate = raw.startsWith("/")
+      ? `${SHADERTOY_MEDIA_ORIGIN}${raw}`
+      : `${SHADERTOY_MEDIA_ORIGIN}/${raw}`;
+  }
+
+  try {
+    const url = new URL(candidate);
+    const origin = `${url.protocol}//${url.host}`.toLowerCase();
+    return `${origin}${url.pathname}`.toLowerCase();
+  } catch (_err) {
+    return raw.replace(/[?#].*$/, "").toLowerCase();
+  }
+}
+
+function applyKnownShaderToyMediaReplacement(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const key = normalizeShaderToyMediaLookupKey(raw);
+  return SHADERTOY_MEDIA_REPLACEMENTS.get(key) ?? raw;
+}
+
 function toShaderToyMediaUrl(src) {
   const value = String(src ?? "").trim();
   if (!value) return "";
-  if (/^https?:\/\//i.test(value)) return value;
-  if (value.startsWith("/")) return `${SHADERTOY_MEDIA_ORIGIN}${value}`;
-  return `${SHADERTOY_MEDIA_ORIGIN}/${value.replace(/^\/+/, "")}`;
+  if (/^https?:\/\//i.test(value)) return applyKnownShaderToyMediaReplacement(value);
+  if (value.startsWith("/")) {
+    return applyKnownShaderToyMediaReplacement(`${SHADERTOY_MEDIA_ORIGIN}${value}`);
+  }
+  return applyKnownShaderToyMediaReplacement(
+    `${SHADERTOY_MEDIA_ORIGIN}/${value.replace(/^\/+/, "")}`,
+  );
 }
 
 function inferShaderToyVolumeNoiseMode(input, src = "") {
@@ -772,6 +840,7 @@ export class ShaderManager {
     this._thumbnailRendererSize = 0;
     this._lastSetImportedRecordsMetrics = null;
     this._registeredShaderRecordSettings = new Set();
+    this._channelTextureLoadErrorNotified = new Set();
   
     this._ensurePreviewReferenceTexturesLoaded();
   }
@@ -873,6 +942,30 @@ export class ShaderManager {
 
     base.update?.();
     return texture;
+  }
+
+  _notifyImportedChannelTextureLoadError({
+    shaderId = "",
+    shaderLabel = "",
+    channelKey = "",
+    path = "",
+  } = {}) {
+    const normalizedPath = String(path ?? "").trim();
+    if (!normalizedPath) return;
+
+    const displayShader =
+      String(shaderLabel ?? "").trim() ||
+      String(shaderId ?? "").trim() ||
+      "Imported Shader";
+    const displayChannel = String(channelKey ?? "").trim() || "iChannel?";
+    const dedupeKey = `${displayShader}|${displayChannel}|${normalizedPath}`;
+    if (this._channelTextureLoadErrorNotified.has(dedupeKey)) return;
+    this._channelTextureLoadErrorNotified.add(dedupeKey);
+
+    globalThis.ui?.notifications?.error?.(
+      `Failed to load shader channel image for "${displayShader}" ` +
+        `(${displayChannel}): ${normalizedPath}`,
+    );
   }
 
   _ensureThumbnailRenderer(size = THUMBNAIL_SIZE) {
@@ -1410,7 +1503,10 @@ export class ShaderManager {
         game.settings.get(this.moduleId, "shaderEaseOutMs"),
         250,
       ),
-    preloadShader: false,
+      convertToLightSource: false,
+      lightUseIlluminationShader: true,
+      lightUseBackgroundShader: true,
+      preloadShader: false,
     };
   }
 
@@ -1608,7 +1704,25 @@ export class ShaderManager {
         0,
         Math.min(60000, toFiniteNumber(source.easeOutMs, base.easeOutMs)),
       ),
-    preloadShader:
+      convertToLightSource:
+        source.convertToLightSource === true ||
+        source.convertToLightSource === 1 ||
+        source.convertToLightSource === "1" ||
+        source.convertToLightSource === "true" ||
+        source.convertToLightSource === "on",
+      lightUseIlluminationShader:
+        source.lightUseIlluminationShader === true ||
+        source.lightUseIlluminationShader === 1 ||
+        source.lightUseIlluminationShader === "1" ||
+        source.lightUseIlluminationShader === "true" ||
+        source.lightUseIlluminationShader === "on",
+      lightUseBackgroundShader:
+        source.lightUseBackgroundShader === true ||
+        source.lightUseBackgroundShader === 1 ||
+        source.lightUseBackgroundShader === "1" ||
+        source.lightUseBackgroundShader === "true" ||
+        source.lightUseBackgroundShader === "on",
+      preloadShader:
         source.preloadShader === true ||
         source.preloadShader === 1 ||
         source.preloadShader === "1" ||
@@ -3625,7 +3739,10 @@ export class ShaderManager {
           const resolved = this.resolveImportedChannelTexture(
             childCfg,
             depth + 1,
-            options,
+            {
+              ...options,
+              channelKey: key,
+            },
           );
           applyChannelSamplerToTexture(resolved.texture, childCfg, childMode);
           runtimeBuffer.setChannel(
@@ -3754,8 +3871,16 @@ export class ShaderManager {
       if (base) {
         applyChannelSamplerToTexture(texture, channelConfig, mode);
         base.once?.("error", (err) => {
+          this._notifyImportedChannelTextureLoadError({
+            shaderId: options?.shaderId,
+            shaderLabel: options?.shaderLabel,
+            channelKey: options?.channelKey,
+            path,
+          });
           console.error(
-            `${this.moduleId} | Failed to load imported shader channel image: ${path}`,
+            `${this.moduleId} | Failed to load imported shader channel image ` +
+              `(${String(options?.shaderLabel ?? options?.shaderId ?? "Imported Shader")} ` +
+              `${String(options?.channelKey ?? "iChannel?")}): ${path}`,
             err,
           );
         });
@@ -3867,6 +3992,9 @@ export class ShaderManager {
           effectiveChannelCfg,
           0,
           {
+            shaderId: def.id,
+            shaderLabel: def.label,
+            channelKey: key,
             previewSceneCaptureTexture: cfg.previewSceneCaptureTexture,
             previewPlaceableTexture: cfg.previewPlaceableTexture,
             previewMode: cfg.previewMode === true,

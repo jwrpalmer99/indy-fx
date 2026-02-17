@@ -1820,6 +1820,7 @@ uniform vec3 cpfxVolumeLayout0;
 uniform vec3 cpfxVolumeLayout1;
 uniform vec3 cpfxVolumeLayout2;
 uniform vec3 cpfxVolumeLayout3;
+uniform float intensity;
 uniform float shaderScale;
 uniform vec2 shaderScaleXY;
 uniform float shaderRotation;
@@ -2183,6 +2184,65 @@ void main() {
   mainImage(shaderColor, fragCoord);
   gl_FragColor = shaderColor;
 }`;
+}
+
+const LIGHT_LAYER_TYPES = new Set(["coloration", "illumination", "background"]);
+
+function normalizeLightLayerType(value) {
+  const layer = String(value ?? "coloration").trim().toLowerCase();
+  return LIGHT_LAYER_TYPES.has(layer) ? layer : "coloration";
+}
+
+function getLightLayerColorExpression(layerType) {
+  if (layerType === "illumination") return "shaderColor.rgb * srcAlpha";
+  if (layerType === "background") {
+    return "mix(baseColor.rgb, shaderColor.rgb, clamp(backgroundAlpha * srcAlpha, 0.0, 1.0))";
+  }
+  return "shaderColor.rgb * color * colorationAlpha * srcAlpha";
+}
+
+export function adaptShaderToyLightFragment(
+  source,
+  { layerType = "coloration" } = {},
+) {
+  const resolvedLayer = normalizeLightLayerType(layerType);
+  const colorExpression = getLightLayerColorExpression(resolvedLayer);
+  let fragment = adaptShaderToyBufferFragment(source);
+
+  fragment = fragment.replace(
+    /varying\s+vec2\s+vTextureCoord\s*;/,
+    "varying vec2 vUvs;\nvarying vec2 vSamplerUvs;\nvarying float vDepth;",
+  );
+  fragment = fragment.replace(/\bvTextureCoord\b/g, "vUvs");
+  fragment = fragment.replace(
+    /uniform\s+vec2\s+resolution\s*;/,
+    `uniform vec2 resolution;
+uniform sampler2D primaryTexture;
+uniform sampler2D depthTexture;
+uniform float depthElevation;
+uniform float attenuation;
+uniform float colorationAlpha;
+uniform float backgroundAlpha;
+uniform vec3 color;`,
+  );
+
+  fragment = fragment.replace(
+    /\bgl_FragColor\s*=\s*shaderColor\s*;\s*}/,
+    `float srcAlpha = clamp(shaderColor.a, 0.0, 1.0);
+  vec4 baseColor = texture2D(primaryTexture, vSamplerUvs);
+  float dist = distance(vUvs, vec2(0.5)) * 2.0;
+  vec4 depthColor = texture2D(depthTexture, vSamplerUvs);
+  float depth = smoothstep(0.0, 1.0, vDepth)
+    * step(depthColor.g, depthElevation)
+    * step(depthElevation, (254.5 / 255.0) - depthColor.r);
+  if (attenuation != 0.0) depth *= smoothstep(1.0, 1.0 - attenuation, dist);
+  float intensityGain = max(intensity, 0.0);
+  vec3 finalColor = ${colorExpression} * intensityGain;
+  gl_FragColor = vec4(finalColor * depth, depth);
+}`,
+  );
+
+  return fragment;
 }
 
 

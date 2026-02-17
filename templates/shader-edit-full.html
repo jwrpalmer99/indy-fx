@@ -233,6 +233,28 @@
           <input type="checkbox" name="default_preloadShader" {{#if shader.defaults.preloadShader}}checked{{/if}} />
         </div>
       </div>
+
+      <div class="form-group">
+        <label>Convert to Light Source</label>
+        <div class="form-fields">
+          <input type="checkbox" name="default_convertToLightSource" {{#if shader.defaults.convertToLightSource}}checked{{/if}} />
+        </div>
+      </div>
+      <details style="margin:0.2rem 0 0.3rem 0;" data-parent-toggle="default_convertToLightSource" {{#if shader.defaults.convertToLightSource}}open{{/if}}>
+        <summary style="cursor:pointer;user-select:none;">Light source options</summary>
+        <div class="form-group" style="margin-top:0.35rem;">
+          <label>Use Illumination Shader</label>
+          <div class="form-fields">
+            <input type="checkbox" name="default_lightUseIlluminationShader" {{#if shader.defaults.lightUseIlluminationShader}}checked{{/if}} />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Use Background Shader</label>
+          <div class="form-fields">
+            <input type="checkbox" name="default_lightUseBackgroundShader" {{#if shader.defaults.lightUseBackgroundShader}}checked{{/if}} />
+          </div>
+        </div>
+      </details>
     </div>
 
     <div style="display:flex;flex-direction:column;gap:0.65rem;min-height:0;">
