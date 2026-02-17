@@ -118,3 +118,4 @@ Notes:
 
 ## Related Docs
 - API/macros/options: `README_API.md`
+- Licensing/attributions: `license.md`
