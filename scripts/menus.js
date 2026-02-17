@@ -1791,7 +1791,7 @@ export function createMenus({ moduleId, shaderManager }) {
       let lastMs = performance.now();
       let destroyed = false;
       const tickWindowSize = 60;
-      let tickUiCounter = 0;
+      const perfUiUpdateIntervalMs = 1000;
       const perfStats = {
         stepSamples: [],
         stepSum: 0,
@@ -1799,6 +1799,7 @@ export function createMenus({ moduleId, shaderManager }) {
         renderSum: 0,
         totalSamples: [],
         totalSum: 0,
+        lastLabelUpdateMs: 0,
       };
 
       const pushPerfSample = (samplesKey, sumKey, value) => {
@@ -1818,7 +1819,7 @@ export function createMenus({ moduleId, shaderManager }) {
         perfStats.stepSum = 0;
         perfStats.renderSum = 0;
         perfStats.totalSum = 0;
-        tickUiCounter = 0;
+        perfStats.lastLabelUpdateMs = 0;
         if (previewPerf instanceof HTMLElement) {
           previewPerf.textContent = "Tick avg: -- ms";
         }
@@ -1837,7 +1838,15 @@ export function createMenus({ moduleId, shaderManager }) {
           previewPerf.textContent = "Tick avg: -- ms";
           return;
         }
-        if (!force && (tickUiCounter % 6) !== 0) return;
+        const nowMs = performance.now();
+        if (
+          !force &&
+          perfStats.lastLabelUpdateMs > 0 &&
+          (nowMs - perfStats.lastLabelUpdateMs) < perfUiUpdateIntervalMs
+        ) {
+          return;
+        }
+        perfStats.lastLabelUpdateMs = nowMs;
         const avgTotal = perfStats.totalSum / count;
         const avgStep = perfStats.stepSum / Math.max(1, perfStats.stepSamples.length);
         const avgRender = perfStats.renderSum / Math.max(1, perfStats.renderSamples.length);
@@ -1915,7 +1924,6 @@ export function createMenus({ moduleId, shaderManager }) {
           }
         }
         const tickElapsedMs = Math.max(0, performance.now() - tickStartMs);
-        tickUiCounter += 1;
         addTickSample({
           stepMs: stepElapsedMs,
           renderMs: renderElapsedMs,

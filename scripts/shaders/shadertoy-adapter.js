@@ -1118,16 +1118,106 @@ function applyCompatibilityRewrites(source) {
 
   // GLSL ES 1.00 does not support ES3-style array constructors, for example:
   // const vec2 hp[7] = vec2[7](...);
-  // const float[8] periods = float[8](...);
-  // const int[8] ids = int[8](...);
-  // Rewrite these to helper functions and indexed calls.
+  // float periods[8] = float[8](...);
+  // int ids[8] = int[]( ... );
+  // Also, some imported shaders build static lookup tables with:
+  // vec3 v[20]; v[0]=...; v[1]=...; ...
+  // Rewrite read-only static tables to helper functions and indexed calls.
   let arrayRewriteIndex = 0;
   let arrayHelpers = "";
   const rewrittenArrays = [];
-  const constArrayCtorRe =
-    /const\s+(?:(?:lowp|mediump|highp)\s+)?(float|int|vec2|vec3|vec4)\s*(?:\[\s*(\d+)\s*\])?\s+([A-Za-z_]\w*)\s*(?:\[\s*(\d+)\s*\])?\s*=\s*\1\s*\[\s*(\d*)\s*\]\s*\(([\s\S]*?)\)\s*;/g;
+  const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const reservedCaptureNames = new Set([
+    "if", "else", "for", "while", "do", "break", "continue", "return", "discard",
+    "const", "uniform", "varying", "attribute", "in", "out", "inout",
+    "true", "false", "int", "float", "bool", "vec2", "vec3", "vec4",
+    "ivec2", "ivec3", "ivec4", "bvec2", "bvec3", "bvec4",
+    "mat2", "mat3", "mat4", "sampler2D", "samplerCube",
+    "gl_FragCoord", "gl_FragColor", "gl_Position", "gl_PointCoord",
+    "iResolution", "iTime", "iTimeDelta", "iFrame", "iFrameRate",
+    "iChannel0", "iChannel1", "iChannel2", "iChannel3", "iChannelResolution",
+    "iMouse", "iDate", "uTime", "resolution", "intensity",
+  ]);
+  const inferIdentifierType = (name, sourceText) => {
+    const re = new RegExp(
+      String.raw`(?:^|[;{}(]\s*)(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(float|int|bool|vec2|vec3|vec4|mat2|mat3|mat4)\s+${escapeRegex(name)}\b`,
+      "g",
+    );
+    let out = null;
+    let m;
+    while ((m = re.exec(String(sourceText ?? ""))) !== null) {
+      out = String(m[1] ?? "").trim() || out;
+    }
+    return out || "float";
+  };
+  const collectCapturedIdentifiers = (values, sourceText) => {
+    const joined = String(values?.join("\n") ?? "");
+    const out = [];
+    const seen = new Set();
+    const idRe = /[A-Za-z_]\w*/g;
+    let m;
+    while ((m = idRe.exec(joined)) !== null) {
+      const name = String(m[0] ?? "").trim();
+      if (!name || reservedCaptureNames.has(name) || seen.has(name)) continue;
+      let prev = m.index - 1;
+      while (prev >= 0 && /\s/.test(joined[prev])) prev -= 1;
+      if (prev >= 0 && joined[prev] === ".") continue; // swizzle/member access
+      let nextIdx = m.index + name.length;
+      while (nextIdx < joined.length && /\s/.test(joined[nextIdx])) nextIdx += 1;
+      if (nextIdx < joined.length && joined[nextIdx] === "(") continue; // function call
+      seen.add(name);
+      out.push({ name, type: inferIdentifierType(name, sourceText) });
+    }
+    return out;
+  };
+  const isIndexWriteRange = (idx, ranges) =>
+    ranges.some((r) => idx >= r.start && idx < r.end);
+  const hasBareArrayUseOutsideRanges = (text, arrayName, ignoreRanges = []) => {
+    const sourceText = String(text ?? "");
+    const nameRe = new RegExp(`\\b${escapeRegex(arrayName)}\\b`, "g");
+    let m;
+    while ((m = nameRe.exec(sourceText)) !== null) {
+      const idx = m.index;
+      if (isIndexWriteRange(idx, ignoreRanges)) continue;
+      let nextIdx = idx + String(arrayName).length;
+      while (nextIdx < sourceText.length && /\s/.test(sourceText[nextIdx])) nextIdx += 1;
+      if (nextIdx < sourceText.length && sourceText[nextIdx] === "[") continue;
+      return true;
+    }
+    return false;
+  };
+  const hasDynamicWritesOutsideRanges = (text, arrayName, ignoreRanges = []) => {
+    const writeRe = new RegExp(
+      `\\b${escapeRegex(arrayName)}\\s*\\[\\s*[^\\]]+\\s*\\]\\s*(?:=|\\+=|-=|\\*=|/=|%=|\\+\\+|--)`,
+      "g",
+    );
+    let m;
+    while ((m = writeRe.exec(text)) !== null) {
+      const idx = m.index;
+      if (isIndexWriteRange(idx, ignoreRanges)) continue;
+      return true;
+    }
+    return false;
+  };
+  const buildArrayHelper = (valueType, values, captures = []) => {
+    const helperName = `cpfx_arr_${valueType}_${arrayRewriteIndex++}`;
+    const params = [
+      "int idx",
+      ...captures.map((c) => `${String(c?.type ?? "float")} ${String(c?.name ?? "").trim()}`),
+    ]
+      .filter((v) => String(v ?? "").trim().length > 0)
+      .join(", ");
+    let helper = `${valueType} ${helperName}(${params}){\n`;
+    for (let i = 0; i < values.length; i += 1) {
+      helper += `  if (idx == ${i}) return ${values[i]};\n`;
+    }
+    helper += `  return ${values[values.length - 1]};\n}\n`;
+    return { helperName, helper };
+  };
+  const arrayCtorRe =
+    /\b(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(float|int|vec2|vec3|vec4)\s*(?:\[\s*(\d+)\s*\])?\s+([A-Za-z_]\w*)\s*(?:\[\s*(\d+)\s*\])?\s*=\s*\1\s*\[\s*(\d*)\s*\]\s*\(([\s\S]*?)\)\s*;/g;
   next = next.replace(
-    constArrayCtorRe,
+    arrayCtorRe,
     (
       full,
       valueTypeRaw,
@@ -1136,43 +1226,113 @@ function applyCompatibilityRewrites(source) {
       nameCountRaw,
       ctorCountRaw,
       initRaw,
+      offsetRaw,
     ) => {
       const valueType = String(valueTypeRaw ?? "").trim();
       const arrayName = String(arrayNameRaw ?? "").trim();
       const typeCount = Number(typeCountRaw);
       const nameCount = Number(nameCountRaw);
       const ctorCount = Number(ctorCountRaw);
-      const count =
+      const explicitCount =
         Number.isFinite(typeCount) && typeCount > 0
           ? typeCount
           : Number.isFinite(nameCount) && nameCount > 0
             ? nameCount
             : ctorCount;
-      if (!arrayName || !valueType || !Number.isFinite(count) || count <= 0) return full;
+      if (!arrayName || !valueType) return full;
+      const offset = Number(offsetRaw);
+      const declStart = Number.isFinite(offset) ? offset : -1;
+      const declEnd = declStart >= 0 ? declStart + String(full).length : -1;
+      const ignoreRanges = declStart >= 0 && declEnd >= 0 ? [{ start: declStart, end: declEnd }] : [];
+      if (hasDynamicWritesOutsideRanges(next, arrayName, ignoreRanges)) return full;
+      if (hasBareArrayUseOutsideRanges(next, arrayName, ignoreRanges)) return full;
 
-      const values = splitTopLevel(String(initRaw ?? ""), ",")
+      const rawValues = splitTopLevel(String(initRaw ?? ""), ",")
         .map((v) => v.trim())
-        .filter((v) => v.length > 0)
-        .slice(0, count);
+        .filter((v) => v.length > 0);
+      let count = Number.isFinite(explicitCount) && explicitCount > 0
+        ? explicitCount
+        : rawValues.length;
+      if (!Number.isFinite(count) || count <= 0) return full;
+      const values = rawValues.slice(0, count);
       if (values.length < count) return full;
+      const captures = collectCapturedIdentifiers(values, next);
 
-      const helperName = `cpfx_arr_${valueType}_${arrayRewriteIndex++}`;
-      let helper = `${valueType} ${helperName}(int idx){\n`;
-      for (let i = 0; i < count; i += 1) {
-        helper += `  if (idx == ${i}) return ${values[i]};\n`;
-      }
-      helper += `  return ${values[count - 1]};\n}\n`;
-
+      const built = buildArrayHelper(valueType, values, captures);
+      const helperName = built.helperName;
+      const helper = built.helper;
       arrayHelpers += helper;
-      rewrittenArrays.push({ name: arrayName, helperName });
+      rewrittenArrays.push({ name: arrayName, helperName, captures });
       return "";
     },
   );
 
+  // Static local table declarations initialized by constant-index writes:
+  //   vec3 v[20];
+  //   v[0]=...; v[1]=...; ... v[19]=...;
+  // Rewrite these read-only tables to helper functions as well.
+  const staticDeclRe =
+    /\b(?:(?:lowp|mediump|highp)\s+)?(float|int|vec2|vec3|vec4)\s+([A-Za-z_]\w*)\s*\[\s*(\d+)\s*\]\s*;/g;
+  const rangesToDelete = [];
+  let declMatch;
+  while ((declMatch = staticDeclRe.exec(next)) !== null) {
+    const valueType = String(declMatch[1] ?? "").trim();
+    const arrayName = String(declMatch[2] ?? "").trim();
+    const size = Number(declMatch[3]);
+    const declStart = Number(declMatch.index);
+    const declText = String(declMatch[0] ?? "");
+    const declEnd = declStart + declText.length;
+    if (!arrayName || !valueType || !Number.isFinite(size) || size <= 0 || size > 256) continue;
+    if (rewrittenArrays.some((entry) => entry.name === arrayName)) continue;
+
+    const assignRe = new RegExp(
+      `\\b${escapeRegex(arrayName)}\\s*\\[\\s*(\\d+)\\s*\\]\\s*=\\s*([^;]+);`,
+      "g",
+    );
+    const values = new Array(size);
+    const assignmentRanges = [];
+    let assignMatch;
+    while ((assignMatch = assignRe.exec(next)) !== null) {
+      const idx = Number(assignMatch[1]);
+      if (!Number.isFinite(idx) || idx < 0 || idx >= size) continue;
+      if (values[idx] !== undefined) continue;
+      values[idx] = String(assignMatch[2] ?? "").trim();
+      assignmentRanges.push({
+        start: assignMatch.index,
+        end: assignMatch.index + String(assignMatch[0] ?? "").length,
+      });
+    }
+    if (values.some((v) => typeof v !== "string" || v.length === 0)) continue;
+    if (assignmentRanges.length < size) continue;
+
+    const ignoreRanges = [{ start: declStart, end: declEnd }, ...assignmentRanges];
+    if (hasDynamicWritesOutsideRanges(next, arrayName, ignoreRanges)) continue;
+    if (hasBareArrayUseOutsideRanges(next, arrayName, ignoreRanges)) continue;
+    const captures = collectCapturedIdentifiers(values, next);
+
+    const built = buildArrayHelper(valueType, values, captures);
+    arrayHelpers += built.helper;
+    rewrittenArrays.push({ name: arrayName, helperName: built.helperName, captures });
+    rangesToDelete.push({ start: declStart, end: declEnd }, ...assignmentRanges);
+  }
+
+  if (rangesToDelete.length > 0) {
+    rangesToDelete.sort((a, b) => b.start - a.start);
+    for (const range of rangesToDelete) {
+      next = `${next.slice(0, range.start)}${next.slice(range.end)}`;
+    }
+  }
+
   if (rewrittenArrays.length > 0) {
     for (const entry of rewrittenArrays) {
       const idxRe = new RegExp(`\\b${entry.name}\\s*\\[\\s*([^\\]]+)\\s*\\]`, "g");
-      next = next.replace(idxRe, `${entry.helperName}(int($1))`);
+      const captureArgs = Array.isArray(entry?.captures)
+        ? entry.captures
+            .map((c) => String(c?.name ?? "").trim())
+            .filter((v) => v.length > 0)
+        : [];
+      const argTail = captureArgs.length > 0 ? `, ${captureArgs.join(", ")}` : "";
+      next = next.replace(idxRe, `${entry.helperName}(int($1)${argTail})`);
     }
     next = `${arrayHelpers}\n${next}`;
   }
