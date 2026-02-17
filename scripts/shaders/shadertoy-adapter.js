@@ -1688,6 +1688,15 @@ vec2 cpfx_channelResolution(int idx) {
     (idx == 1 ? iChannelResolution[1].xy :
       (idx == 2 ? iChannelResolution[2].xy : iChannelResolution[3].xy));
 }
+float cpfx_channelVflip(int idx) {
+  return idx == 0 ? cpfxSamplerVflip0 :
+    (idx == 1 ? cpfxSamplerVflip1 :
+      (idx == 2 ? cpfxSamplerVflip2 : cpfxSamplerVflip3));
+}
+vec2 cpfx_applyChannelUv(int idx, vec2 uv) {
+  if (cpfx_channelVflip(idx) > 0.5) uv.y = 1.0 - uv.y;
+  return uv;
+}
 
 vec4 cpfx_sampleVolumeAtlas(sampler2D s, vec3 uvw, int idx) {
   vec3 layout = cpfx_volumeLayout(idx);
@@ -1707,8 +1716,8 @@ vec4 cpfx_sampleVolumeAtlas(sampler2D s, vec3 uvw, int idx) {
 
   vec2 tile0 = vec2(mod(z0, tilesX), floor(z0 / tilesX));
   vec2 tile1 = vec2(mod(z1, tilesX), floor(z1 / tilesX));
-  vec2 uv0 = tile0 * tileSize + inset + xy * inner;
-  vec2 uv1 = tile1 * tileSize + inset + xy * inner;
+  vec2 uv0 = cpfx_applyChannelUv(idx, tile0 * tileSize + inset + xy * inner);
+  vec2 uv1 = cpfx_applyChannelUv(idx, tile1 * tileSize + inset + xy * inner);
   return mix(texture2D(s, uv0), texture2D(s, uv1), f);
 }
 `;
@@ -1716,13 +1725,13 @@ vec4 cpfx_sampleVolumeAtlas(sampler2D s, vec3 uvw, int idx) {
   const channelFns = [];
   for (let idx = 0; idx <= 3; idx += 1) {
     channelFns.push(`
-vec4 cpfx_textureCh${idx}(vec2 uv) { return textureCompat(iChannel${idx}, uv); }
+vec4 cpfx_textureCh${idx}(vec2 uv) { return textureCompat(iChannel${idx}, cpfx_applyChannelUv(${idx}, uv)); }
 vec4 cpfx_textureCh${idx}(vec2 uv, float bias) { return cpfx_textureCh${idx}(uv); }
 vec4 cpfx_textureCh${idx}(vec3 v) {
   float t = cpfx_channelType(${idx});
   if (t > 1.5) return cpfx_sampleVolumeAtlas(iChannel${idx}, v, ${idx});
   if (t > 0.5) return textureCompat(iChannel${idx}, v);
-  return textureCompat(iChannel${idx}, v.xy);
+  return textureCompat(iChannel${idx}, cpfx_applyChannelUv(${idx}, v.xy));
 }
 vec4 cpfx_textureCh${idx}(vec3 v, float bias) { return cpfx_textureCh${idx}(v); }
 vec4 cpfx_textureLodCh${idx}(vec2 uv, float lod) { return cpfx_textureCh${idx}(uv); }
@@ -1794,6 +1803,10 @@ uniform vec3 cpfxVolumeLayout0;
 uniform vec3 cpfxVolumeLayout1;
 uniform vec3 cpfxVolumeLayout2;
 uniform vec3 cpfxVolumeLayout3;
+uniform float cpfxSamplerVflip0;
+uniform float cpfxSamplerVflip1;
+uniform float cpfxSamplerVflip2;
+uniform float cpfxSamplerVflip3;
 uniform float debugMode;
 uniform float intensity;
 uniform float shaderScale;
@@ -1916,6 +1929,7 @@ vec4 cpfx_texelFetch(sampler2D s, int channelIndex, ivec2 p, int lod) {
   );
   res = max(res, vec2(1.0));
   vec2 uv = (vec2(p) + 0.5) / res;
+  if (cpfx_channelVflip(idx) > 0.5) uv.y = 1.0 - uv.y;
   return textureCompat(s, uv);
 }
 ivec2 cpfx_textureSize(sampler2D s, int channelIndex, int lod) {
@@ -2382,6 +2396,10 @@ uniform vec3 cpfxVolumeLayout0;
 uniform vec3 cpfxVolumeLayout1;
 uniform vec3 cpfxVolumeLayout2;
 uniform vec3 cpfxVolumeLayout3;
+uniform float cpfxSamplerVflip0;
+uniform float cpfxSamplerVflip1;
+uniform float cpfxSamplerVflip2;
+uniform float cpfxSamplerVflip3;
 uniform float intensity;
 uniform float shaderScale;
 uniform vec2 shaderScaleXY;
@@ -2503,6 +2521,7 @@ vec4 cpfx_texelFetch(sampler2D s, int channelIndex, ivec2 p, int lod) {
   );
   res = max(res, vec2(1.0));
   vec2 uv = (vec2(p) + 0.5) / res;
+  if (cpfx_channelVflip(idx) > 0.5) uv.y = 1.0 - uv.y;
   return textureCompat(s, uv);
 }
 ivec2 cpfx_textureSize(sampler2D s, int channelIndex, int lod) {

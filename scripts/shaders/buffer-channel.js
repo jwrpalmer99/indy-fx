@@ -4,6 +4,9 @@ import { adaptShaderToyBufferFragment } from "./shadertoy-adapter.js";
 
 const CHANNEL_INDICES = [0, 1, 2, 3];
 const MODULE_ID = "indy-fx";
+const PIXI_TEXTURE_TYPES = typeof PIXI !== "undefined" ? PIXI?.TYPES ?? {} : {};
+const PIXI_FLOAT_TYPE = PIXI_TEXTURE_TYPES?.FLOAT ?? null;
+const PIXI_HALF_FLOAT_TYPE = PIXI_TEXTURE_TYPES?.HALF_FLOAT ?? null;
 
 function isBufferDebugEnabled() {
   try {
@@ -25,22 +28,103 @@ function getTextureSize(texture, fallback = 2) {
   return [Math.max(1, w), Math.max(1, h)];
 }
 
+function getRendererGlContext() {
+  const renderer = canvas?.app?.renderer;
+  const gl = renderer?.gl ?? renderer?.context?.gl ?? null;
+  return { renderer, gl };
+}
+
+function canRenderType(gl, type) {
+  if (!gl || !type) return false;
+  try {
+    const isWebGL2 =
+      typeof WebGL2RenderingContext !== "undefined" &&
+      gl instanceof WebGL2RenderingContext;
+    if (isWebGL2) {
+      if (type === PIXI_FLOAT_TYPE) {
+        return !!gl.getExtension("EXT_color_buffer_float");
+      }
+      if (type === PIXI_HALF_FLOAT_TYPE) {
+        return (
+          !!gl.getExtension("EXT_color_buffer_float") ||
+          !!gl.getExtension("EXT_color_buffer_half_float")
+        );
+      }
+      return false;
+    }
+
+    if (type === PIXI_FLOAT_TYPE) {
+      return (
+        !!gl.getExtension("OES_texture_float") &&
+        !!gl.getExtension("WEBGL_color_buffer_float")
+      );
+    }
+    if (type === PIXI_HALF_FLOAT_TYPE) {
+      return (
+        !!gl.getExtension("OES_texture_half_float") &&
+        !!gl.getExtension("EXT_color_buffer_half_float")
+      );
+    }
+  } catch (_err) {
+    return false;
+  }
+  return false;
+}
+
+function makeRenderTexture(width, height, type = null) {
+  const targetWidth = Math.max(2, Math.round(Number(width) || 2));
+  const targetHeight = Math.max(2, Math.round(Number(height) || 2));
+  const options = {
+    width: targetWidth,
+    height: targetHeight,
+    resolution: 1,
+    scaleMode: PIXI.SCALE_MODES.NEAREST,
+  };
+  if (type) options.type = type;
+  if (PIXI.FORMATS?.RGBA !== undefined) options.format = PIXI.FORMATS.RGBA;
+  return PIXI.RenderTexture.create(options);
+}
+
+function chooseBufferRenderTextureType() {
+  const { gl } = getRendererGlContext();
+  if (!gl) return null;
+  if (PIXI_FLOAT_TYPE && canRenderType(gl, PIXI_FLOAT_TYPE)) return PIXI_FLOAT_TYPE;
+  if (PIXI_HALF_FLOAT_TYPE && canRenderType(gl, PIXI_HALF_FLOAT_TYPE)) {
+    return PIXI_HALF_FLOAT_TYPE;
+  }
+  return null;
+}
+
 export class ShaderToyBufferChannel {
-  constructor({ source, size = 512 } = {}) {
-    this.size = Math.max(2, Math.round(Number(size) || 512));
+  constructor({ source, size = 512, width = null, height = null } = {}) {
+    const fallbackSize = Math.max(2, Math.round(Number(size) || 512));
+    const widthRaw = Number(width);
+    const heightRaw = Number(height);
+    this.width = Math.max(
+      2,
+      Math.round(
+        Number.isFinite(widthRaw) && widthRaw > 0 ? widthRaw : fallbackSize,
+      ),
+    );
+    this.height = Math.max(
+      2,
+      Math.round(
+        Number.isFinite(heightRaw) && heightRaw > 0 ? heightRaw : fallbackSize,
+      ),
+    );
+    this.size = Math.max(this.width, this.height);
     this.time = 0;
-    this.texture = PIXI.RenderTexture.create({
-      width: this.size,
-      height: this.size,
-      resolution: 1,
-      scaleMode: PIXI.SCALE_MODES.NEAREST,
-    });
-    this._historyTexture = PIXI.RenderTexture.create({
-      width: this.size,
-      height: this.size,
-      resolution: 1,
-      scaleMode: PIXI.SCALE_MODES.NEAREST,
-    });
+    this._renderTextureType = chooseBufferRenderTextureType();
+    this.texture = makeRenderTexture(
+      this.width,
+      this.height,
+      this._renderTextureType,
+    );
+    this._historyTexture = makeRenderTexture(
+      this.width,
+      this.height,
+      this._renderTextureType,
+    );
     if (this.texture?.baseTexture) {
       this.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
       this.texture.baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF;
@@ -85,6 +169,10 @@ export class ShaderToyBufferChannel {
       cpfxVolumeLayout1: [1, 1, 1],
       cpfxVolumeLayout2: [1, 1, 1],
       cpfxVolumeLayout3: [1, 1, 1],
+      cpfxSamplerVflip0: 0,
+      cpfxSamplerVflip1: 0,
+      cpfxSamplerVflip2: 0,
+      cpfxSamplerVflip3: 0,
       shaderScale: 1.0,
       shaderScaleXY: [1, 1],
       shaderRotation: 0,
@@ -94,8 +182,8 @@ export class ShaderToyBufferChannel {
       cpfxForceOpaqueCaptureAlpha: 0,
       // Shadertoy-compatible buffer shaders commonly use iResolution.xy.
       // Keep it in sync with the internal buffer resolution.
-      iResolution: [this.size, this.size, 1],
-      resolution: [this.size, this.size],
+      iResolution: [this.width, this.height, 1],
+      resolution: [this.width, this.height],
     };
 
     const fragment = adaptShaderToyBufferFragment(source);
@@ -104,12 +192,12 @@ export class ShaderToyBufferChannel {
     const verts = new Float32Array([
       0,
       0,
-      this.size,
+      this.width,
       0,
-      this.size,
-      this.size,
+      this.width,
+      this.height,
       0,
-      this.size,
+      this.height,
     ]);
     const uvs = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
     const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
@@ -123,12 +211,15 @@ export class ShaderToyBufferChannel {
 
     this._historyCopySprite = new PIXI.Sprite(this.texture);
     this._historyCopySprite.eventMode = "none";
-    this._historyCopySprite.width = this.size;
-    this._historyCopySprite.height = this.size;
+    this._historyCopySprite.width = this.width;
+    this._historyCopySprite.height = this.height;
 
     this.update(0);
     debugBufferLog("buffer channel created", {
       size: this.size,
+      width: this.width,
+      height: this.height,
+      renderTextureType: this._renderTextureType,
       selfChannelCount: this._selfChannelIndices.size,
     });
   }
@@ -165,9 +256,10 @@ export class ShaderToyBufferChannel {
       Math.max(1, Number(layout?.[1]) || 1),
       Math.max(1, Number(layout?.[2]) || 1),
     ];
+    uniforms[`cpfxSamplerVflip${index}`] = options?.samplerVflip ? 1 : 0;
   }
 
-  setChannelSelf(index, resolution = [this.size, this.size]) {
+  setChannelSelf(index, resolution = [this.width, this.height]) {
     if (!this.mesh?.shader?.uniforms) return;
     if (!Number.isInteger(index) || index < 0 || index > 3) return;
     this._selfChannelIndices.add(index);
@@ -176,6 +268,7 @@ export class ShaderToyBufferChannel {
     this._setChannelResolution(index, resolution);
     uniforms[`cpfxChannelType${index}`] = 0;
     uniforms[`cpfxVolumeLayout${index}`] = [1, 1, 1];
+    uniforms[`cpfxSamplerVflip${index}`] = 0;
   }
 
   update(dtSeconds = 1 / 60, renderer = canvas?.app?.renderer) {

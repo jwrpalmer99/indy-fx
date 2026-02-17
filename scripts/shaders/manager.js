@@ -3598,7 +3598,35 @@ export class ShaderManager {
     const path = String(channelConfig?.path ?? "").trim();
     const resolvedPath = applyKnownShaderToyMediaReplacement(path);
     const source = String(channelConfig?.source ?? "").trim();
-    const size = normalizeBufferSize(channelConfig?.size, DEFAULT_BUFFER_SIZE);
+    const configuredSizeRaw = Number(channelConfig?.size);
+    const configuredSize = normalizeBufferSize(
+      configuredSizeRaw,
+      DEFAULT_BUFFER_SIZE,
+    );
+    // ShaderToy buffers are usually viewport-sized unless explicitly overridden.
+    // If channel size is missing/default, follow width/height hints from the active shader.
+    const hintSizeRaw = Number(options?.bufferSizeHint);
+    const hintSize = Number.isFinite(hintSizeRaw) && hintSizeRaw > 0
+      ? normalizeBufferSize(hintSizeRaw, configuredSize)
+      : configuredSize;
+    const hintWidthRaw = Number(
+      options?.bufferWidthHint ?? options?.bufferResolutionHint?.[0] ?? hintSize,
+    );
+    const hintHeightRaw = Number(
+      options?.bufferHeightHint ?? options?.bufferResolutionHint?.[1] ?? hintSize,
+    );
+    const hintedWidth = Number.isFinite(hintWidthRaw) && hintWidthRaw > 0
+      ? normalizeBufferSize(hintWidthRaw, configuredSize)
+      : configuredSize;
+    const hintedHeight = Number.isFinite(hintHeightRaw) && hintHeightRaw > 0
+      ? normalizeBufferSize(hintHeightRaw, configuredSize)
+      : configuredSize;
+    const useHintedSize =
+      !Number.isFinite(configuredSizeRaw) ||
+      configuredSizeRaw <= 0 ||
+      Math.round(configuredSizeRaw) === DEFAULT_BUFFER_SIZE;
+    const bufferWidth = useHintedSize ? hintedWidth : configuredSize;
+    const bufferHeight = useHintedSize ? hintedHeight : configuredSize;
     const emptyResult = {
       texture: getSolidTexture([0, 0, 0, 255], 2),
       resolution: [2, 2],
@@ -3829,7 +3857,12 @@ export class ShaderManager {
 
     if (mode === "buffer" && source) {
       try {
-        const runtimeBuffer = new ShaderToyBufferChannel({ source, size });
+        const runtimeBuffer = new ShaderToyBufferChannel({
+          source,
+          width: bufferWidth,
+          height: bufferHeight,
+          size: Math.max(bufferWidth, bufferHeight),
+        });
         const runtimeCaptureChannels = [];
         const runtimeBuffers = [];
         const runtimeImageChannels = [];
@@ -3841,15 +3874,15 @@ export class ShaderManager {
               path: "",
               source: "",
               channels: {},
-              size,
+              size: Math.max(bufferWidth, bufferHeight),
             };
           const childMode = normalizeChannelMode(childCfg?.mode ?? "none");
           if (childMode === "bufferSelf") {
             debugLog(this.moduleId, "binding buffer self-feedback channel", {
               channel: index,
-              size,
+              size: [bufferWidth, bufferHeight],
             });
-            runtimeBuffer.setChannelSelf(index, [size, size]);
+            runtimeBuffer.setChannelSelf(index, [bufferWidth, bufferHeight]);
             continue;
           }
           const resolved = this.resolveImportedChannelTexture(
@@ -3858,6 +3891,10 @@ export class ShaderManager {
             {
               ...options,
               channelKey: key,
+              bufferSizeHint: Math.max(bufferWidth, bufferHeight),
+              bufferWidthHint: bufferWidth,
+              bufferHeightHint: bufferHeight,
+              bufferResolutionHint: [bufferWidth, bufferHeight],
             },
           );
           applyChannelSamplerToTexture(resolved.texture, childCfg, childMode);
@@ -3871,6 +3908,7 @@ export class ShaderManager {
                 childMode === "volume"
                   ? resolveVolumeLayoutForChannel(childCfg, resolved.resolution)
                   : [1, 1, 1],
+              samplerVflip: parseBooleanLike(childCfg?.samplerVflip),
             },
           );
           if (resolved.runtimeCapture) {
@@ -3889,7 +3927,7 @@ export class ShaderManager {
         runtimeBuffers.push(runtimeBuffer);
         return {
           texture: runtimeBuffer.texture,
-          resolution: [size, size],
+          resolution: [bufferWidth, bufferHeight],
           runtimeCapture: false,
           runtimeCaptureSize: 0,
           runtimeCaptureChannels,
@@ -4063,6 +4101,14 @@ export class ShaderManager {
     }
     const resolvedWidth = Number(uniforms?.resolution?.[0] ?? cfg?.resolution?.[0] ?? 1);
     const resolvedHeight = Number(uniforms?.resolution?.[1] ?? cfg?.resolution?.[1] ?? 1);
+    const importedBufferResolutionHint = [
+      Math.max(2, normalizeBufferSize(resolvedWidth, DEFAULT_BUFFER_SIZE)),
+      Math.max(2, normalizeBufferSize(resolvedHeight, DEFAULT_BUFFER_SIZE)),
+    ];
+    const importedBufferSizeHint = Math.max(
+      importedBufferResolutionHint[0],
+      importedBufferResolutionHint[1],
+    );
     uniforms.iResolution = [resolvedWidth, resolvedHeight, 1];
     if (def.usesNoiseTexture && def.type !== "imported") {
       uniforms.iChannel0 = getNoiseTexture(256, "gray");
@@ -4077,6 +4123,7 @@ export class ShaderManager {
       uniforms.iTime = uniforms.uTime;
       const channelResolution = [];
       const channelTypes = [0, 0, 0, 0];
+      const channelVflips = [0, 0, 0, 0];
       const volumeLayouts = [
         [1, 1, 1],
         [1, 1, 1],
@@ -4119,6 +4166,10 @@ export class ShaderManager {
             captureRotationDeg: cfg.captureRotationDeg,
             captureFlipHorizontal: cfg.captureFlipHorizontal,
             captureFlipVertical: cfg.captureFlipVertical,
+            bufferSizeHint: importedBufferSizeHint,
+            bufferWidthHint: importedBufferResolutionHint[0],
+            bufferHeightHint: importedBufferResolutionHint[1],
+            bufferResolutionHint: importedBufferResolutionHint,
           },
         );
         applyChannelSamplerToTexture(
@@ -4138,6 +4189,9 @@ export class ShaderManager {
           effectiveChannelCfg?.mode ?? channelCfg?.mode ?? "none",
         );
         channelTypes[index] = getChannelTypeFromMode(resolvedMode);
+        channelVflips[index] = parseBooleanLike(effectiveChannelCfg?.samplerVflip)
+          ? 1
+          : 0;
         if (channelTypes[index] === 2) {
           volumeLayouts[index] = resolveVolumeLayoutForChannel(
             effectiveChannelCfg,
@@ -4156,6 +4210,7 @@ export class ShaderManager {
             volumeLayout: volumeLayouts[index],
             samplerFilter: normalizeSamplerFilter(effectiveChannelCfg?.samplerFilter, ""),
             samplerWrap: normalizeSamplerWrap(effectiveChannelCfg?.samplerWrap, ""),
+            samplerVflip: parseBooleanLike(effectiveChannelCfg?.samplerVflip),
             targetType: cfg.targetType ?? null,
             targetId: cfg.targetId ?? null,
             resolution: [resolvedWidth, resolvedHeight],
@@ -4202,6 +4257,10 @@ export class ShaderManager {
       uniforms.cpfxChannelType1 = Number(channelTypes[1] ?? 0);
       uniforms.cpfxChannelType2 = Number(channelTypes[2] ?? 0);
       uniforms.cpfxChannelType3 = Number(channelTypes[3] ?? 0);
+      uniforms.cpfxSamplerVflip0 = Number(channelVflips[0] ?? 0);
+      uniforms.cpfxSamplerVflip1 = Number(channelVflips[1] ?? 0);
+      uniforms.cpfxSamplerVflip2 = Number(channelVflips[2] ?? 0);
+      uniforms.cpfxSamplerVflip3 = Number(channelVflips[3] ?? 0);
       uniforms.cpfxVolumeLayout0 = volumeLayouts[0];
       uniforms.cpfxVolumeLayout1 = volumeLayouts[1];
       uniforms.cpfxVolumeLayout2 = volumeLayouts[2];
@@ -4211,6 +4270,7 @@ export class ShaderManager {
         previewMode: cfg.previewMode === true,
         iChannelResolution: channelResolution,
         cpfxChannelType: channelTypes,
+        cpfxSamplerVflip: channelVflips,
         cpfxVolumeLayout: volumeLayouts,
       });
     }
