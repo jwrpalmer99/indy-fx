@@ -560,6 +560,55 @@ function applyCompatibilityRewrites(source) {
 
   // GLSL ES 1.00 accepts mat2/mat3/mat4 but not mat2x2/mat3x3/mat4x4 aliases.
   next = next.replace(/\bmat([234])x\1\b/g, "mat$1");
+  // Track non-square matrix variables so we can lower unsupported ops.
+  const mat2x3Vars = new Set();
+  const mat3x2Vars = new Set();
+  const mat2Vars = new Set();
+  next.replace(/\bmat2x3\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
+    mat2x3Vars.add(String(name));
+    return _full;
+  });
+  next.replace(/\bmat3x2\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
+    mat3x2Vars.add(String(name));
+    return _full;
+  });
+  next.replace(/\bmat2\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
+    mat2Vars.add(String(name));
+    return _full;
+  });
+  // Lower non-square matrix constructors/types to encoded mat3 forms.
+  next = next.replace(/\bmat2x3\s*\(/g, "cpfx_mat2x3(");
+  next = next.replace(/\bmat3x2\s*\(/g, "cpfx_mat3x2(");
+  next = next.replace(/\bmat2x3\b/g, "mat3");
+  next = next.replace(/\bmat3x2\b/g, "mat3");
+  const exprAtom =
+    String.raw`(?:\((?:[^()]|\([^()]*\))*\)|[A-Za-z_]\w*\s*\((?:[^()]|\([^()]*\))*\)|[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[[^\]]+\s*\])*)`;
+  // Handle direct constructor * mat2 cases before per-variable rewrites.
+  next = next.replace(
+    /cpfx_mat2x3\s*\(((?:[^()]|\([^()]*\))*)\)\s*\*\s*(mat2\s*\((?:[^()]|\([^()]*\))*\)|\((?:[^()]|\([^()]*\))*mat2\s*\((?:[^()]|\([^()]*\))*\)(?:[^()]|\([^()]*\))*\))/g,
+    "cpfx_mul_mat2x3_mat2(cpfx_mat2x3($1), $2)",
+  );
+  for (const name of mat3x2Vars) {
+    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+    next = next.replace(rightMulRe, `cpfx_mul_mat3x2_vec3(${name}, $1)`);
+    next = next.replace(leftMulRe, `cpfx_mul_vec2_mat3x2($1, ${name})`);
+  }
+  for (const name of mat2x3Vars) {
+    const mulMat2Re = new RegExp(
+      `\\b${name}\\s*\\*\\s*(mat2\\s*\\((?:[^()]|\\([^()]*\\))*\\)|\\((?:[^()]|\\([^()]*\\))*mat2\\s*\\((?:[^()]|\\([^()]*\\))*\\)(?:[^()]|\\([^()]*\\))*\\))`,
+      "g",
+    );
+    for (const mat2Name of mat2Vars) {
+      const mulMat2VarRe = new RegExp(`\\b${name}\\s*\\*\\s*\\b${mat2Name}\\b`, "g");
+      next = next.replace(mulMat2VarRe, `cpfx_mul_mat2x3_mat2(${name}, ${mat2Name})`);
+    }
+    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+    next = next.replace(mulMat2Re, `cpfx_mul_mat2x3_mat2(${name}, $1)`);
+    next = next.replace(rightMulRe, `cpfx_mul_mat2x3_vec2(${name}, $1)`);
+    next = next.replace(leftMulRe, `cpfx_mul_vec3_mat2x3($1, ${name})`);
+  }
 
   // GLSL ES 1.00 does not support float literal suffixes (for example, 1.0f).
   // Normalize these to plain numeric literals.
@@ -1486,6 +1535,8 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(/\btranspose\s*\(/g, "cpfx_transpose(");
   // GLSL ES 1.00 lacks inverse(); route through compatibility overloads.
   next = next.replace(/\binverse\s*\(/g, "cpfx_inverse(");
+  // GLSL ES 1.00 lacks outerProduct(); route through compatibility overloads.
+  next = next.replace(/\bouterProduct\s*\(/g, "cpfx_outerProduct(");
 
   // Derivatives are extension-gated in GLSL ES 1.00; route through wrappers.
   next = next.replace(/\bdFdx\s*\(/g, "cpfx_dFdx(");
@@ -1542,11 +1593,13 @@ function applyCompatibilityRewrites(source) {
   const shrRe = new RegExp(`(${atom})\\s*>>\\s*(${atom})`, "g");
   const andRe = new RegExp(`(${atom})\\s*&\\s*(${atom})`, "g");
   const xorRe = new RegExp(`(${atom})\\s*\\^\\s*(${atom})`, "g");
+  const orRe = new RegExp(`(${atom})\\s*\\|\\s*(${atom})`, "g");
   const modRe = new RegExp(`(${atom})\\s*%\\s*(${atom})`, "g");
   next = foldBinaryOps(next, shlRe, "cpfx_shl($1, $2)");
   next = foldBinaryOps(next, shrRe, "cpfx_shr($1, $2)");
   next = foldBinaryOps(next, andRe, "cpfx_bitand($1, $2)");
   next = foldBinaryOps(next, xorRe, "cpfx_bitxor($1, $2)");
+  next = foldBinaryOps(next, orRe, "cpfx_bitor($1, $2)");
   next = foldBinaryOps(next, modRe, "cpfx_mod($1, $2)");
   // Catch residual forms like ((cpfx_shr((i+3),1))&1).
   next = next.replace(
@@ -1881,6 +1934,54 @@ vec3 cpfx_mul_mat4x3_vec4(vec3 c0, vec3 c1, vec3 c2, vec3 c3, vec4 v) {
   return c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w;
 }
 
+// Encode unsupported non-square matrices in mat3 for GLSL ES 1.00 compatibility.
+// mat2x3: use columns 0..1 (vec3), column 2 is zero.
+// mat3x2: use columns 0..2 with xy populated, z set to zero.
+mat3 cpfx_mat2x3(vec3 c0, vec3 c1) {
+  return mat3(c0, c1, vec3(0.0));
+}
+mat3 cpfx_mat2x3(float c0r0, float c0r1, float c0r2, float c1r0, float c1r1, float c1r2) {
+  return mat3(vec3(c0r0, c0r1, c0r2), vec3(c1r0, c1r1, c1r2), vec3(0.0));
+}
+mat3 cpfx_mat2x3(float s) {
+  return mat3(vec3(s, 0.0, 0.0), vec3(0.0, s, 0.0), vec3(0.0));
+}
+mat3 cpfx_mat2x3(mat3 m) {
+  return mat3(m[0], m[1], vec3(0.0));
+}
+
+mat3 cpfx_mat3x2(vec2 c0, vec2 c1, vec2 c2) {
+  return mat3(vec3(c0, 0.0), vec3(c1, 0.0), vec3(c2, 0.0));
+}
+mat3 cpfx_mat3x2(float c0r0, float c0r1, float c1r0, float c1r1, float c2r0, float c2r1) {
+  return mat3(vec3(c0r0, c0r1, 0.0), vec3(c1r0, c1r1, 0.0), vec3(c2r0, c2r1, 0.0));
+}
+mat3 cpfx_mat3x2(float s) {
+  return mat3(vec3(s, 0.0, 0.0), vec3(0.0, s, 0.0), vec3(0.0));
+}
+mat3 cpfx_mat3x2(mat3 m) {
+  return mat3(vec3(m[0].xy, 0.0), vec3(m[1].xy, 0.0), vec3(m[2].xy, 0.0));
+}
+
+vec3 cpfx_mul_mat2x3_vec2(mat3 m, vec2 v) {
+  return m[0] * v.x + m[1] * v.y;
+}
+vec2 cpfx_mul_vec3_mat2x3(vec3 v, mat3 m) {
+  return vec2(dot(v, m[0]), dot(v, m[1]));
+}
+vec2 cpfx_mul_mat3x2_vec3(mat3 m, vec3 v) {
+  return m[0].xy * v.x + m[1].xy * v.y + m[2].xy * v.z;
+}
+vec3 cpfx_mul_vec2_mat3x2(vec2 v, mat3 m) {
+  return vec3(dot(v, m[0].xy), dot(v, m[1].xy), dot(v, m[2].xy));
+}
+mat3 cpfx_mul_mat2x3_mat2(mat3 a, mat2 b) {
+  return cpfx_mat2x3(
+    cpfx_mul_mat2x3_vec2(a, b[0]),
+    cpfx_mul_mat2x3_vec2(a, b[1])
+  );
+}
+
 vec3 cpfx_set_vec3_component(vec3 v, int idx, float value) {
   if (idx == 0) v.x = value;
   else if (idx == 1) v.y = value;
@@ -1910,6 +2011,16 @@ mat4 cpfx_transpose(mat4 m) {
     m[0][2], m[1][2], m[2][2], m[3][2],
     m[0][3], m[1][3], m[2][3], m[3][3]
   );
+}
+
+mat2 cpfx_outerProduct(vec2 c, vec2 r) {
+  return mat2(c * r.x, c * r.y);
+}
+mat3 cpfx_outerProduct(vec3 c, vec3 r) {
+  return mat3(c * r.x, c * r.y, c * r.z);
+}
+mat4 cpfx_outerProduct(vec4 c, vec4 r) {
+  return mat4(c * r.x, c * r.y, c * r.z, c * r.w);
 }
 
 mat2 cpfx_inverse(mat2 m) {
@@ -2093,6 +2204,19 @@ ivec4 cpfx_bitand(ivec4 a, ivec4 b) { return ivec4(cpfx_bitand(a.x, b.x), cpfx_b
 ivec2 cpfx_bitand(ivec2 a, int b) { return cpfx_bitand(a, ivec2(b)); }
 ivec3 cpfx_bitand(ivec3 a, int b) { return cpfx_bitand(a, ivec3(b)); }
 ivec4 cpfx_bitand(ivec4 a, int b) { return cpfx_bitand(a, ivec4(b)); }
+
+int cpfx_bitor(int a, int b) {
+  return a + b - cpfx_bitand(a, b);
+}
+float cpfx_bitor(float a, float b) { return float(cpfx_bitor(int(floor(a)), int(floor(b)))); }
+float cpfx_bitor(float a, int b) { return float(cpfx_bitor(int(floor(a)), b)); }
+float cpfx_bitor(int a, float b) { return float(cpfx_bitor(a, int(floor(b)))); }
+ivec2 cpfx_bitor(ivec2 a, ivec2 b) { return ivec2(cpfx_bitor(a.x, b.x), cpfx_bitor(a.y, b.y)); }
+ivec3 cpfx_bitor(ivec3 a, ivec3 b) { return ivec3(cpfx_bitor(a.x, b.x), cpfx_bitor(a.y, b.y), cpfx_bitor(a.z, b.z)); }
+ivec4 cpfx_bitor(ivec4 a, ivec4 b) { return ivec4(cpfx_bitor(a.x, b.x), cpfx_bitor(a.y, b.y), cpfx_bitor(a.z, b.z), cpfx_bitor(a.w, b.w)); }
+ivec2 cpfx_bitor(ivec2 a, int b) { return cpfx_bitor(a, ivec2(b)); }
+ivec3 cpfx_bitor(ivec3 a, int b) { return cpfx_bitor(a, ivec3(b)); }
+ivec4 cpfx_bitor(ivec4 a, int b) { return cpfx_bitor(a, ivec4(b)); }
 
 int cpfx_bitxor(int a, int b) {
   return a + b - 2 * cpfx_bitand(a, b);
@@ -2397,6 +2521,54 @@ vec3 cpfx_mul_mat4x3_vec4(vec3 c0, vec3 c1, vec3 c2, vec3 c3, vec4 v) {
   return c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w;
 }
 
+// Encode unsupported non-square matrices in mat3 for GLSL ES 1.00 compatibility.
+// mat2x3: use columns 0..1 (vec3), column 2 is zero.
+// mat3x2: use columns 0..2 with xy populated, z set to zero.
+mat3 cpfx_mat2x3(vec3 c0, vec3 c1) {
+  return mat3(c0, c1, vec3(0.0));
+}
+mat3 cpfx_mat2x3(float c0r0, float c0r1, float c0r2, float c1r0, float c1r1, float c1r2) {
+  return mat3(vec3(c0r0, c0r1, c0r2), vec3(c1r0, c1r1, c1r2), vec3(0.0));
+}
+mat3 cpfx_mat2x3(float s) {
+  return mat3(vec3(s, 0.0, 0.0), vec3(0.0, s, 0.0), vec3(0.0));
+}
+mat3 cpfx_mat2x3(mat3 m) {
+  return mat3(m[0], m[1], vec3(0.0));
+}
+
+mat3 cpfx_mat3x2(vec2 c0, vec2 c1, vec2 c2) {
+  return mat3(vec3(c0, 0.0), vec3(c1, 0.0), vec3(c2, 0.0));
+}
+mat3 cpfx_mat3x2(float c0r0, float c0r1, float c1r0, float c1r1, float c2r0, float c2r1) {
+  return mat3(vec3(c0r0, c0r1, 0.0), vec3(c1r0, c1r1, 0.0), vec3(c2r0, c2r1, 0.0));
+}
+mat3 cpfx_mat3x2(float s) {
+  return mat3(vec3(s, 0.0, 0.0), vec3(0.0, s, 0.0), vec3(0.0));
+}
+mat3 cpfx_mat3x2(mat3 m) {
+  return mat3(vec3(m[0].xy, 0.0), vec3(m[1].xy, 0.0), vec3(m[2].xy, 0.0));
+}
+
+vec3 cpfx_mul_mat2x3_vec2(mat3 m, vec2 v) {
+  return m[0] * v.x + m[1] * v.y;
+}
+vec2 cpfx_mul_vec3_mat2x3(vec3 v, mat3 m) {
+  return vec2(dot(v, m[0]), dot(v, m[1]));
+}
+vec2 cpfx_mul_mat3x2_vec3(mat3 m, vec3 v) {
+  return m[0].xy * v.x + m[1].xy * v.y + m[2].xy * v.z;
+}
+vec3 cpfx_mul_vec2_mat3x2(vec2 v, mat3 m) {
+  return vec3(dot(v, m[0].xy), dot(v, m[1].xy), dot(v, m[2].xy));
+}
+mat3 cpfx_mul_mat2x3_mat2(mat3 a, mat2 b) {
+  return cpfx_mat2x3(
+    cpfx_mul_mat2x3_vec2(a, b[0]),
+    cpfx_mul_mat2x3_vec2(a, b[1])
+  );
+}
+
 vec3 cpfx_set_vec3_component(vec3 v, int idx, float value) {
   if (idx == 0) v.x = value;
   else if (idx == 1) v.y = value;
@@ -2426,6 +2598,16 @@ mat4 cpfx_transpose(mat4 m) {
     m[0][2], m[1][2], m[2][2], m[3][2],
     m[0][3], m[1][3], m[2][3], m[3][3]
   );
+}
+
+mat2 cpfx_outerProduct(vec2 c, vec2 r) {
+  return mat2(c * r.x, c * r.y);
+}
+mat3 cpfx_outerProduct(vec3 c, vec3 r) {
+  return mat3(c * r.x, c * r.y, c * r.z);
+}
+mat4 cpfx_outerProduct(vec4 c, vec4 r) {
+  return mat4(c * r.x, c * r.y, c * r.z, c * r.w);
 }
 
 mat2 cpfx_inverse(mat2 m) {
@@ -2609,6 +2791,19 @@ ivec4 cpfx_bitand(ivec4 a, ivec4 b) { return ivec4(cpfx_bitand(a.x, b.x), cpfx_b
 ivec2 cpfx_bitand(ivec2 a, int b) { return cpfx_bitand(a, ivec2(b)); }
 ivec3 cpfx_bitand(ivec3 a, int b) { return cpfx_bitand(a, ivec3(b)); }
 ivec4 cpfx_bitand(ivec4 a, int b) { return cpfx_bitand(a, ivec4(b)); }
+
+int cpfx_bitor(int a, int b) {
+  return a + b - cpfx_bitand(a, b);
+}
+float cpfx_bitor(float a, float b) { return float(cpfx_bitor(int(floor(a)), int(floor(b)))); }
+float cpfx_bitor(float a, int b) { return float(cpfx_bitor(int(floor(a)), b)); }
+float cpfx_bitor(int a, float b) { return float(cpfx_bitor(a, int(floor(b)))); }
+ivec2 cpfx_bitor(ivec2 a, ivec2 b) { return ivec2(cpfx_bitor(a.x, b.x), cpfx_bitor(a.y, b.y)); }
+ivec3 cpfx_bitor(ivec3 a, ivec3 b) { return ivec3(cpfx_bitor(a.x, b.x), cpfx_bitor(a.y, b.y), cpfx_bitor(a.z, b.z)); }
+ivec4 cpfx_bitor(ivec4 a, ivec4 b) { return ivec4(cpfx_bitor(a.x, b.x), cpfx_bitor(a.y, b.y), cpfx_bitor(a.z, b.z), cpfx_bitor(a.w, b.w)); }
+ivec2 cpfx_bitor(ivec2 a, int b) { return cpfx_bitor(a, ivec2(b)); }
+ivec3 cpfx_bitor(ivec3 a, int b) { return cpfx_bitor(a, ivec3(b)); }
+ivec4 cpfx_bitor(ivec4 a, int b) { return cpfx_bitor(a, ivec4(b)); }
 
 int cpfx_bitxor(int a, int b) {
   return a + b - 2 * cpfx_bitand(a, b);
