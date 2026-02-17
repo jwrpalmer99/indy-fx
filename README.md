@@ -42,6 +42,23 @@ Token/Tile convenience:
 - Configure shader/options in behavior config.
 - Multiple region effects are supported on the same region.
 
+### Use Imported Shaders as Light Animations
+1. Open an imported shader in the full editor.
+2. Enable **Convert to Light Source**.
+3. Configure light options:
+- **Use Illumination Shader**
+- **Use Background Shader**
+- **Light Falloff**: `None`, `Use Bright/Dim`, `Linear`, `Exponential`
+- **Light Coloration Intensity** (default `1`)
+- **Light Illumination Intensity** (default `1`)
+- **Background Glow** (default `0`)
+4. Save the shader.
+5. In Ambient Light config, choose the animation `Indy FX: <Shader Label>`.
+
+Notes:
+- Light animation registrations are synced at startup and when the shader library changes.
+- For light usage, placeable capture channel modes are remapped to scene capture where needed.
+
 ## Channel Modes
 Imported shader channels (`iChannel0..iChannel3`) support:
 - `none` (black)
@@ -82,11 +99,14 @@ Notes:
 - Check `alpha`, `intensity`, `layer`, and mask settings.
 - Confirm selected channel modes are valid for that target type.
 - Confirm that shader doesnt have 0 alpha explicitly set on output. 
+- If using light conversion, confirm **Convert to Light Source** is enabled and the light animation is selected on the light.
+- For converted lights, verify `Light Coloration Intensity` / `Light Illumination Intensity` are non-zero.
 
 ### Wrong preview output
 - Verify channel mode/path/source assignments.
 - For capture channels, verify preview background settings.
 - Thumbnail updates are asynchronous; if debug logging is enabled, check `shader save timing` and `thumbnail regenerate encoded` logs.
+- For light background behavior, Foundry coloration technique can affect apparent output. If background contribution looks missing, compare **Legacy Coloration** vs **Adaptive Luminance**.
 
 ### Shader compiles in ShaderToy but fails in Foundry
 - Some ShaderToy code needs adaptation for Foundry/PIXI GLSL.
