@@ -1537,11 +1537,13 @@ function applyCompatibilityRewrites(source) {
   const callableIdentifierAtom = String.raw`(?!(?:return|if|for|while|switch|case|default|else|do)\b)${identifierAtom}`;
   const parenAtom = String.raw`\((?:[^()]|\([^()]*\))*\)`;
   const functionCallAtom = String.raw`${callableIdentifierAtom}\s*\((?:[^()]|\([^()]*\))*\)`;
-  const atom = String.raw`(?:${functionCallAtom}|${identifierAtom}|[+-]?\d+(?:\.\d+)?|${parenAtom})`;
+  const atom = String.raw`(?:${functionCallAtom}|${identifierAtom}|0x[0-9A-Fa-f]+|[+-]?\d+(?:\.\d+)?|${parenAtom})`;
+  const shlRe = new RegExp(`(${atom})\\s*<<\\s*(${atom})`, "g");
   const shrRe = new RegExp(`(${atom})\\s*>>\\s*(${atom})`, "g");
   const andRe = new RegExp(`(${atom})\\s*&\\s*(${atom})`, "g");
   const xorRe = new RegExp(`(${atom})\\s*\\^\\s*(${atom})`, "g");
   const modRe = new RegExp(`(${atom})\\s*%\\s*(${atom})`, "g");
+  next = foldBinaryOps(next, shlRe, "cpfx_shl($1, $2)");
   next = foldBinaryOps(next, shrRe, "cpfx_shr($1, $2)");
   next = foldBinaryOps(next, andRe, "cpfx_bitand($1, $2)");
   next = foldBinaryOps(next, xorRe, "cpfx_bitxor($1, $2)");
@@ -2039,6 +2041,22 @@ int cpfx_shr(int a, int b) {
   int bb = (b < 0) ? 0 : b;
   return int(floor(float(aa) / exp2(float(bb))));
 }
+
+int cpfx_shl(int a, int b) {
+  int aa = (a < 0) ? 0 : a;
+  int bb = (b < 0) ? 0 : b;
+  return int(floor(float(aa) * exp2(float(bb))));
+}
+
+float cpfx_shl(float a, float b) { return float(cpfx_shl(int(floor(a)), int(floor(b)))); }
+float cpfx_shl(float a, int b) { return float(cpfx_shl(int(floor(a)), b)); }
+float cpfx_shl(int a, float b) { return float(cpfx_shl(a, int(floor(b)))); }
+ivec2 cpfx_shl(ivec2 a, int b) { return ivec2(cpfx_shl(a.x, b), cpfx_shl(a.y, b)); }
+ivec3 cpfx_shl(ivec3 a, int b) { return ivec3(cpfx_shl(a.x, b), cpfx_shl(a.y, b), cpfx_shl(a.z, b)); }
+ivec4 cpfx_shl(ivec4 a, int b) { return ivec4(cpfx_shl(a.x, b), cpfx_shl(a.y, b), cpfx_shl(a.z, b), cpfx_shl(a.w, b)); }
+ivec2 cpfx_shl(ivec2 a, ivec2 b) { return ivec2(cpfx_shl(a.x, b.x), cpfx_shl(a.y, b.y)); }
+ivec3 cpfx_shl(ivec3 a, ivec3 b) { return ivec3(cpfx_shl(a.x, b.x), cpfx_shl(a.y, b.y), cpfx_shl(a.z, b.z)); }
+ivec4 cpfx_shl(ivec4 a, ivec4 b) { return ivec4(cpfx_shl(a.x, b.x), cpfx_shl(a.y, b.y), cpfx_shl(a.z, b.z), cpfx_shl(a.w, b.w)); }
 
 float cpfx_shr(float a, float b) { return float(cpfx_shr(int(floor(a)), int(floor(b)))); }
 float cpfx_shr(float a, int b) { return float(cpfx_shr(int(floor(a)), b)); }
@@ -2539,6 +2557,22 @@ int cpfx_shr(int a, int b) {
   int bb = (b < 0) ? 0 : b;
   return int(floor(float(aa) / exp2(float(bb))));
 }
+
+int cpfx_shl(int a, int b) {
+  int aa = (a < 0) ? 0 : a;
+  int bb = (b < 0) ? 0 : b;
+  return int(floor(float(aa) * exp2(float(bb))));
+}
+
+float cpfx_shl(float a, float b) { return float(cpfx_shl(int(floor(a)), int(floor(b)))); }
+float cpfx_shl(float a, int b) { return float(cpfx_shl(int(floor(a)), b)); }
+float cpfx_shl(int a, float b) { return float(cpfx_shl(a, int(floor(b)))); }
+ivec2 cpfx_shl(ivec2 a, int b) { return ivec2(cpfx_shl(a.x, b), cpfx_shl(a.y, b)); }
+ivec3 cpfx_shl(ivec3 a, int b) { return ivec3(cpfx_shl(a.x, b), cpfx_shl(a.y, b), cpfx_shl(a.z, b)); }
+ivec4 cpfx_shl(ivec4 a, int b) { return ivec4(cpfx_shl(a.x, b), cpfx_shl(a.y, b), cpfx_shl(a.z, b), cpfx_shl(a.w, b)); }
+ivec2 cpfx_shl(ivec2 a, ivec2 b) { return ivec2(cpfx_shl(a.x, b.x), cpfx_shl(a.y, b.y)); }
+ivec3 cpfx_shl(ivec3 a, ivec3 b) { return ivec3(cpfx_shl(a.x, b.x), cpfx_shl(a.y, b.y), cpfx_shl(a.z, b.z)); }
+ivec4 cpfx_shl(ivec4 a, ivec4 b) { return ivec4(cpfx_shl(a.x, b.x), cpfx_shl(a.y, b.y), cpfx_shl(a.z, b.z), cpfx_shl(a.w, b.w)); }
 
 float cpfx_shr(float a, float b) { return float(cpfx_shr(int(floor(a)), int(floor(b)))); }
 float cpfx_shr(float a, int b) { return float(cpfx_shr(int(floor(a)), b)); }
