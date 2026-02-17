@@ -129,6 +129,9 @@ const IMPORTED_SHADER_DEFAULT_KEYS = [
   "lightUseIlluminationShader",
   "lightUseBackgroundShader",
   "lightFalloffMode",
+  "lightColorationIntensity",
+  "lightIlluminationIntensity",
+  "backgroundGlow",
   "preloadShader",
 ];
 
@@ -1508,6 +1511,9 @@ export class ShaderManager {
       lightUseIlluminationShader: true,
       lightUseBackgroundShader: false,
       lightFalloffMode: "brightDim",
+      lightColorationIntensity: 1.0,
+      lightIlluminationIntensity: 1.0,
+      backgroundGlow: 0.0,
       preloadShader: false,
     };
   }
@@ -1735,6 +1741,33 @@ export class ShaderManager {
           return "brightDim";
         return "brightDim";
       })(),
+      lightColorationIntensity: Math.max(
+        0,
+        Math.min(
+          5,
+          toFiniteNumber(
+            source.lightColorationIntensity,
+            toFiniteNumber(base.lightColorationIntensity, 1),
+          ),
+        ),
+      ),
+      lightIlluminationIntensity: Math.max(
+        0,
+        Math.min(
+          5,
+          toFiniteNumber(
+            source.lightIlluminationIntensity,
+            toFiniteNumber(base.lightIlluminationIntensity, 1),
+          ),
+        ),
+      ),
+      backgroundGlow: Math.max(
+        0,
+        Math.min(
+          5,
+          toFiniteNumber(source.backgroundGlow, toFiniteNumber(base.backgroundGlow, 0)),
+        ),
+      ),
       preloadShader:
         source.preloadShader === true ||
         source.preloadShader === 1 ||

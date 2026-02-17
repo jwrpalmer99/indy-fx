@@ -2239,11 +2239,12 @@ function normalizeLightLayerType(value) {
 }
 
 function getLightLayerColorExpression(layerType) {
-  if (layerType === "illumination") return "shaderColor.rgb * srcAlpha";
+  if (layerType === "illumination")
+    return "cpfxShaderRgb * max(cpfxIlluminationIntensity, 0.0)";
   if (layerType === "background") {
-    return "mix(baseColor.rgb, shaderColor.rgb, clamp(backgroundAlpha * srcAlpha, 0.0, 1.0))";
+    return "mix(baseColor.rgb, shaderColor.rgb, clamp(backgroundAlpha, 0.0, 1.0)) + (shaderColor.rgb * max(backgroundGlow, 0.0))";
   }
-  return "shaderColor.rgb * color * colorationAlpha * srcAlpha";
+  return "shaderColor.rgb * color * colorationAlpha * max(cpfxColorationIntensity, 0.0)";
 }
 
 export function adaptShaderToyLightFragment(
@@ -2252,6 +2253,19 @@ export function adaptShaderToyLightFragment(
 ) {
   const resolvedLayer = normalizeLightLayerType(layerType);
   const colorExpression = getLightLayerColorExpression(resolvedLayer);
+  const layerOpacityExpression =
+    resolvedLayer === "illumination"
+      ? "1.0"
+      : resolvedLayer === "coloration"
+      ? "clamp(srcAlpha, 0.0, 1.0)"
+      : "clamp(srcAlpha, 0.0, 1.0)";
+  const depthExpression =
+    resolvedLayer === "coloration"
+      ? `vec4 depthColor = texture2D(depthTexture, vUvs);
+  float depth = smoothstep(0.0, 1.0, vDepth)
+    * step(depthColor.g, depthElevation)
+    * step(depthElevation, (254.5 / 255.0) - depthColor.r);`
+      : `float depth = 1.0;`;
   let fragment = adaptShaderToyBufferFragment(source);
 
   fragment = fragment.replace(
@@ -2271,18 +2285,22 @@ uniform float cpfxLightBrightDimRatio;
 uniform float cpfxLightExponentialPower;
 uniform float colorationAlpha;
 uniform float backgroundAlpha;
+uniform float backgroundGlow;
+uniform float cpfxColorationIntensity;
+uniform float cpfxIlluminationIntensity;
 uniform vec3 color;`,
   );
 
   fragment = fragment.replace(
     /\bgl_FragColor\s*=\s*shaderColor\s*;\s*}/,
     `float srcAlpha = clamp(shaderColor.a, 0.0, 1.0);
-  vec4 baseColor = texture2D(primaryTexture, vSamplerUvs);
+  vec3 cpfxShaderRgb = shaderColor.rgb;
+  if (srcAlpha > 0.0001) {
+    cpfxShaderRgb = clamp(shaderColor.rgb / srcAlpha, vec3(0.0), vec3(8.0));
+  }
+  vec4 baseColor = texture2D(primaryTexture, vUvs);
   float dist = distance(vUvs, vec2(0.5)) * 2.0;
-  vec4 depthColor = texture2D(depthTexture, vSamplerUvs);
-  float depth = smoothstep(0.0, 1.0, vDepth)
-    * step(depthColor.g, depthElevation)
-    * step(depthElevation, (254.5 / 255.0) - depthColor.r);
+  ${depthExpression}
   float d = clamp(dist, 0.0, 1.0);
   float falloff = 1.0;
   if (cpfxLightFalloffMode < 0.5) {
@@ -2297,9 +2315,11 @@ uniform vec3 color;`,
     falloff = pow(clamp(1.0 - d, 0.0, 1.0), max(0.0001, cpfxLightExponentialPower));
   }
   depth *= falloff;
+  float layerOpacity = ${layerOpacityExpression};
+  float finalAlpha = depth * layerOpacity;
   float intensityGain = max(intensity, 0.0);
   vec3 finalColor = ${colorExpression} * intensityGain;
-  gl_FragColor = vec4(finalColor * depth, depth);
+  gl_FragColor = vec4(finalColor * finalAlpha, finalAlpha);
 }`,
   );
 

@@ -293,6 +293,9 @@ function buildImportedLightAdapterUniformDefaults(baseUniforms = {}) {
     cpfxLightFalloffMode: toFiniteLightNumber(safeBase.cpfxLightFalloffMode, 1),
     cpfxLightBrightDimRatio: toFiniteLightNumber(safeBase.cpfxLightBrightDimRatio, 0),
     cpfxLightExponentialPower: toFiniteLightNumber(safeBase.cpfxLightExponentialPower, 2.2),
+    cpfxColorationIntensity: toFiniteLightNumber(safeBase.cpfxColorationIntensity, 1),
+    cpfxIlluminationIntensity: toFiniteLightNumber(safeBase.cpfxIlluminationIntensity, 1),
+    backgroundGlow: toFiniteLightNumber(safeBase.backgroundGlow, 0),
     debugMode: toFiniteLightNumber(safeBase.debugMode, 0),
     attenuation: toFiniteLightNumber(safeBase.attenuation, INDYFX_LIGHT_FALLOFF_DEFAULT),
   };
@@ -433,10 +436,13 @@ function debugLogImportedLightState(source, { dtSeconds = 0 } = {}) {
       cpfxLightFalloffMode: toFiniteLightNumber(uniforms.cpfxLightFalloffMode, null),
       cpfxLightBrightDimRatio: toFiniteLightNumber(uniforms.cpfxLightBrightDimRatio, null),
       cpfxLightExponentialPower: toFiniteLightNumber(uniforms.cpfxLightExponentialPower, null),
+      cpfxColorationIntensity: toFiniteLightNumber(uniforms.cpfxColorationIntensity, null),
+      cpfxIlluminationIntensity: toFiniteLightNumber(uniforms.cpfxIlluminationIntensity, null),
       shaderFlipX: toFiniteLightNumber(uniforms.shaderFlipX, null),
       shaderFlipY: toFiniteLightNumber(uniforms.shaderFlipY, null),
       colorationAlpha: toFiniteLightNumber(uniforms.colorationAlpha, null),
       backgroundAlpha: toFiniteLightNumber(uniforms.backgroundAlpha, null),
+      backgroundGlow: toFiniteLightNumber(uniforms.backgroundGlow, null),
       resolution: [resX, resY],
       iResolution,
       channelResolutionHead: Array.isArray(uniforms.iChannelResolution)
@@ -597,6 +603,38 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     if (foundryIntensity > 0 && baseIntensity <= 0) baseIntensity = 1;
     layer._indyFxBaseIntensity = baseIntensity;
     uniforms.intensity = Math.max(0, baseIntensity * intensityScale);
+    const classLayerType = String(
+      layer?.shader?.constructor?.indyFxLayerType ?? "",
+    )
+      .trim()
+      .toLowerCase();
+    const classColorationIntensity = toFiniteLightNumber(
+      layer?.shader?.constructor?.indyFxColorationIntensity,
+      toFiniteLightNumber(
+        layer?.shader?.constructor?.defaultUniforms?.cpfxColorationIntensity,
+        1,
+      ),
+    );
+    const baseColorationIntensity = Math.max(
+      0,
+      toFiniteLightNumber(layer?._indyFxLightColorationIntensity, classColorationIntensity),
+    );
+    layer._indyFxLightColorationIntensity = baseColorationIntensity;
+    uniforms.cpfxColorationIntensity = baseColorationIntensity;
+    const classIlluminationIntensity = toFiniteLightNumber(
+      layer?.shader?.constructor?.indyFxIlluminationIntensity,
+      toFiniteLightNumber(
+        layer?.shader?.constructor?.defaultUniforms?.cpfxIlluminationIntensity,
+        1,
+      ),
+    );
+    const baseIlluminationIntensity = Math.max(
+      0,
+      toFiniteLightNumber(layer?._indyFxLightIlluminationIntensity, classIlluminationIntensity),
+    );
+    layer._indyFxLightIlluminationIntensity = baseIlluminationIntensity;
+    uniforms.cpfxIlluminationIntensity =
+      classLayerType === "illumination" ? baseIlluminationIntensity : 1;
     const classFalloffMode = normalizeImportedLightFalloffMode(
       layer?.shader?.constructor?.indyFxLightFalloffMode,
     );
@@ -651,6 +689,9 @@ function createImportedLightShaderClass({
   defaultFlipHorizontal = false,
   defaultFlipVertical = false,
   defaultLightFalloffMode = "brightDim",
+  defaultLightColorationIntensity = 1,
+  defaultLightIlluminationIntensity = 1,
+  defaultBackgroundGlow = 0,
 } = {}) {
   const normalizedLayerType = normalizeImportedLightLayerType(layerType);
   const baseShaderClass = resolveAdaptiveLightShaderClass(normalizedLayerType);
@@ -683,6 +724,18 @@ function createImportedLightShaderClass({
   const resolvedDefaultSpeed = toFiniteLightNumber(defaultSpeed, 1);
   const resolvedDefaultLightFalloffMode =
     normalizeImportedLightFalloffMode(defaultLightFalloffMode);
+  const resolvedDefaultLightColorationIntensity = Math.max(
+    0,
+    toFiniteLightNumber(defaultLightColorationIntensity, 1),
+  );
+  const resolvedDefaultLightIlluminationIntensity = Math.max(
+    0,
+    toFiniteLightNumber(defaultLightIlluminationIntensity, 1),
+  );
+  const resolvedDefaultBackgroundGlow = Math.max(
+    0,
+    toFiniteLightNumber(defaultBackgroundGlow, 0),
+  );
   uniformDefaults.shaderFlipX = defaultFlipHorizontal === true ? 1.0 : 0.0;
   uniformDefaults.shaderFlipY = defaultFlipVertical === true ? 1.0 : 0.0;
   uniformDefaults.cpfxLightFalloffMode =
@@ -690,6 +743,14 @@ function createImportedLightShaderClass({
   uniformDefaults.cpfxLightBrightDimRatio = 0;
   uniformDefaults.cpfxLightExponentialPower =
     resolvedDefaultLightFalloffMode === "exponential" ? 2.2 : 1.0;
+  uniformDefaults.cpfxColorationIntensity = resolvedDefaultLightColorationIntensity;
+  uniformDefaults.cpfxIlluminationIntensity = resolvedDefaultLightIlluminationIntensity;
+  uniformDefaults.backgroundGlow = resolvedDefaultBackgroundGlow;
+  if (normalizedLayerType === "background") {
+    const baseBackgroundAlpha = toFiniteLightNumber(uniformDefaults.backgroundAlpha, 1);
+    uniformDefaults.backgroundAlpha =
+      baseBackgroundAlpha > 0.0001 ? baseBackgroundAlpha : 1;
+  }
   const resolvedChannels = buildImportedLightChannelUniformDefaults({
     sourceText,
     shaderId,
@@ -714,6 +775,9 @@ function createImportedLightShaderClass({
     static defaultUniforms = uniformDefaults;
     static indyFxBaseSpeed = Math.max(0, resolvedDefaultSpeed);
     static indyFxLightFalloffMode = resolvedDefaultLightFalloffMode;
+    static indyFxLayerType = normalizedLayerType;
+    static indyFxColorationIntensity = resolvedDefaultLightColorationIntensity;
+    static indyFxIlluminationIntensity = resolvedDefaultLightIlluminationIntensity;
     static forceDefaultColor =
       normalizedLayerType === "coloration"
         ? true
@@ -743,6 +807,9 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
     defaultFlipHorizontal: defaults?.flipHorizontal === true,
     defaultFlipVertical: defaults?.flipVertical === true,
     defaultLightFalloffMode: defaults?.lightFalloffMode,
+    defaultLightColorationIntensity: defaults?.lightColorationIntensity,
+    defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
+    defaultBackgroundGlow: defaults?.backgroundGlow,
   });
   if (!colorationShader) return null;
 
@@ -764,6 +831,9 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
       defaultFlipHorizontal: defaults?.flipHorizontal === true,
       defaultFlipVertical: defaults?.flipVertical === true,
       defaultLightFalloffMode: defaults?.lightFalloffMode,
+      defaultLightColorationIntensity: defaults?.lightColorationIntensity,
+      defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
+      defaultBackgroundGlow: defaults?.backgroundGlow,
     });
     if (illuminationShader) config.illuminationShader = illuminationShader;
   }
@@ -780,6 +850,9 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
       defaultFlipHorizontal: defaults?.flipHorizontal === true,
       defaultFlipVertical: defaults?.flipVertical === true,
       defaultLightFalloffMode: defaults?.lightFalloffMode,
+      defaultLightColorationIntensity: defaults?.lightColorationIntensity,
+      defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
+      defaultBackgroundGlow: defaults?.backgroundGlow,
     });
     if (backgroundShader) config.backgroundShader = backgroundShader;
   }
@@ -866,7 +939,9 @@ function collectActiveLightSources() {
   const ambientLights = Array.isArray(canvas?.lighting?.placeables)
     ? canvas.lighting.placeables
     : [];
-  for (const ambient of ambientLights) pushSource(ambient?.source);
+  for (const ambient of ambientLights) {
+    pushSource(ambient?.lightSource ?? ambient?.source);
+  }
 
   return out;
 }
@@ -887,6 +962,30 @@ function refreshImportedLightSources({
   );
 
   const sources = collectActiveLightSources();
+  const ambientBySourceId = new Map();
+  const ambientLights = Array.isArray(canvas?.lighting?.placeables)
+    ? canvas.lighting.placeables
+    : [];
+  for (const ambient of ambientLights) {
+    const ambientSource = ambient?.lightSource ?? ambient?.source ?? null;
+    const rawId = String(ambient?.id ?? ambient?.document?.id ?? "").trim();
+    const sidCandidates = [
+      String(ambientSource?.sourceId ?? "").trim(),
+      String(ambient?.sourceId ?? "").trim(),
+      rawId ? `AmbientLight.${rawId}` : "",
+      rawId,
+      String(ambient?.document?.id ?? "").trim(),
+    ].filter((value) => !!value);
+    const sid = sidCandidates[0] ?? "";
+    if (sid) {
+      if (!ambientBySourceId.has(sid)) ambientBySourceId.set(sid, ambient);
+    }
+    if (rawId) {
+      if (!ambientBySourceId.has(rawId)) ambientBySourceId.set(rawId, ambient);
+      const prefixed = `AmbientLight.${rawId}`;
+      if (!ambientBySourceId.has(prefixed)) ambientBySourceId.set(prefixed, ambient);
+    }
+  }
   let matchedCount = 0;
   let refreshedCount = 0;
   let failedCount = 0;
@@ -898,26 +997,81 @@ function refreshImportedLightSources({
     matchedCount += 1;
 
     try {
-      for (const layer of Object.values(source?.layers ?? {})) {
+      const sourceId = String(
+        source?.sourceId ??
+          source?.object?.sourceId ??
+          source?.object?.id ??
+          source?.object?.document?.id ??
+          "",
+      ).trim();
+      const lightObject =
+        ambientBySourceId.get(sourceId) ??
+        source?.object ??
+        null;
+      let activeSource =
+        lightObject?.lightSource ??
+        lightObject?.source ??
+        source;
+      const sourceMethods = [];
+      if (typeof lightObject?.initializeLightSource === "function") {
+        sourceMethods.push("object.initializeLightSource");
+        lightObject.initializeLightSource({ deleted: false });
+        activeSource = lightObject?.lightSource ?? lightObject?.source ?? activeSource;
+      } else if (typeof lightObject?.updateSource === "function") {
+        sourceMethods.push("object.updateSource");
+        lightObject.updateSource({ defer: true, deleted: false });
+        activeSource = lightObject?.lightSource ?? lightObject?.source ?? activeSource;
+      }
+
+      for (const layer of Object.values(activeSource?.layers ?? {})) {
         if (!layer || typeof layer !== "object") continue;
         delete layer._indyFxBaseIntensity;
         delete layer._indyFxBaseSpeed;
         delete layer._indyFxLightFalloffMode;
+        delete layer._indyFxLightColorationIntensity;
+        delete layer._indyFxLightIlluminationIntensity;
       }
 
-      if (typeof source?.object?.updateSource === "function") {
-        source.object.updateSource();
-        refreshedCount += 1;
-        continue;
+      const sourceData =
+        (typeof lightObject?._getLightSourceData === "function"
+          ? lightObject._getLightSourceData()
+          : null) ??
+        activeSource?.data ??
+        source?.data ??
+        {};
+      if (typeof activeSource?.initialize === "function") {
+        sourceMethods.push("source.initialize");
+        activeSource.initialize(sourceData, { reset: true });
       }
-      if (typeof source?.refresh === "function") {
-        source.refresh();
-        refreshedCount += 1;
-        continue;
+      if (typeof activeSource?.refresh === "function") {
+        sourceMethods.push("source.refresh");
+        activeSource.refresh();
       }
-      if (typeof source?.initialize === "function") {
-        source.initialize(source?.data);
+      if (typeof activeSource?.drawMeshes === "function") {
+        sourceMethods.push("source.drawMeshes");
+        activeSource.drawMeshes();
+      }
+      if (typeof lightObject?.refresh === "function") {
+        sourceMethods.push("object.refresh");
+        lightObject.refresh();
+      }
+      if (typeof lightObject?.renderFlags?.set === "function") {
+        sourceMethods.push("object.renderFlags.set");
+        lightObject.renderFlags.set({
+          refreshField: true,
+          refreshState: true,
+          refreshPosition: true,
+          refreshElevation: true,
+        });
+      }
+      if (sourceMethods.length > 0) {
         refreshedCount += 1;
+        debugLog("imported light source direct refresh methods", {
+          reason: String(reason ?? "unspecified"),
+          sourceId: sourceId || String(source?.sourceId ?? source?.object?.id ?? "unknown"),
+          animationType,
+          methods: sourceMethods,
+        });
       }
     } catch (err) {
       failedCount += 1;
@@ -932,7 +1086,31 @@ function refreshImportedLightSources({
 
   if (matchedCount > 0) {
     try {
-      canvas?.perception?.update?.({ refreshLighting: true, refreshVision: false });
+      canvas?.lighting?.initializeSources?.();
+    } catch (_err) {
+      // Non-fatal.
+    }
+    try {
+      canvas?.effects?.initializeLightSources?.();
+    } catch (_err) {
+      // Non-fatal.
+    }
+
+    const runPerceptionRefresh = () => {
+      try {
+        canvas?.perception?.update?.({
+          initializeLighting: true,
+          refreshLighting: true,
+          refreshVision: false,
+        });
+      } catch (_err) {
+        // Non-fatal.
+      }
+    };
+    try {
+      runPerceptionRefresh();
+      setTimeout(runPerceptionRefresh, 80);
+      setTimeout(runPerceptionRefresh, 260);
     } catch (_err) {
       // Non-fatal.
     }
@@ -5348,6 +5526,18 @@ Hooks.on(`${MODULE_ID}.shaderLibraryChanged`, (payload = {}) => {
     reason: "shader-library-changed",
     changedShaderIds,
   });
+  setTimeout(() => {
+    refreshImportedLightSources({
+      reason: "shader-library-changed-delayed-80ms",
+      changedShaderIds,
+    });
+  }, 80);
+  setTimeout(() => {
+    refreshImportedLightSources({
+      reason: "shader-library-changed-delayed-260ms",
+      changedShaderIds,
+    });
+  }, 260);
 });
 
 
