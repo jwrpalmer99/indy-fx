@@ -830,6 +830,9 @@ export class ShaderManager {
 
     this._shaderLibraryRevision = 0;
     this._shaderLibrarySettingHookId = null;
+    this._shaderLibrarySettingSyncTimer = null;
+    this._shaderLibrarySettingSyncChangedIds = new Set();
+    this._isPersistingImportedRecords = false;
     this._shaderChoiceCache = null;
     this._shaderChoiceCacheByTarget = new Map();
     this._tokenTileUsageCache = null;
@@ -1063,6 +1066,41 @@ export class ShaderManager {
       if (!this._isShaderLibraryRelatedSettingKey(key)) return;
       this._shaderLibraryRevision += 1;
       this._invalidateShaderChoiceCaches();
+      if (this._isPersistingImportedRecords) return;
+
+      const localKey = key.startsWith(`${this.moduleId}.`)
+        ? key.slice(`${this.moduleId}.`.length)
+        : "";
+      const changedIds = this._shaderLibrarySettingSyncChangedIds;
+      if (localKey === this.shaderLibraryIndexSetting) {
+        const indexEntries = Array.isArray(setting?.value) ? setting.value : [];
+        for (const entry of indexEntries) {
+          const id = String(entry?.id ?? "").trim();
+          if (id) changedIds.add(id);
+        }
+      } else {
+        const id = String(setting?.value?.id ?? "").trim();
+        if (id) changedIds.add(id);
+      }
+
+      if (this._shaderLibrarySettingSyncTimer !== null) {
+        clearTimeout(this._shaderLibrarySettingSyncTimer);
+      }
+      this._shaderLibrarySettingSyncTimer = setTimeout(() => {
+        this._shaderLibrarySettingSyncTimer = null;
+        const changedShaderIds = Array.from(changedIds);
+        changedIds.clear();
+        Hooks.callAll(`${this.moduleId}.shaderLibraryChanged`, {
+          context: "update-setting-sync",
+          operation: "setting-sync",
+          changedShaderIds,
+          addedShaderIds: [],
+          updatedShaderIds: changedShaderIds,
+          removedShaderIds: [],
+          choicesMayHaveChanged: true,
+          recordCount: this._getImportedLibraryIndexEntries().length,
+        });
+      }, 120);
     });
   }
   _resolvePreviewTarget({ targetType = null, targetId = null } = {}) {
@@ -2931,6 +2969,8 @@ export class ShaderManager {
     records,
     { context = "unspecified", changedShaderIds = null, operation = "unspecified" } = {},
   ) {
+    this._isPersistingImportedRecords = true;
+    try {
     let payload = this._normalizeImportedRecordArray(records);
     let payloadBytes = 0;
     try {
@@ -3118,6 +3158,9 @@ export class ShaderManager {
     this._lastSetImportedRecordsMetrics = metrics;
     debugLog(this.moduleId, "setImportedRecords timing", metrics);
     return metrics;
+    } finally {
+      this._isPersistingImportedRecords = false;
+    }
   }
 
 

@@ -100,6 +100,40 @@ function getLightAnimationConfigRegistries() {
   return registries;
 }
 
+function resolveFallbackLightAnimationType(currentType = "") {
+  const current = String(currentType ?? "").trim();
+  const keys = new Set();
+  for (const registry of getLightAnimationConfigRegistries()) {
+    if (!registry || typeof registry !== "object") continue;
+    for (const key of Object.keys(registry)) {
+      const normalized = String(key ?? "").trim();
+      if (normalized) keys.add(normalized);
+    }
+  }
+  const preferred = [
+    "torch",
+    "pulse",
+    "flame",
+    "candle",
+    "emanation",
+    "energy",
+    "ghost",
+    "chroma",
+  ];
+  for (const key of preferred) {
+    if (key === current) continue;
+    if (!keys.has(key)) continue;
+    if (key.startsWith(INDYFX_LIGHT_ANIMATION_PREFIX)) continue;
+    return key;
+  }
+  for (const key of keys) {
+    if (key === current) continue;
+    if (key.startsWith(INDYFX_LIGHT_ANIMATION_PREFIX)) continue;
+    return key;
+  }
+  return "";
+}
+
 function normalizeImportedLightAnimationKey(shaderId) {
   const id = String(shaderId ?? "").trim();
   if (!id) return "";
@@ -955,7 +989,7 @@ function collectActiveLightSources() {
   return out;
 }
 
-function refreshImportedLightSources({
+async function refreshImportedLightSources({
   reason = "unspecified",
   changedShaderIds = [],
 } = {}) {
@@ -998,6 +1032,7 @@ function refreshImportedLightSources({
   let matchedCount = 0;
   let refreshedCount = 0;
   let failedCount = 0;
+  const forceDocumentRefreshQueue = [];
 
   for (const source of sources) {
     const animationType = getImportedLightAnimationTypeForSource(source);
@@ -1073,6 +1108,15 @@ function refreshImportedLightSources({
           methods: sourceMethods,
         });
       }
+
+      const lightDocument = lightObject?.document ?? source?.object?.document ?? null;
+      if (lightDocument && typeof lightDocument === "object") {
+        forceDocumentRefreshQueue.push({
+          sourceId: sourceId || String(source?.sourceId ?? source?.object?.id ?? "unknown"),
+          animationType,
+          lightDocument,
+        });
+      }
     } catch (err) {
       failedCount += 1;
       console.warn(`${MODULE_ID} | Failed to refresh imported light source`, {
@@ -1085,6 +1129,48 @@ function refreshImportedLightSources({
   }
 
   if (matchedCount > 0) {
+    if (game?.user?.isGM === true && forceDocumentRefreshQueue.length > 0) {
+      const forceRefreshSeen = new Set();
+      for (const entry of forceDocumentRefreshQueue) {
+        const doc = entry?.lightDocument ?? null;
+        if (!doc || typeof doc.update !== "function") continue;
+        const docKey = String(
+          doc?.uuid ??
+            `${doc?.documentName ?? "Document"}.${doc?.id ?? ""}`,
+        ).trim();
+        if (!docKey || forceRefreshSeen.has(docKey)) continue;
+        forceRefreshSeen.add(docKey);
+        const docName = String(doc?.documentName ?? "").trim();
+        let path = "";
+        if (docName === "AmbientLight") path = "config.animation.type";
+        else if (docName === "Token") path = "light.animation.type";
+        if (!path) continue;
+        const isAllowed =
+          typeof doc.canUserModify === "function"
+            ? doc.canUserModify(game.user, "update")
+            : true;
+        if (!isAllowed) continue;
+        const currentType = String(foundry.utils.getProperty(doc, path) ?? "").trim();
+        if (!currentType.startsWith(INDYFX_LIGHT_ANIMATION_PREFIX)) continue;
+        try {
+          const fallbackType = resolveFallbackLightAnimationType(currentType);
+          if (fallbackType && fallbackType !== currentType) {
+            await doc.update({ [path]: fallbackType }, { diff: false });
+            await doc.update({ [path]: currentType }, { diff: false });
+          } else {
+            await doc.update({ [path]: currentType }, { diff: false });
+          }
+        } catch (err) {
+          debugLog("imported light source force document refresh failed", {
+            sourceId: String(entry?.sourceId ?? "unknown"),
+            animationType: String(entry?.animationType ?? ""),
+            documentName: docName || null,
+            message: String(err?.message ?? err),
+          });
+        }
+      }
+    }
+
     try {
       canvas?.lighting?.initializeSources?.();
     } catch (_err) {
@@ -5513,6 +5599,9 @@ const {
 // Init
 // ------------------------------
 Hooks.once("init", () => {
+  if (typeof shaderManager?._ensureShaderLibrarySettingHook === "function") {
+    shaderManager._ensureShaderLibrarySettingHook();
+  }
   registerModuleSettings({
     moduleId: MODULE_ID,
     shaderManager,
@@ -5532,11 +5621,7 @@ Hooks.on(`${MODULE_ID}.shaderLibraryChanged`, (payload = {}) => {
     : [];
   const operation = String(payload?.operation ?? "").trim().toLowerCase();
   syncImportedShaderLightAnimations({ reason: "shader-library-changed" });
-  if (
-    changedShaderIds.length === 0 ||
-    operation === "thumbnail-regenerate" ||
-    operation === "thumbnail-manual"
-  ) {
+  if (operation === "thumbnail-regenerate" || operation === "thumbnail-manual") {
     return;
   }
   refreshImportedLightSources({
@@ -5680,6 +5765,9 @@ Hooks.on("canvasTearDown", () => {
 });
 
 Hooks.once("ready", async () => {
+  if (typeof shaderManager?._ensureShaderLibrarySettingHook === "function") {
+    shaderManager._ensureShaderLibrarySettingHook();
+  }
   await shaderManager.enforceValidSelection();
   bindShaderLibraryDragDropHandlers();
   syncImportedShaderLightAnimations({ reason: "ready" });
