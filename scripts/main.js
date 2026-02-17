@@ -75,7 +75,6 @@ function debugLog(message, payload = undefined) {
 const INDYFX_LIGHT_ANIMATION_PREFIX = `${MODULE_ID}.light.`;
 const INDYFX_LIGHT_FALLOFF_DEFAULT = 0.5;
 const INDYFX_LIGHT_RESOLUTION_FALLBACK = [1, 1];
-const INDYFX_LIGHT_DEBUG_INTERVAL_MS = 1000;
 const INDYFX_LIGHT_FALLOFF_MODE_CODE = Object.freeze({
   none: 0,
   brightDim: 1,
@@ -83,8 +82,6 @@ const INDYFX_LIGHT_FALLOFF_MODE_CODE = Object.freeze({
   exponential: 3,
 });
 const _registeredImportedLightAnimationKeys = new Set();
-const _indyFxLightDebugLastLogBySource = new Map();
-const _indyFxLightDebugLastCallbackLogBySource = new Map();
 
 function getLightAnimationConfigRegistries() {
   const registries = [];
@@ -449,79 +446,6 @@ function buildImportedLightChannelUniformDefaults({
   return result;
 }
 
-function debugLogImportedLightState(source, { dtSeconds = 0 } = {}) {
-  if (!isDebugLoggingEnabled()) return;
-  if (!source || typeof source !== "object") return;
-
-  const sourceId = String(source?.sourceId ?? source?.object?.id ?? "unknown");
-  const nowMs = Date.now();
-  const lastMs = Number(_indyFxLightDebugLastLogBySource.get(sourceId) ?? 0);
-  if (nowMs - lastMs < INDYFX_LIGHT_DEBUG_INTERVAL_MS) return;
-  _indyFxLightDebugLastLogBySource.set(sourceId, nowMs);
-
-  const layerStates = {};
-  for (const layerId of ["coloration", "illumination", "background"]) {
-    const layer = source?.layers?.[layerId];
-    if (!layer) {
-      layerStates[layerId] = { exists: false };
-      continue;
-    }
-    const uniforms = layer?.shader?.uniforms ?? {};
-    const [resX, resY] = toLightVec2(
-      uniforms.resolution,
-      INDYFX_LIGHT_RESOLUTION_FALLBACK,
-    );
-    const iResolution = Array.isArray(uniforms.iResolution)
-      ? uniforms.iResolution.slice(0, 3)
-      : null;
-    layerStates[layerId] = {
-      exists: true,
-      active: layer?.active === true,
-      visible: layer?.mesh?.visible === true,
-      hasShader: !!layer?.shader,
-      time: toFiniteLightNumber(uniforms.time, null),
-      uTime: toFiniteLightNumber(uniforms.uTime, null),
-      iTime: toFiniteLightNumber(uniforms.iTime, null),
-      iFrame: toFiniteLightNumber(uniforms.iFrame, null),
-      iTimeDelta: toFiniteLightNumber(uniforms.iTimeDelta, null),
-      iFrameRate: toFiniteLightNumber(uniforms.iFrameRate, null),
-      intensity: toFiniteLightNumber(uniforms.intensity, null),
-      attenuation: toFiniteLightNumber(uniforms.attenuation, null),
-      cpfxLightFalloffMode: toFiniteLightNumber(uniforms.cpfxLightFalloffMode, null),
-      cpfxLightBrightDimRatio: toFiniteLightNumber(uniforms.cpfxLightBrightDimRatio, null),
-      cpfxLightExponentialPower: toFiniteLightNumber(uniforms.cpfxLightExponentialPower, null),
-      cpfxColorationIntensity: toFiniteLightNumber(uniforms.cpfxColorationIntensity, null),
-      cpfxIlluminationIntensity: toFiniteLightNumber(uniforms.cpfxIlluminationIntensity, null),
-      shaderFlipX: toFiniteLightNumber(uniforms.shaderFlipX, null),
-      shaderFlipY: toFiniteLightNumber(uniforms.shaderFlipY, null),
-      colorationAlpha: toFiniteLightNumber(uniforms.colorationAlpha, null),
-      backgroundAlpha: toFiniteLightNumber(uniforms.backgroundAlpha, null),
-      backgroundGlow: toFiniteLightNumber(uniforms.backgroundGlow, null),
-      resolution: [resX, resY],
-      iResolution,
-      channelResolutionHead: Array.isArray(uniforms.iChannelResolution)
-        ? uniforms.iChannelResolution.slice(0, 6)
-        : null,
-    };
-  }
-
-  debugLog("imported light animation tick", {
-    sourceId,
-    animationType: String(source?.data?.animation?.type ?? ""),
-    animationTime: toFiniteLightNumber(source?.animation?.time, null),
-    foundrySpeed: toFiniteLightNumber(source?._indyFxFoundrySpeed, null),
-    speedScale: toFiniteLightNumber(source?._indyFxFoundrySpeedScale, null),
-    foundryIntensity: toFiniteLightNumber(source?._indyFxFoundryIntensity, null),
-    intensityScale: toFiniteLightNumber(source?._indyFxFoundryIntensityScale, null),
-    brightRadius: toFiniteLightNumber(source?._indyFxFoundryBrightRadius, null),
-    dimRadius: toFiniteLightNumber(source?._indyFxFoundryDimRadius, null),
-    rawRadii: source?._indyFxFoundryRawRadii ?? null,
-    dtSeconds: toFiniteLightNumber(dtSeconds, null),
-    frameCounter: toFiniteLightNumber(source?._indyFxLightFrameCounter, null),
-    layerStates,
-  });
-}
-
 function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
   if (!source || typeof source !== "object") return;
   const layers = source.layers ?? {};
@@ -708,7 +632,6 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     uniforms.attenuation = falloff.attenuation;
   }
 
-  debugLogImportedLightState(source, { dtSeconds });
 }
 
 function createImportedLightAnimationFunction() {
@@ -716,21 +639,6 @@ function createImportedLightAnimationFunction() {
   return function indyFxImportedLightAnimation(dt, options = {}) {
     animateTime.call(this, dt, options);
     syncImportedLightShaderToyUniforms(this, dt, options);
-    if (isDebugLoggingEnabled()) {
-      const sourceId = String(this?.sourceId ?? this?.object?.id ?? "unknown");
-      const nowMs = Date.now();
-      const lastMs = Number(_indyFxLightDebugLastCallbackLogBySource.get(sourceId) ?? 0);
-      if (nowMs - lastMs >= INDYFX_LIGHT_DEBUG_INTERVAL_MS) {
-        _indyFxLightDebugLastCallbackLogBySource.set(sourceId, nowMs);
-        debugLog("imported light animation callback", {
-          sourceId,
-          animationType: String(this?.data?.animation?.type ?? ""),
-          dt: toFiniteLightNumber(dt, null),
-          speed: toFiniteLightNumber(options?.speed, null),
-          intensity: toFiniteLightNumber(options?.intensity, null),
-        });
-      }
-    }
   };
 }
 
