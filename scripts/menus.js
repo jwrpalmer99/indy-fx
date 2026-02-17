@@ -1010,7 +1010,13 @@ export function createMenus({ moduleId, shaderManager }) {
         linear: "Linear",
         exponential: "Exponential",
       };
-      return renderTemplate(
+      const renderTemplateFn =
+        foundry?.applications?.handlebars?.renderTemplate ??
+        globalThis.renderTemplate;
+      if (typeof renderTemplateFn !== "function") {
+        throw new Error("renderTemplate API is unavailable.");
+      }
+      return renderTemplateFn(
         `modules/${MODULE_ID}/templates/shader-edit-full.html`,
         {
           shader: {

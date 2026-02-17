@@ -1344,6 +1344,8 @@ function applyCompatibilityRewrites(source) {
 
   // textureLod is commonly used in ShaderToy WebGL2 shaders.
   next = next.replace(/\btextureLod\s*\(/g, "cpfx_textureLod(");
+  // textureGrad is GLSL ES 3.00; map to compatibility wrapper in ES 1.00.
+  next = next.replace(/\btextureGrad\s*\(/g, "cpfx_textureGrad(");
 
   // Route direct iChannelN samples through channel-aware wrappers so vec3 sampling
   // can distinguish cubemap-style lookup vs volume-atlas lookup per channel.
@@ -1360,9 +1362,14 @@ function applyCompatibilityRewrites(source) {
       `\\bcpfx_textureLod\\s*\\(\\s*iChannel${channelIndex}\\s*,`,
       "g",
     );
+    const textureGradRe = new RegExp(
+      `\\bcpfx_textureGrad\\s*\\(\\s*iChannel${channelIndex}\\s*,`,
+      "g",
+    );
     next = next.replace(textureCompatRe, `cpfx_textureCh${channelIndex}(`);
     next = next.replace(textureRe, `cpfx_textureCh${channelIndex}(`);
     next = next.replace(textureLodRe, `cpfx_textureLodCh${channelIndex}(`);
+    next = next.replace(textureGradRe, `cpfx_textureGradCh${channelIndex}(`);
   }
 
   // GLSL ES 1.00 lacks transpose(); route through compatibility overloads.
@@ -1531,6 +1538,8 @@ vec4 cpfx_textureCh${idx}(vec3 v) {
 vec4 cpfx_textureCh${idx}(vec3 v, float bias) { return cpfx_textureCh${idx}(v); }
 vec4 cpfx_textureLodCh${idx}(vec2 uv, float lod) { return cpfx_textureCh${idx}(uv); }
 vec4 cpfx_textureLodCh${idx}(vec3 v, float lod) { return cpfx_textureCh${idx}(v); }
+vec4 cpfx_textureGradCh${idx}(vec2 uv, vec2 dPdx, vec2 dPdy) { return cpfx_textureCh${idx}(uv); }
+vec4 cpfx_textureGradCh${idx}(vec3 v, vec3 dPdx, vec3 dPdy) { return cpfx_textureCh${idx}(v); }
 `);
   }
 
@@ -1697,6 +1706,12 @@ vec4 cpfx_textureLod(sampler2D s, vec2 uv, float lod) {
 }
 
 vec4 cpfx_textureLod(sampler2D s, vec3 dir, float lod) {
+  return textureCompat(s, dir);
+}
+vec4 cpfx_textureGrad(sampler2D s, vec2 uv, vec2 dPdx, vec2 dPdy) {
+  return textureCompat(s, uv);
+}
+vec4 cpfx_textureGrad(sampler2D s, vec3 dir, vec3 dPdx, vec3 dPdy) {
   return textureCompat(s, dir);
 }
 
@@ -2125,6 +2140,12 @@ vec4 cpfx_textureLod(sampler2D s, vec2 uv, float lod) {
 }
 
 vec4 cpfx_textureLod(sampler2D s, vec3 dir, float lod) {
+  return textureCompat(s, dir);
+}
+vec4 cpfx_textureGrad(sampler2D s, vec2 uv, vec2 dPdx, vec2 dPdy) {
+  return textureCompat(s, uv);
+}
+vec4 cpfx_textureGrad(sampler2D s, vec3 dir, vec3 dPdx, vec3 dPdy) {
   return textureCompat(s, dir);
 }
 
