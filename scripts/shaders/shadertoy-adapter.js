@@ -62,6 +62,49 @@ function coerceMainToMainImage(source) {
   return next;
 }
 
+function rewriteVectorTernaryComparisons(source) {
+  const looksVectorLike = (expr) => {
+    const value = String(expr ?? "").trim();
+    if (!value) return false;
+    if (/\b(?:[biu]?vec[234])\s*\(/.test(value)) return true;
+    if (/\.[xyzwrgba]{2,4}\b/.test(value)) return true;
+    return false;
+  };
+
+  const vectorTernaryRe =
+    /\(\s*((?:[^()?:;]|\([^()]*\))+?)\s*(==|!=)\s*((?:[^()?:;]|\([^()]*\))+?)\s*\)\s*\?/g;
+  return String(source ?? "").replace(
+    vectorTernaryRe,
+    (full, lhsRaw, op, rhsRaw) => {
+      const lhs = String(lhsRaw ?? "").trim();
+      const rhs = String(rhsRaw ?? "").trim();
+      if (!lhs || !rhs) return full;
+      if (!looksVectorLike(lhs) && !looksVectorLike(rhs)) return full;
+      const condition =
+        op === "=="
+          ? `all(equal(${lhs}, ${rhs}))`
+          : `any(notEqual(${lhs}, ${rhs}))`;
+      return `(${condition}) ?`;
+    },
+  );
+}
+
+function rewriteSelfAssignTernaryToIf(source) {
+  // Some ShaderToy ports use:
+  //   v = (cond) ? v = expr : v;
+  // ANGLE can be finicky around nested assignment in conditional expressions.
+  // Rewrite to:
+  //   if (cond) v = expr;
+  const re =
+    /([A-Za-z_]\w*)\s*=\s*\(([^?;]+)\)\s*\?\s*\1\s*=\s*([^:;]+?)\s*:\s*\1\s*;/g;
+  return String(source ?? "").replace(re, (_full, varName, condRaw, valueRaw) => {
+    const cond = String(condRaw ?? "").trim();
+    const value = String(valueRaw ?? "").trim();
+    if (!cond || !value) return _full;
+    return `if (${cond}) ${varName} = ${value};`;
+  });
+}
+
 function rewriteFloatStepLoopsToCountedLoops(source) {
   let next = String(source ?? "");
 
@@ -512,6 +555,8 @@ function applyCompatibilityRewrites(source) {
     );
 
   next = maskPreprocessorBlocks(next);
+  next = rewriteVectorTernaryComparisons(next);
+  next = rewriteSelfAssignTernaryToIf(next);
 
   // GLSL ES 1.00 accepts mat2/mat3/mat4 but not mat2x2/mat3x3/mat4x4 aliases.
   next = next.replace(/\bmat([234])x\1\b/g, "mat$1");
@@ -2221,6 +2266,9 @@ uniform sampler2D primaryTexture;
 uniform sampler2D depthTexture;
 uniform float depthElevation;
 uniform float attenuation;
+uniform float cpfxLightFalloffMode;
+uniform float cpfxLightBrightDimRatio;
+uniform float cpfxLightExponentialPower;
 uniform float colorationAlpha;
 uniform float backgroundAlpha;
 uniform vec3 color;`,
@@ -2235,7 +2283,20 @@ uniform vec3 color;`,
   float depth = smoothstep(0.0, 1.0, vDepth)
     * step(depthColor.g, depthElevation)
     * step(depthElevation, (254.5 / 255.0) - depthColor.r);
-  if (attenuation != 0.0) depth *= smoothstep(1.0, 1.0 - attenuation, dist);
+  float d = clamp(dist, 0.0, 1.0);
+  float falloff = 1.0;
+  if (cpfxLightFalloffMode < 0.5) {
+    falloff = 1.0;
+  } else if (cpfxLightFalloffMode < 1.5) {
+    float start = clamp(cpfxLightBrightDimRatio, 0.0, 1.0);
+    float t = clamp((d - start) / max(0.0001, 1.0 - start), 0.0, 1.0);
+    falloff = 1.0 - t;
+  } else if (cpfxLightFalloffMode < 2.5) {
+    falloff = clamp(1.0 - d, 0.0, 1.0);
+  } else {
+    falloff = pow(clamp(1.0 - d, 0.0, 1.0), max(0.0001, cpfxLightExponentialPower));
+  }
+  depth *= falloff;
   float intensityGain = max(intensity, 0.0);
   vec3 finalColor = ${colorExpression} * intensityGain;
   gl_FragColor = vec4(finalColor * depth, depth);

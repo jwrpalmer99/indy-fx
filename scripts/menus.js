@@ -1004,6 +1004,12 @@ export function createMenus({ moduleId, shaderManager }) {
         belowTokens: "Below Tokens (interface, under token z-order)",
         drawings: "DrawingsLayer (above tokens)",
       };
+      const lightFalloffChoices = {
+        none: "None",
+        brightDim: "Use Bright/Dim",
+        linear: "Linear",
+        exponential: "Exponential",
+      };
       return renderTemplate(
         `modules/${MODULE_ID}/templates/shader-edit-full.html`,
         {
@@ -1021,6 +1027,13 @@ export function createMenus({ moduleId, shaderManager }) {
             label,
             selected: String(defaults.layer ?? "inherit") === value,
           })),
+          lightFalloffModeOptions: Object.entries(lightFalloffChoices).map(
+            ([value, label]) => ({
+              value,
+              label,
+              selected: String(defaults.lightFalloffMode ?? "brightDim") === value,
+            }),
+          ),
           channelRows: [0, 1, 2, 3].map((index) => {
             const key = `iChannel${index}`;
             const channel = channelConfig[key] ?? {

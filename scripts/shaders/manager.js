@@ -128,6 +128,7 @@ const IMPORTED_SHADER_DEFAULT_KEYS = [
   "convertToLightSource",
   "lightUseIlluminationShader",
   "lightUseBackgroundShader",
+  "lightFalloffMode",
   "preloadShader",
 ];
 
@@ -1505,7 +1506,8 @@ export class ShaderManager {
       ),
       convertToLightSource: false,
       lightUseIlluminationShader: true,
-      lightUseBackgroundShader: true,
+      lightUseBackgroundShader: false,
+      lightFalloffMode: "brightDim",
       preloadShader: false,
     };
   }
@@ -1722,6 +1724,17 @@ export class ShaderManager {
         source.lightUseBackgroundShader === "1" ||
         source.lightUseBackgroundShader === "true" ||
         source.lightUseBackgroundShader === "on",
+      lightFalloffMode: (() => {
+        const raw = String(source.lightFalloffMode ?? base.lightFalloffMode ?? "brightDim")
+          .trim()
+          .toLowerCase();
+        if (raw === "none") return "none";
+        if (raw === "linear") return "linear";
+        if (raw === "exponential") return "exponential";
+        if (raw === "brightdim" || raw === "usebrightdim" || raw === "use-bright-dim")
+          return "brightDim";
+        return "brightDim";
+      })(),
       preloadShader:
         source.preloadShader === true ||
         source.preloadShader === 1 ||
@@ -3428,6 +3441,12 @@ export class ShaderManager {
       (entry) => entry.id === resolvedId,
     );
     if (!record) return this.builtinById.get(DEFAULT_SHADER_ID);
+    let referencedChannels = [];
+    try {
+      referencedChannels = extractReferencedChannels(record.source);
+    } catch (_err) {
+      referencedChannels = toArray(record.referencedChannels);
+    }
 
     return {
       id: record.id,
@@ -3436,7 +3455,7 @@ export class ShaderManager {
       requiresResolution: true,
       usesNoiseTexture: true,
       channelConfig: this.getRecordChannelConfig(record),
-      referencedChannels: toArray(record.referencedChannels)
+      referencedChannels: toArray(referencedChannels)
         .map((v) => Number(v))
         .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
       fragment: adaptShaderToyFragment(record.source),
@@ -3983,7 +4002,7 @@ export class ShaderManager {
         };
         // Some imported shaders depend on iChannel0 for base color and render black when unset.
         const effectiveChannelCfg =
-          channelCfg?.mode === "none" &&
+          (channelCfg?.mode === "none" || channelCfg?.mode === "empty") &&
           index === 0 &&
           referencedChannels.has(0)
             ? { ...channelCfg, mode: "noiseRgb" }

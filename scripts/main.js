@@ -9,7 +9,7 @@ import {
 import { createMenus } from "./menus.js";
 import { createNetworkController } from "./network.js";
 import { registerModuleSettings } from "./settings.js";
-import { adaptShaderToyLightFragment } from "./shaders/shadertoy-adapter.js";
+import { adaptShaderToyLightFragment, extractReferencedChannels } from "./shaders/shadertoy-adapter.js";
 import {
   parseHexColorLike,
   parseDistanceValue,
@@ -76,6 +76,12 @@ const INDYFX_LIGHT_ANIMATION_PREFIX = `${MODULE_ID}.light.`;
 const INDYFX_LIGHT_FALLOFF_DEFAULT = 0.5;
 const INDYFX_LIGHT_RESOLUTION_FALLBACK = [1, 1];
 const INDYFX_LIGHT_DEBUG_INTERVAL_MS = 1000;
+const INDYFX_LIGHT_FALLOFF_MODE_CODE = Object.freeze({
+  none: 0,
+  brightDim: 1,
+  linear: 2,
+  exponential: 3,
+});
 const _registeredImportedLightAnimationKeys = new Set();
 const _indyFxLightDebugLastLogBySource = new Map();
 const _indyFxLightDebugLastCallbackLogBySource = new Map();
@@ -129,6 +135,60 @@ function resolveFoundryLightAnimationSpeed(source, options = {}) {
     toFiniteLightNumber(source?.data?.animation?.speed, 5),
   );
   return Math.max(0, raw);
+}
+
+function normalizeImportedLightFalloffMode(value) {
+  const raw = String(value ?? "brightDim").trim().toLowerCase();
+  if (raw === "none") return "none";
+  if (raw === "linear") return "linear";
+  if (raw === "exponential") return "exponential";
+  if (raw === "brightdim" || raw === "usebrightdim" || raw === "use-bright-dim") {
+    return "brightDim";
+  }
+  return "brightDim";
+}
+
+function resolveImportedLightSourceRadii(source) {
+  const fallbackRadius = Math.max(
+    0,
+    toFiniteLightNumber(
+      source?.data?.radius,
+      toFiniteLightNumber(source?.object?.document?.config?.dim, 0),
+    ),
+  );
+  const dimRadius = Math.max(
+    0,
+    toFiniteLightNumber(
+      source?.data?.dim,
+      toFiniteLightNumber(source?.object?.document?.config?.dim, fallbackRadius),
+    ),
+  );
+  const brightRaw = toFiniteLightNumber(
+    source?.data?.bright,
+    toFiniteLightNumber(source?.object?.document?.config?.bright, dimRadius),
+  );
+  const brightRadius = Math.max(0, Math.min(dimRadius, brightRaw));
+  return { brightRadius, dimRadius };
+}
+
+function resolveImportedLightFalloffParams(mode, radii) {
+  const normalizedMode = normalizeImportedLightFalloffMode(mode);
+  const dim = Math.max(0, toFiniteLightNumber(radii?.dimRadius, 0));
+  const bright = Math.max(0, Math.min(dim, toFiniteLightNumber(radii?.brightRadius, 0)));
+  const brightDimRatio = dim > 0 ? Math.max(0, Math.min(1, bright / dim)) : 0;
+  let attenuation = INDYFX_LIGHT_FALLOFF_DEFAULT;
+  if (normalizedMode === "none") attenuation = 0;
+  else if (normalizedMode === "brightDim") attenuation = 1 - brightDimRatio;
+  else attenuation = 1;
+  return {
+    mode: normalizedMode,
+    modeCode: Number(INDYFX_LIGHT_FALLOFF_MODE_CODE[normalizedMode] ?? 1),
+    attenuation: Math.max(0, Math.min(1, attenuation)),
+    brightDimRatio,
+    exponentialPower: normalizedMode === "exponential" ? 2.2 : 1.0,
+    brightRadius: bright,
+    dimRadius: dim,
+  };
 }
 
 function toLightVec2(value, fallback = INDYFX_LIGHT_RESOLUTION_FALLBACK) {
@@ -230,6 +290,9 @@ function buildImportedLightAdapterUniformDefaults(baseUniforms = {}) {
       safeBase.cpfxForceOpaqueCaptureAlpha,
       0,
     ),
+    cpfxLightFalloffMode: toFiniteLightNumber(safeBase.cpfxLightFalloffMode, 1),
+    cpfxLightBrightDimRatio: toFiniteLightNumber(safeBase.cpfxLightBrightDimRatio, 0),
+    cpfxLightExponentialPower: toFiniteLightNumber(safeBase.cpfxLightExponentialPower, 2.2),
     debugMode: toFiniteLightNumber(safeBase.debugMode, 0),
     attenuation: toFiniteLightNumber(safeBase.attenuation, INDYFX_LIGHT_FALLOFF_DEFAULT),
   };
@@ -248,6 +311,85 @@ function getLightTextureDimensions(texture, fallback = [1, 1]) {
     fallbackY,
   );
   return [Math.max(1, width), Math.max(1, height)];
+}
+
+function buildImportedLightChannelUniformDefaults({
+  sourceText = "",
+  shaderId = "",
+  shaderLabel = "",
+  channelConfig = {},
+} = {}) {
+  const result = {};
+  const referenced = Array.isArray(extractReferencedChannels(sourceText))
+    ? extractReferencedChannels(sourceText)
+    : [];
+  const refs = new Set(
+    referenced
+      .map((v) => Number(v))
+      .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
+  );
+
+  for (const index of [0, 1, 2, 3]) {
+    const key = `iChannel${index}`;
+    const cfgRaw =
+      channelConfig?.[key] ??
+      {
+        mode: "none",
+        path: "",
+        source: "",
+        channels: {},
+        size: 512,
+      };
+    const modeOriginal = String(cfgRaw?.mode ?? "none").trim().toLowerCase();
+    const modeRaw =
+      modeOriginal === "tokentileimage" ||
+      modeOriginal === "tokenimage" ||
+      modeOriginal === "tileimage"
+        ? "scenecapture"
+        : modeOriginal;
+    let effectiveCfg = cfgRaw;
+    if (modeRaw !== modeOriginal) {
+      effectiveCfg = { ...cfgRaw, mode: "sceneCapture" };
+      debugLog("imported light channel remap", {
+        shaderId: String(shaderId ?? ""),
+        shaderLabel: String(shaderLabel ?? ""),
+        channel: key,
+        from: modeOriginal,
+        to: "sceneCapture",
+      });
+    }
+    if (modeRaw === "scenecapture") {
+      // In light shaders, scene capture is provided by Foundry as primaryTexture.
+      // Keep this channel null so syncImportedLightShaderToyUniforms binds primaryTexture at runtime.
+      result[key] = null;
+      continue;
+    }
+    if (modeRaw === "none" && index === 0 && refs.has(0)) {
+      // Match non-light imported shader behavior for noise-dependent ShaderToy inputs.
+      effectiveCfg = { ...cfgRaw, mode: "noiseRgb" };
+    }
+    if (modeRaw === "buffer" || modeRaw === "bufferself") {
+      // Runtime-updated ShaderToy buffers are not currently supported in light adapters.
+      continue;
+    }
+    try {
+      const resolved = shaderManager.resolveImportedChannelTexture(
+        effectiveCfg,
+        0,
+        {
+          shaderId,
+          shaderLabel,
+          channelKey: key,
+          previewMode: true,
+        },
+      );
+      if (resolved?.texture) result[key] = resolved.texture;
+    } catch (_err) {
+      // Keep white fallback on channel resolve failures.
+    }
+  }
+
+  return result;
 }
 
 function debugLogImportedLightState(source, { dtSeconds = 0 } = {}) {
@@ -288,6 +430,9 @@ function debugLogImportedLightState(source, { dtSeconds = 0 } = {}) {
       iFrameRate: toFiniteLightNumber(uniforms.iFrameRate, null),
       intensity: toFiniteLightNumber(uniforms.intensity, null),
       attenuation: toFiniteLightNumber(uniforms.attenuation, null),
+      cpfxLightFalloffMode: toFiniteLightNumber(uniforms.cpfxLightFalloffMode, null),
+      cpfxLightBrightDimRatio: toFiniteLightNumber(uniforms.cpfxLightBrightDimRatio, null),
+      cpfxLightExponentialPower: toFiniteLightNumber(uniforms.cpfxLightExponentialPower, null),
       shaderFlipX: toFiniteLightNumber(uniforms.shaderFlipX, null),
       shaderFlipY: toFiniteLightNumber(uniforms.shaderFlipY, null),
       colorationAlpha: toFiniteLightNumber(uniforms.colorationAlpha, null),
@@ -308,6 +453,8 @@ function debugLogImportedLightState(source, { dtSeconds = 0 } = {}) {
     speedScale: toFiniteLightNumber(source?._indyFxFoundrySpeedScale, null),
     foundryIntensity: toFiniteLightNumber(source?._indyFxFoundryIntensity, null),
     intensityScale: toFiniteLightNumber(source?._indyFxFoundryIntensityScale, null),
+    brightRadius: toFiniteLightNumber(source?._indyFxFoundryBrightRadius, null),
+    dimRadius: toFiniteLightNumber(source?._indyFxFoundryDimRadius, null),
     dtSeconds: toFiniteLightNumber(dtSeconds, null),
     frameCounter: toFiniteLightNumber(source?._indyFxLightFrameCounter, null),
     layerStates,
@@ -322,6 +469,7 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
   const intensityScale = foundryIntensity / 5;
   const foundrySpeed = resolveFoundryLightAnimationSpeed(source, options);
   const speedScale = foundrySpeed / 5;
+  const radii = resolveImportedLightSourceRadii(source);
   const dtSeconds = Math.max(
     0,
     toFiniteLightNumber(
@@ -355,6 +503,8 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
   source._indyFxFoundrySpeedScale = speedScale;
   source._indyFxFoundryIntensity = foundryIntensity;
   source._indyFxFoundryIntensityScale = intensityScale;
+  source._indyFxFoundryBrightRadius = radii.brightRadius;
+  source._indyFxFoundryDimRadius = radii.dimRadius;
   const frame = source._indyFxLightFrameCounter;
   const frameRate = dtSeconds > 0 ? (1 / dtSeconds) : 60;
 
@@ -387,19 +537,25 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
       Math.max(1, toFiniteLightNumber(fallbackResolution[0], lightDiameter)),
       Math.max(1, toFiniteLightNumber(fallbackResolution[1], lightDiameter)),
     ];
-    const [texW, texH] = getLightTextureDimensions(sharedTexture, [resX, resY]);
-
-    uniforms.iChannel0 = sharedTexture;
-    uniforms.iChannel1 = sharedTexture;
-    uniforms.iChannel2 = sharedTexture;
-    uniforms.iChannel3 = sharedTexture;
+    const ch0 = uniforms.iChannel0 ?? sharedTexture;
+    const ch1 = uniforms.iChannel1 ?? sharedTexture;
+    const ch2 = uniforms.iChannel2 ?? sharedTexture;
+    const ch3 = uniforms.iChannel3 ?? sharedTexture;
+    uniforms.iChannel0 = ch0;
+    uniforms.iChannel1 = ch1;
+    uniforms.iChannel2 = ch2;
+    uniforms.iChannel3 = ch3;
+    const [ch0w, ch0h] = getLightTextureDimensions(ch0, [resX, resY]);
+    const [ch1w, ch1h] = getLightTextureDimensions(ch1, [resX, resY]);
+    const [ch2w, ch2h] = getLightTextureDimensions(ch2, [resX, resY]);
+    const [ch3w, ch3h] = getLightTextureDimensions(ch3, [resX, resY]);
     uniforms.resolution = [resX, resY];
     uniforms.iResolution = [resX, resY, 1];
     uniforms.iChannelResolution = [
-      texW, texH, 1,
-      texW, texH, 1,
-      texW, texH, 1,
-      texW, texH, 1,
+      ch0w, ch0h, 1,
+      ch1w, ch1h, 1,
+      ch2w, ch2h, 1,
+      ch3w, ch3h, 1,
     ];
     uniforms.iMouse = [0, 0, 0, 0];
     uniforms.uTime = t;
@@ -441,13 +597,21 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     if (foundryIntensity > 0 && baseIntensity <= 0) baseIntensity = 1;
     layer._indyFxBaseIntensity = baseIntensity;
     uniforms.intensity = Math.max(0, baseIntensity * intensityScale);
+    const classFalloffMode = normalizeImportedLightFalloffMode(
+      layer?.shader?.constructor?.indyFxLightFalloffMode,
+    );
+    const activeFalloffMode = normalizeImportedLightFalloffMode(
+      layer?._indyFxLightFalloffMode ?? classFalloffMode,
+    );
+    layer._indyFxLightFalloffMode = activeFalloffMode;
+    const falloff = resolveImportedLightFalloffParams(activeFalloffMode, radii);
+    uniforms.cpfxLightFalloffMode = falloff.modeCode;
+    uniforms.cpfxLightBrightDimRatio = falloff.brightDimRatio;
+    uniforms.cpfxLightExponentialPower = falloff.exponentialPower;
     uniforms.cpfxPreserveTransparent = 1;
     uniforms.cpfxForceOpaqueCaptureAlpha = 0;
     uniforms.debugMode = 0;
-    uniforms.attenuation = toFiniteLightNumber(
-      uniforms.attenuation,
-      INDYFX_LIGHT_FALLOFF_DEFAULT,
-    );
+    uniforms.attenuation = falloff.attenuation;
   }
 
   debugLogImportedLightState(source, { dtSeconds });
@@ -480,10 +644,13 @@ function createImportedLightShaderClass({
   source = "",
   layerType = "coloration",
   shaderId = "",
+  shaderLabel = "",
+  channelConfig = {},
   defaultIntensity = null,
   defaultSpeed = null,
   defaultFlipHorizontal = false,
   defaultFlipVertical = false,
+  defaultLightFalloffMode = "brightDim",
 } = {}) {
   const normalizedLayerType = normalizeImportedLightLayerType(layerType);
   const baseShaderClass = resolveAdaptiveLightShaderClass(normalizedLayerType);
@@ -514,13 +681,39 @@ function createImportedLightShaderClass({
     uniformDefaults.intensity = Math.max(0, resolvedDefaultIntensity);
   }
   const resolvedDefaultSpeed = toFiniteLightNumber(defaultSpeed, 1);
+  const resolvedDefaultLightFalloffMode =
+    normalizeImportedLightFalloffMode(defaultLightFalloffMode);
   uniformDefaults.shaderFlipX = defaultFlipHorizontal === true ? 1.0 : 0.0;
   uniformDefaults.shaderFlipY = defaultFlipVertical === true ? 1.0 : 0.0;
+  uniformDefaults.cpfxLightFalloffMode =
+    Number(INDYFX_LIGHT_FALLOFF_MODE_CODE[resolvedDefaultLightFalloffMode] ?? 1);
+  uniformDefaults.cpfxLightBrightDimRatio = 0;
+  uniformDefaults.cpfxLightExponentialPower =
+    resolvedDefaultLightFalloffMode === "exponential" ? 2.2 : 1.0;
+  const resolvedChannels = buildImportedLightChannelUniformDefaults({
+    sourceText,
+    shaderId,
+    shaderLabel,
+    channelConfig,
+  });
+  if (Object.prototype.hasOwnProperty.call(resolvedChannels, "iChannel0")) {
+    uniformDefaults.iChannel0 = resolvedChannels.iChannel0;
+  }
+  if (Object.prototype.hasOwnProperty.call(resolvedChannels, "iChannel1")) {
+    uniformDefaults.iChannel1 = resolvedChannels.iChannel1;
+  }
+  if (Object.prototype.hasOwnProperty.call(resolvedChannels, "iChannel2")) {
+    uniformDefaults.iChannel2 = resolvedChannels.iChannel2;
+  }
+  if (Object.prototype.hasOwnProperty.call(resolvedChannels, "iChannel3")) {
+    uniformDefaults.iChannel3 = resolvedChannels.iChannel3;
+  }
 
   return class IndyFxImportedLightShader extends baseShaderClass {
     static fragmentShader = fragmentShader;
     static defaultUniforms = uniformDefaults;
     static indyFxBaseSpeed = Math.max(0, resolvedDefaultSpeed);
+    static indyFxLightFalloffMode = resolvedDefaultLightFalloffMode;
     static forceDefaultColor =
       normalizedLayerType === "coloration"
         ? true
@@ -533,22 +726,26 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
   if (!id) return null;
   const source = String(record?.source ?? "").trim();
   if (!source) return null;
+  const labelText = String(record?.label ?? record?.name ?? id).trim() || id;
 
   const key = normalizeImportedLightAnimationKey(id);
   if (!key) return null;
 
+  const channelConfig = shaderManager.getRecordChannelConfig?.(record) ?? {};
   const colorationShader = createImportedLightShaderClass({
     source,
     layerType: "coloration",
     shaderId: id,
+    shaderLabel: labelText,
+    channelConfig,
     defaultIntensity: defaults?.intensity,
     defaultSpeed: defaults?.speed,
     defaultFlipHorizontal: defaults?.flipHorizontal === true,
     defaultFlipVertical: defaults?.flipVertical === true,
+    defaultLightFalloffMode: defaults?.lightFalloffMode,
   });
   if (!colorationShader) return null;
 
-  const labelText = String(record?.label ?? record?.name ?? id).trim() || id;
   const config = {
     label: `Indy FX: ${labelText}`,
     animation: createImportedLightAnimationFunction(),
@@ -560,10 +757,13 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
       source,
       layerType: "illumination",
       shaderId: id,
+      shaderLabel: labelText,
+      channelConfig,
       defaultIntensity: defaults?.intensity,
       defaultSpeed: defaults?.speed,
       defaultFlipHorizontal: defaults?.flipHorizontal === true,
       defaultFlipVertical: defaults?.flipVertical === true,
+      defaultLightFalloffMode: defaults?.lightFalloffMode,
     });
     if (illuminationShader) config.illuminationShader = illuminationShader;
   }
@@ -573,10 +773,13 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
       source,
       layerType: "background",
       shaderId: id,
+      shaderLabel: labelText,
+      channelConfig,
       defaultIntensity: defaults?.intensity,
       defaultSpeed: defaults?.speed,
       defaultFlipHorizontal: defaults?.flipHorizontal === true,
       defaultFlipVertical: defaults?.flipVertical === true,
+      defaultLightFalloffMode: defaults?.lightFalloffMode,
     });
     if (backgroundShader) config.backgroundShader = backgroundShader;
   }
@@ -627,6 +830,122 @@ function syncImportedShaderLightAnimations({ reason = "unspecified" } = {}) {
     registryCount: registries.length,
     upsertCount,
     removedCount,
+  });
+}
+
+function getImportedLightAnimationTypeForSource(source) {
+  return String(
+    source?.data?.animation?.type ??
+      source?.animation?.type ??
+      source?.object?.document?.config?.animation?.type ??
+      "",
+  ).trim();
+}
+
+function collectActiveLightSources() {
+  const out = [];
+  const seen = new Set();
+  const pushSource = (source) => {
+    if (!source || typeof source !== "object") return;
+    const id = String(
+      source?.sourceId ??
+        source?.object?.id ??
+        source?.object?.document?.id ??
+        "",
+    ).trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(source);
+  };
+
+  const lightSources = canvas?.effects?.lightSources;
+  if (lightSources && typeof lightSources.forEach === "function") {
+    lightSources.forEach((source) => pushSource(source));
+  }
+
+  const ambientLights = Array.isArray(canvas?.lighting?.placeables)
+    ? canvas.lighting.placeables
+    : [];
+  for (const ambient of ambientLights) pushSource(ambient?.source);
+
+  return out;
+}
+
+function refreshImportedLightSources({
+  reason = "unspecified",
+  changedShaderIds = [],
+} = {}) {
+  const changedIds = Array.isArray(changedShaderIds)
+    ? changedShaderIds
+        .map((id) => String(id ?? "").trim())
+        .filter((id) => !!id)
+    : [];
+  const changedKeys = new Set(
+    changedIds
+      .map((id) => normalizeImportedLightAnimationKey(id))
+      .filter((key) => !!key),
+  );
+
+  const sources = collectActiveLightSources();
+  let matchedCount = 0;
+  let refreshedCount = 0;
+  let failedCount = 0;
+
+  for (const source of sources) {
+    const animationType = getImportedLightAnimationTypeForSource(source);
+    if (!animationType.startsWith(INDYFX_LIGHT_ANIMATION_PREFIX)) continue;
+    if (changedKeys.size > 0 && !changedKeys.has(animationType)) continue;
+    matchedCount += 1;
+
+    try {
+      for (const layer of Object.values(source?.layers ?? {})) {
+        if (!layer || typeof layer !== "object") continue;
+        delete layer._indyFxBaseIntensity;
+        delete layer._indyFxBaseSpeed;
+        delete layer._indyFxLightFalloffMode;
+      }
+
+      if (typeof source?.object?.updateSource === "function") {
+        source.object.updateSource();
+        refreshedCount += 1;
+        continue;
+      }
+      if (typeof source?.refresh === "function") {
+        source.refresh();
+        refreshedCount += 1;
+        continue;
+      }
+      if (typeof source?.initialize === "function") {
+        source.initialize(source?.data);
+        refreshedCount += 1;
+      }
+    } catch (err) {
+      failedCount += 1;
+      console.warn(`${MODULE_ID} | Failed to refresh imported light source`, {
+        reason: String(reason ?? "unspecified"),
+        sourceId: String(source?.sourceId ?? source?.object?.id ?? "unknown"),
+        animationType,
+        message: String(err?.message ?? err),
+      });
+    }
+  }
+
+  if (matchedCount > 0) {
+    try {
+      canvas?.perception?.update?.({ refreshLighting: true, refreshVision: false });
+    } catch (_err) {
+      // Non-fatal.
+    }
+  }
+
+  debugLog("imported light source refresh", {
+    reason: String(reason ?? "unspecified"),
+    changedShaderIds: changedIds,
+    changedKeyCount: changedKeys.size,
+    activeSourceCount: sources.length,
+    matchedCount,
+    refreshedCount,
+    failedCount,
   });
 }
 
@@ -5012,8 +5331,23 @@ Hooks.once("init", () => {
   syncImportedShaderLightAnimations({ reason: "init" });
 });
 
-Hooks.on(`${MODULE_ID}.shaderLibraryChanged`, () => {
+Hooks.on(`${MODULE_ID}.shaderLibraryChanged`, (payload = {}) => {
+  const changedShaderIds = Array.isArray(payload?.changedShaderIds)
+    ? payload.changedShaderIds
+    : [];
+  const operation = String(payload?.operation ?? "").trim().toLowerCase();
   syncImportedShaderLightAnimations({ reason: "shader-library-changed" });
+  if (
+    changedShaderIds.length === 0 ||
+    operation === "thumbnail-regenerate" ||
+    operation === "thumbnail-manual"
+  ) {
+    return;
+  }
+  refreshImportedLightSources({
+    reason: "shader-library-changed",
+    changedShaderIds,
+  });
 });
 
 
