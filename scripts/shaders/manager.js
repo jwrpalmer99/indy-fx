@@ -82,6 +82,10 @@ const SHADERTOY_MEDIA_REPLACEMENTS = new Map([
     "https://www.shadertoy.com/media/a/1f7dca9c22f324751f2a5a59c9b181dfe3b5564a04b724c657732d0bf09c99db.jpg",
     "modules/indy-fx/images/desk.webp",
   ],
+  [
+    "https://www.shadertoy.com/media/a/08b42b43ae9d3c0605da11d0eac86618ea888e62cdd9518ee8b9097488b31560.png",
+    "modules/indy-fx/images/white_rgb_noise.png",
+  ],
 ]);
 const THUMBNAIL_SIZE = 256;
 const THUMBNAIL_CAPTURE_SECONDS = 1.0;
@@ -3588,6 +3592,7 @@ export class ShaderManager {
 
     const mode = normalizeChannelMode(channelConfig?.mode ?? "none");
     const path = String(channelConfig?.path ?? "").trim();
+    const resolvedPath = applyKnownShaderToyMediaReplacement(path);
     const source = String(channelConfig?.source ?? "").trim();
     const size = normalizeBufferSize(channelConfig?.size, DEFAULT_BUFFER_SIZE);
     const emptyResult = {
@@ -3957,7 +3962,7 @@ export class ShaderManager {
     }
 
     if (mode === "image" || mode === "cubemap" || mode === "volume") {
-      if (!path) {
+      if (!resolvedPath) {
         console.warn(
           `${this.moduleId} | Imported shader channel is set to image mode but has no path. Falling back to RGB noise.`,
         );
@@ -3973,7 +3978,7 @@ export class ShaderManager {
         };
       }
 
-      const texture = PIXI.Texture.from(path);
+      const texture = PIXI.Texture.from(resolvedPath);
       const base = texture?.baseTexture;
       if (base) {
         applyChannelSamplerToTexture(texture, channelConfig, mode);
@@ -3982,12 +3987,12 @@ export class ShaderManager {
             shaderId: options?.shaderId,
             shaderLabel: options?.shaderLabel,
             channelKey: options?.channelKey,
-            path,
+            path: resolvedPath,
           });
           console.error(
             `${this.moduleId} | Failed to load imported shader channel image ` +
               `(${String(options?.shaderLabel ?? options?.shaderId ?? "Imported Shader")} ` +
-              `${String(options?.channelKey ?? "iChannel?")}): ${path}`,
+              `${String(options?.channelKey ?? "iChannel?")}): ${resolvedPath}`,
             err,
           );
         });
