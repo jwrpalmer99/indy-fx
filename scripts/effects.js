@@ -111,11 +111,11 @@ export function drawPlacementPreview(gfx, {
     const hy = Math.sin(dir);
     const nx = -hy;
     const ny = hx;
-    const halfW = Math.max(2, lineWidthPx * 0.5);
-    const p0 = { x: origin.x + nx * halfW, y: origin.y + ny * halfW };
-    const p1 = { x: origin.x - nx * halfW, y: origin.y - ny * halfW };
-    const p2 = { x: p1.x + hx * dist, y: p1.y + hy * dist };
-    const p3 = { x: p0.x + hx * dist, y: p0.y + hy * dist };
+    const width = Math.max(2, lineWidthPx);
+    const p0 = { x: origin.x, y: origin.y };
+    const p1 = { x: origin.x + hx * dist, y: origin.y + hy * dist };
+    const p2 = { x: p1.x + nx * width, y: p1.y + ny * width };
+    const p3 = { x: origin.x + nx * width, y: origin.y + ny * width };
     gfx.moveTo(p0.x, p0.y);
     gfx.lineTo(p1.x, p1.y);
     gfx.lineTo(p2.x, p2.y);

@@ -65,7 +65,8 @@ export function buildDirectionalMaskTexture({
   shapeDistancePx,
   lineWidthPx,
   shapeDirectionDeg,
-  coneAngleDeg
+  coneAngleDeg,
+  rectangleFromDirectionDistance = false,
 }) {
   let effectExtent = radiusPx;
   let customMaskTexture = null;
@@ -91,14 +92,31 @@ export function buildDirectionalMaskTexture({
       directionDeg: shapeDirectionDeg
     });
   } else if (shape === "rectangle") {
-    effectExtent = Math.max(1, shapeDistancePx, lineWidthPx * 0.5);
-    customMaskTexture = createShapeMaskTexture({
-      type: "rectangle",
-      extentPx: effectExtent,
-      distancePx: shapeDistancePx,
-      lineWidthPx,
-      directionDeg: shapeDirectionDeg
-    });
+    if (rectangleFromDirectionDistance) {
+      // Keep template "distance" at full scale in mask space; using abs(dx/dy)
+      // here shrinks rectangle sides at non-45 angles.
+      effectExtent = Math.max(1, shapeDistancePx);
+      customMaskTexture = createShapeMaskTexture({
+        type: "rectangleRay",
+        extentPx: effectExtent,
+        distancePx: shapeDistancePx,
+        directionDeg: shapeDirectionDeg,
+      });
+    } else {
+      effectExtent = Math.max(
+        1,
+        shapeDistancePx,
+        lineWidthPx,
+        Math.hypot(shapeDistancePx, lineWidthPx),
+      );
+      customMaskTexture = createShapeMaskTexture({
+        type: "rectangle",
+        extentPx: effectExtent,
+        distancePx: shapeDistancePx,
+        lineWidthPx,
+        directionDeg: shapeDirectionDeg
+      });
+    }
   }
 
   return { effectExtent, customMaskTexture };

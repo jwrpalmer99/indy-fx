@@ -40,6 +40,7 @@ import {
   destroyShaderRuntimeEntry,
   destroyRegionClusterRuntime
 } from "./shader-runtime-utils.js";
+import { getCircleMaskTexture } from "./shaders/textures.js";
 import {
   applyEditableShaderVariables,
   extractEditableShaderVariables,
@@ -3431,7 +3432,8 @@ function getShaderGeometryFromTemplate(template, fallbackRadiusUnits) {
       shape: "rectangle",
       shapeDirectionDeg: directionDeg,
       shapeDistanceUnits: distanceUnits,
-      lineWidthUnits: widthUnits
+      lineWidthUnits: distanceUnits,
+      rectangleFromDirectionDistance: true,
     };
   }
 
@@ -5276,7 +5278,8 @@ function shaderOnTemplate(templateId, opts = {}) {
     shapeDistancePx,
     lineWidthPx,
     shapeDirectionDeg,
-    coneAngleDeg
+    coneAngleDeg,
+    rectangleFromDirectionDistance: cfg.rectangleFromDirectionDistance === true,
   });
 
   setCenterFromWorld(container, getTemplateOrigin(template), worldLayer);
@@ -5302,11 +5305,13 @@ function shaderOnTemplate(templateId, opts = {}) {
       void clearShaderFlag(templateDoc, TEMPLATE_SHADER_FLAG);
     }
   }
+  const templateMaskTexture = customMaskTexture
+    ?? (cfg.useGradientMask === true ? null : getCircleMaskTexture(512));
   const shaderResult = shaderManager.makeShader({
     ...cfg,
     shape,
     shaderRotation: shaderRotationRad,
-    maskTexture: customMaskTexture,
+    maskTexture: templateMaskTexture,
     definitionOverride: definitionOverride ?? undefined,
     shaderId: selectedShaderId,
     targetType: "template",

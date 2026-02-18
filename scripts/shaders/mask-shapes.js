@@ -42,6 +42,44 @@ function drawLineMask(ctx, center, lengthPx, widthPx, directionRad) {
   ctx.fill();
 }
 
+function drawRectangleMask(ctx, center, lengthPx, widthPx, directionRad) {
+  const hx = Math.cos(directionRad);
+  const hy = Math.sin(directionRad);
+  const nx = -hy;
+  const ny = hx;
+
+  const p0x = center;
+  const p0y = center;
+  const p1x = center + hx * lengthPx;
+  const p1y = center + hy * lengthPx;
+  const p2x = p1x + nx * widthPx;
+  const p2y = p1y + ny * widthPx;
+  const p3x = center + nx * widthPx;
+  const p3y = center + ny * widthPx;
+
+  ctx.beginPath();
+  ctx.moveTo(p0x, p0y);
+  ctx.lineTo(p1x, p1y);
+  ctx.lineTo(p2x, p2y);
+  ctx.lineTo(p3x, p3y);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawRectangleRayMask(ctx, center, lengthPx, directionRad) {
+  const dx = Math.cos(directionRad) * lengthPx;
+  const dy = Math.sin(directionRad) * lengthPx;
+  const x0 = center;
+  const y0 = center;
+  const x1 = center + dx;
+  const y1 = center + dy;
+  const left = Math.min(x0, x1);
+  const top = Math.min(y0, y1);
+  const width = Math.max(1, Math.abs(x1 - x0));
+  const height = Math.max(1, Math.abs(y1 - y0));
+  ctx.fillRect(left, top, width, height);
+}
+
 export function createShapeMaskTexture({
   type = "circle",
   size = 512,
@@ -73,7 +111,9 @@ export function createShapeMaskTexture({
   } else if (type === "line") {
     drawLineMask(ctx, center, lengthLocal, widthLocal, dir);
   } else if (type === "rectangle") {
-    drawLineMask(ctx, center, lengthLocal, widthLocal, dir);
+    drawRectangleMask(ctx, center, lengthLocal, widthLocal, dir);
+  } else if (type === "rectangleRay") {
+    drawRectangleRayMask(ctx, center, lengthLocal, dir);
   } else {
     ctx.beginPath();
     ctx.arc(center, center, lengthLocal, 0, Math.PI * 2);
