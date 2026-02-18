@@ -551,6 +551,41 @@ function applyCompatibilityRewrites(source) {
     );
     return out;
   };
+  const rewriteDynamicArrayReadIndexing = (value) => {
+    let out = String(value ?? "");
+    const arrays = [];
+    const arrayDeclRe =
+      /\b(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(?:float|int|bool|vec[234]|mat[234])\s+([A-Za-z_]\w*)\s*\[\s*(\d+)\s*\]/g;
+    let declMatch;
+    while ((declMatch = arrayDeclRe.exec(out)) !== null) {
+      const name = String(declMatch[1] ?? "");
+      const size = Number(declMatch[2]);
+      if (!name || !Number.isFinite(size) || size < 1 || size > 8) continue;
+      arrays.push({ name, size: Math.floor(size) });
+    }
+
+    for (const { name, size } of arrays) {
+      const accessRe = new RegExp(`\\b${name}\\s*\\[\\s*([^\\]]+)\\s*\\]`, "g");
+      out = out.replace(accessRe, (full, idxRaw, offset, whole) => {
+        const idxExpr = String(idxRaw ?? "").trim();
+        if (!idxExpr) return full;
+        if (/^\d+$/.test(idxExpr)) return full;
+
+        // Keep write targets intact; only rewrite read indexing.
+        const tail = String(whole ?? "").slice(Number(offset ?? 0) + full.length);
+        if (/^\s*(?:=|\+=|-=|\*=|\/=|%=|<<=|>>=|&=|\^=|\|=)/.test(tail)) return full;
+
+        if (size === 1) return `${name}[0]`;
+        let selectExpr = `${name}[${size - 1}]`;
+        for (let i = size - 2; i >= 1; i -= 1) {
+          selectExpr = `((int(${idxExpr})==${i}) ? ${name}[${i}] : ${selectExpr})`;
+        }
+        selectExpr = `((int(${idxExpr})<=0) ? ${name}[0] : ${selectExpr})`;
+        return selectExpr;
+      });
+    }
+    return out;
+  };
 
   let next = maskComments(String(source ?? ""));
   next = rewriteFloatStepLoopsToCountedLoops(next);
@@ -651,9 +686,29 @@ function applyCompatibilityRewrites(source) {
   // GLSL ES 1.00 accepts mat2/mat3/mat4 but not mat2x2/mat3x3/mat4x4 aliases.
   next = next.replace(/\bmat([234])x\1\b/g, "mat$1");
   // Track non-square matrix variables so we can lower unsupported ops.
+  const mat4x3Vars = new Set();
+  const mat3x4Vars = new Set();
+  const mat2x4Vars = new Set();
+  const mat4x2Vars = new Set();
   const mat2x3Vars = new Set();
   const mat3x2Vars = new Set();
   const mat2Vars = new Set();
+  next.replace(/\bmat4x3\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
+    mat4x3Vars.add(String(name));
+    return _full;
+  });
+  next.replace(/\bmat3x4\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
+    mat3x4Vars.add(String(name));
+    return _full;
+  });
+  next.replace(/\bmat2x4\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
+    mat2x4Vars.add(String(name));
+    return _full;
+  });
+  next.replace(/\bmat4x2\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
+    mat4x2Vars.add(String(name));
+    return _full;
+  });
   next.replace(/\bmat2x3\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
     mat2x3Vars.add(String(name));
     return _full;
@@ -666,18 +721,54 @@ function applyCompatibilityRewrites(source) {
     mat2Vars.add(String(name));
     return _full;
   });
-  // Lower non-square matrix constructors/types to encoded mat3 forms.
+  // Lower non-square matrix constructors/types to encoded mat4/mat3 forms.
+  next = next.replace(/\bmat4x3\s*\(/g, "cpfx_mat4x3(");
+  next = next.replace(/\bmat3x4\s*\(/g, "cpfx_mat3x4(");
+  next = next.replace(/\bmat2x4\s*\(/g, "cpfx_mat2x4(");
+  next = next.replace(/\bmat4x2\s*\(/g, "cpfx_mat4x2(");
   next = next.replace(/\bmat2x3\s*\(/g, "cpfx_mat2x3(");
   next = next.replace(/\bmat3x2\s*\(/g, "cpfx_mat3x2(");
+  next = next.replace(/\bmat4x3\b/g, "mat4");
+  next = next.replace(/\bmat3x4\b/g, "mat4");
+  next = next.replace(/\bmat2x4\b/g, "mat4");
+  next = next.replace(/\bmat4x2\b/g, "mat4");
   next = next.replace(/\bmat2x3\b/g, "mat3");
   next = next.replace(/\bmat3x2\b/g, "mat3");
   const exprAtom =
     String.raw`(?:\((?:[^()]|\([^()]*\))*\)|[A-Za-z_]\w*\s*\((?:[^()]|\([^()]*\))*\)|[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[[^\]]+\s*\])*)`;
+  next = next.replace(
+    /cpfx_mat4x3\s*\(((?:[^()]|\([^()]*\))*)\)\s*\*\s*([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[[^\]]+\s*\])?|\((?:[^()]|\([^()]*\))*\))/g,
+    "cpfx_mul_mat4x3_vec4(cpfx_mat4x3($1), $2)",
+  );
   // Handle direct constructor * mat2 cases before per-variable rewrites.
   next = next.replace(
     /cpfx_mat2x3\s*\(((?:[^()]|\([^()]*\))*)\)\s*\*\s*(mat2\s*\((?:[^()]|\([^()]*\))*\)|\((?:[^()]|\([^()]*\))*mat2\s*\((?:[^()]|\([^()]*\))*\)(?:[^()]|\([^()]*\))*\))/g,
     "cpfx_mul_mat2x3_mat2(cpfx_mat2x3($1), $2)",
   );
+  for (const name of mat4x3Vars) {
+    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+    next = next.replace(rightMulRe, `cpfx_mul_mat4x3_vec4(${name}, $1)`);
+    next = next.replace(leftMulRe, `cpfx_mul_vec3_mat4x3($1, ${name})`);
+  }
+  for (const name of mat3x4Vars) {
+    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+    next = next.replace(rightMulRe, `cpfx_mul_mat3x4_vec3(${name}, $1)`);
+    next = next.replace(leftMulRe, `cpfx_mul_vec4_mat3x4($1, ${name})`);
+  }
+  for (const name of mat2x4Vars) {
+    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+    next = next.replace(rightMulRe, `cpfx_mul_mat2x4_vec2(${name}, $1)`);
+    next = next.replace(leftMulRe, `cpfx_mul_vec4_mat2x4($1, ${name})`);
+  }
+  for (const name of mat4x2Vars) {
+    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+    next = next.replace(rightMulRe, `cpfx_mul_mat4x2_vec4(${name}, $1)`);
+    next = next.replace(leftMulRe, `cpfx_mul_vec2_mat4x2($1, ${name})`);
+  }
   for (const name of mat3x2Vars) {
     const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
     const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
@@ -1726,9 +1817,12 @@ function applyCompatibilityRewrites(source) {
 
   next = rewriteTextureBuiltins(next);
 
-  // GLSL ES 1.00 has no mat4x3; rewrite common multiplication form.
-  const mat4x3MulRe = /mat4x3\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)\s*\*\s*(\([^;\n]+\)|[A-Za-z_]\w*)/g;
-  next = next.replace(mat4x3MulRe, "cpfx_mul_mat4x3_vec4($1, $2, $3, $4, $5)");
+  // GLSL ES 1.00 has no mat4x3; rewrite constructor multiply forms.
+  const mat4x3MulRe = /cpfx_mat4x3\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)\s*\*\s*(\([^;\n]+\)|[A-Za-z_]\w*)/g;
+  next = next.replace(
+    mat4x3MulRe,
+    "cpfx_mul_mat4x3_vec4(cpfx_mat4x3($1, $2, $3, $4), $5)",
+  );
 
   // Targeted fix for OpenSimplex common code pattern that writes vec3 by dynamic index.
   next = next.replace(
@@ -1747,6 +1841,7 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(new RegExp(`${lvalue}\\s*<<=\\s*([^;]+);`, "g"), "$1 = cpfx_shl($1, $2);");
   next = next.replace(new RegExp(`${lvalue}\\s*>>=\\s*([^;]+);`, "g"), "$1 = cpfx_shr($1, $2);");
   next = next.replace(new RegExp(`${lvalue}\\s*%=\\s*([^;]+);`, "g"), "$1 = cpfx_mod($1, $2);");
+  next = rewriteDynamicArrayReadIndexing(next);
   next = unmaskComments(next);
   return next;
 }
@@ -2059,10 +2154,72 @@ ivec2 cpfx_textureSizeAny(sampler2D s, int lod) {
 vec3 cpfx_mul_mat4x3_vec4(vec3 c0, vec3 c1, vec3 c2, vec3 c3, vec4 v) {
   return c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w;
 }
+vec3 cpfx_mul_mat4x3_vec4(mat4 m, vec4 v) {
+  return m[0].xyz * v.x + m[1].xyz * v.y + m[2].xyz * v.z + m[3].xyz * v.w;
+}
+vec4 cpfx_mul_vec3_mat4x3(vec3 v, mat4 m) {
+  return vec4(dot(v, m[0].xyz), dot(v, m[1].xyz), dot(v, m[2].xyz), dot(v, m[3].xyz));
+}
 
-// Encode unsupported non-square matrices in mat3 for GLSL ES 1.00 compatibility.
+// Encode unsupported non-square matrices for GLSL ES 1.00 compatibility.
+// mat4x3: use columns 0..3 (vec3 in xyz), w set to zero.
+// mat3x4: use columns 0..2 (vec4), column 3 is zero.
+// mat2x4: use columns 0..1 (vec4), columns 2..3 are zero.
+// mat4x2: use columns 0..3 (vec2 in xy), zw set to zero.
 // mat2x3: use columns 0..1 (vec3), column 2 is zero.
 // mat3x2: use columns 0..2 with xy populated, z set to zero.
+mat4 cpfx_mat4x3(vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
+  return mat4(vec4(c0, 0.0), vec4(c1, 0.0), vec4(c2, 0.0), vec4(c3, 0.0));
+}
+mat4 cpfx_mat4x3(float c0r0, float c0r1, float c0r2, float c1r0, float c1r1, float c1r2, float c2r0, float c2r1, float c2r2, float c3r0, float c3r1, float c3r2) {
+  return mat4(vec4(c0r0, c0r1, c0r2, 0.0), vec4(c1r0, c1r1, c1r2, 0.0), vec4(c2r0, c2r1, c2r2, 0.0), vec4(c3r0, c3r1, c3r2, 0.0));
+}
+mat4 cpfx_mat4x3(float s) {
+  return mat4(vec4(s, 0.0, 0.0, 0.0), vec4(0.0, s, 0.0, 0.0), vec4(0.0, 0.0, s, 0.0), vec4(0.0));
+}
+mat4 cpfx_mat4x3(mat4 m) {
+  return mat4(vec4(m[0].xyz, 0.0), vec4(m[1].xyz, 0.0), vec4(m[2].xyz, 0.0), vec4(m[3].xyz, 0.0));
+}
+
+mat4 cpfx_mat3x4(vec4 c0, vec4 c1, vec4 c2) {
+  return mat4(c0, c1, c2, vec4(0.0));
+}
+mat4 cpfx_mat3x4(float c0r0, float c0r1, float c0r2, float c0r3, float c1r0, float c1r1, float c1r2, float c1r3, float c2r0, float c2r1, float c2r2, float c2r3) {
+  return mat4(vec4(c0r0, c0r1, c0r2, c0r3), vec4(c1r0, c1r1, c1r2, c1r3), vec4(c2r0, c2r1, c2r2, c2r3), vec4(0.0));
+}
+mat4 cpfx_mat3x4(float s) {
+  return mat4(vec4(s, 0.0, 0.0, 0.0), vec4(0.0, s, 0.0, 0.0), vec4(0.0, 0.0, s, 0.0), vec4(0.0));
+}
+mat4 cpfx_mat3x4(mat4 m) {
+  return mat4(m[0], m[1], m[2], vec4(0.0));
+}
+
+mat4 cpfx_mat2x4(vec4 c0, vec4 c1) {
+  return mat4(c0, c1, vec4(0.0), vec4(0.0));
+}
+mat4 cpfx_mat2x4(float c0r0, float c0r1, float c0r2, float c0r3, float c1r0, float c1r1, float c1r2, float c1r3) {
+  return mat4(vec4(c0r0, c0r1, c0r2, c0r3), vec4(c1r0, c1r1, c1r2, c1r3), vec4(0.0), vec4(0.0));
+}
+mat4 cpfx_mat2x4(float s) {
+  return mat4(vec4(s, 0.0, 0.0, 0.0), vec4(0.0, s, 0.0, 0.0), vec4(0.0), vec4(0.0));
+}
+mat4 cpfx_mat2x4(mat4 m) {
+  return mat4(m[0], m[1], vec4(0.0), vec4(0.0));
+}
+
+mat4 cpfx_mat4x2(vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
+  return mat4(vec4(c0, 0.0, 0.0), vec4(c1, 0.0, 0.0), vec4(c2, 0.0, 0.0), vec4(c3, 0.0, 0.0));
+}
+mat4 cpfx_mat4x2(float c0r0, float c0r1, float c1r0, float c1r1, float c2r0, float c2r1, float c3r0, float c3r1) {
+  return mat4(vec4(c0r0, c0r1, 0.0, 0.0), vec4(c1r0, c1r1, 0.0, 0.0), vec4(c2r0, c2r1, 0.0, 0.0), vec4(c3r0, c3r1, 0.0, 0.0));
+}
+mat4 cpfx_mat4x2(float s) {
+  return mat4(vec4(s, 0.0, 0.0, 0.0), vec4(0.0, s, 0.0, 0.0), vec4(0.0), vec4(0.0));
+}
+mat4 cpfx_mat4x2(mat4 m) {
+  return mat4(vec4(m[0].xy, 0.0, 0.0), vec4(m[1].xy, 0.0, 0.0), vec4(m[2].xy, 0.0, 0.0), vec4(m[3].xy, 0.0, 0.0));
+}
+
 mat3 cpfx_mat2x3(vec3 c0, vec3 c1) {
   return mat3(c0, c1, vec3(0.0));
 }
@@ -2100,6 +2257,24 @@ vec2 cpfx_mul_mat3x2_vec3(mat3 m, vec3 v) {
 }
 vec3 cpfx_mul_vec2_mat3x2(vec2 v, mat3 m) {
   return vec3(dot(v, m[0].xy), dot(v, m[1].xy), dot(v, m[2].xy));
+}
+vec4 cpfx_mul_mat2x4_vec2(mat4 m, vec2 v) {
+  return m[0] * v.x + m[1] * v.y;
+}
+vec2 cpfx_mul_vec4_mat2x4(vec4 v, mat4 m) {
+  return vec2(dot(v, m[0]), dot(v, m[1]));
+}
+vec2 cpfx_mul_mat4x2_vec4(mat4 m, vec4 v) {
+  return m[0].xy * v.x + m[1].xy * v.y + m[2].xy * v.z + m[3].xy * v.w;
+}
+vec4 cpfx_mul_vec2_mat4x2(vec2 v, mat4 m) {
+  return vec4(dot(v, m[0].xy), dot(v, m[1].xy), dot(v, m[2].xy), dot(v, m[3].xy));
+}
+vec4 cpfx_mul_mat3x4_vec3(mat4 m, vec3 v) {
+  return m[0] * v.x + m[1] * v.y + m[2] * v.z;
+}
+vec3 cpfx_mul_vec4_mat3x4(vec4 v, mat4 m) {
+  return vec3(dot(v, m[0]), dot(v, m[1]), dot(v, m[2]));
 }
 mat3 cpfx_mul_mat2x3_mat2(mat3 a, mat2 b) {
   return cpfx_mat2x3(
@@ -2685,10 +2860,72 @@ ivec2 cpfx_textureSizeAny(sampler2D s, int lod) {
 vec3 cpfx_mul_mat4x3_vec4(vec3 c0, vec3 c1, vec3 c2, vec3 c3, vec4 v) {
   return c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w;
 }
+vec3 cpfx_mul_mat4x3_vec4(mat4 m, vec4 v) {
+  return m[0].xyz * v.x + m[1].xyz * v.y + m[2].xyz * v.z + m[3].xyz * v.w;
+}
+vec4 cpfx_mul_vec3_mat4x3(vec3 v, mat4 m) {
+  return vec4(dot(v, m[0].xyz), dot(v, m[1].xyz), dot(v, m[2].xyz), dot(v, m[3].xyz));
+}
 
-// Encode unsupported non-square matrices in mat3 for GLSL ES 1.00 compatibility.
+// Encode unsupported non-square matrices for GLSL ES 1.00 compatibility.
+// mat4x3: use columns 0..3 (vec3 in xyz), w set to zero.
+// mat3x4: use columns 0..2 (vec4), column 3 is zero.
+// mat2x4: use columns 0..1 (vec4), columns 2..3 are zero.
+// mat4x2: use columns 0..3 (vec2 in xy), zw set to zero.
 // mat2x3: use columns 0..1 (vec3), column 2 is zero.
 // mat3x2: use columns 0..2 with xy populated, z set to zero.
+mat4 cpfx_mat4x3(vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
+  return mat4(vec4(c0, 0.0), vec4(c1, 0.0), vec4(c2, 0.0), vec4(c3, 0.0));
+}
+mat4 cpfx_mat4x3(float c0r0, float c0r1, float c0r2, float c1r0, float c1r1, float c1r2, float c2r0, float c2r1, float c2r2, float c3r0, float c3r1, float c3r2) {
+  return mat4(vec4(c0r0, c0r1, c0r2, 0.0), vec4(c1r0, c1r1, c1r2, 0.0), vec4(c2r0, c2r1, c2r2, 0.0), vec4(c3r0, c3r1, c3r2, 0.0));
+}
+mat4 cpfx_mat4x3(float s) {
+  return mat4(vec4(s, 0.0, 0.0, 0.0), vec4(0.0, s, 0.0, 0.0), vec4(0.0, 0.0, s, 0.0), vec4(0.0));
+}
+mat4 cpfx_mat4x3(mat4 m) {
+  return mat4(vec4(m[0].xyz, 0.0), vec4(m[1].xyz, 0.0), vec4(m[2].xyz, 0.0), vec4(m[3].xyz, 0.0));
+}
+
+mat4 cpfx_mat3x4(vec4 c0, vec4 c1, vec4 c2) {
+  return mat4(c0, c1, c2, vec4(0.0));
+}
+mat4 cpfx_mat3x4(float c0r0, float c0r1, float c0r2, float c0r3, float c1r0, float c1r1, float c1r2, float c1r3, float c2r0, float c2r1, float c2r2, float c2r3) {
+  return mat4(vec4(c0r0, c0r1, c0r2, c0r3), vec4(c1r0, c1r1, c1r2, c1r3), vec4(c2r0, c2r1, c2r2, c2r3), vec4(0.0));
+}
+mat4 cpfx_mat3x4(float s) {
+  return mat4(vec4(s, 0.0, 0.0, 0.0), vec4(0.0, s, 0.0, 0.0), vec4(0.0, 0.0, s, 0.0), vec4(0.0));
+}
+mat4 cpfx_mat3x4(mat4 m) {
+  return mat4(m[0], m[1], m[2], vec4(0.0));
+}
+
+mat4 cpfx_mat2x4(vec4 c0, vec4 c1) {
+  return mat4(c0, c1, vec4(0.0), vec4(0.0));
+}
+mat4 cpfx_mat2x4(float c0r0, float c0r1, float c0r2, float c0r3, float c1r0, float c1r1, float c1r2, float c1r3) {
+  return mat4(vec4(c0r0, c0r1, c0r2, c0r3), vec4(c1r0, c1r1, c1r2, c1r3), vec4(0.0), vec4(0.0));
+}
+mat4 cpfx_mat2x4(float s) {
+  return mat4(vec4(s, 0.0, 0.0, 0.0), vec4(0.0, s, 0.0, 0.0), vec4(0.0), vec4(0.0));
+}
+mat4 cpfx_mat2x4(mat4 m) {
+  return mat4(m[0], m[1], vec4(0.0), vec4(0.0));
+}
+
+mat4 cpfx_mat4x2(vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
+  return mat4(vec4(c0, 0.0, 0.0), vec4(c1, 0.0, 0.0), vec4(c2, 0.0, 0.0), vec4(c3, 0.0, 0.0));
+}
+mat4 cpfx_mat4x2(float c0r0, float c0r1, float c1r0, float c1r1, float c2r0, float c2r1, float c3r0, float c3r1) {
+  return mat4(vec4(c0r0, c0r1, 0.0, 0.0), vec4(c1r0, c1r1, 0.0, 0.0), vec4(c2r0, c2r1, 0.0, 0.0), vec4(c3r0, c3r1, 0.0, 0.0));
+}
+mat4 cpfx_mat4x2(float s) {
+  return mat4(vec4(s, 0.0, 0.0, 0.0), vec4(0.0, s, 0.0, 0.0), vec4(0.0), vec4(0.0));
+}
+mat4 cpfx_mat4x2(mat4 m) {
+  return mat4(vec4(m[0].xy, 0.0, 0.0), vec4(m[1].xy, 0.0, 0.0), vec4(m[2].xy, 0.0, 0.0), vec4(m[3].xy, 0.0, 0.0));
+}
+
 mat3 cpfx_mat2x3(vec3 c0, vec3 c1) {
   return mat3(c0, c1, vec3(0.0));
 }
@@ -2726,6 +2963,24 @@ vec2 cpfx_mul_mat3x2_vec3(mat3 m, vec3 v) {
 }
 vec3 cpfx_mul_vec2_mat3x2(vec2 v, mat3 m) {
   return vec3(dot(v, m[0].xy), dot(v, m[1].xy), dot(v, m[2].xy));
+}
+vec4 cpfx_mul_mat2x4_vec2(mat4 m, vec2 v) {
+  return m[0] * v.x + m[1] * v.y;
+}
+vec2 cpfx_mul_vec4_mat2x4(vec4 v, mat4 m) {
+  return vec2(dot(v, m[0]), dot(v, m[1]));
+}
+vec2 cpfx_mul_mat4x2_vec4(mat4 m, vec4 v) {
+  return m[0].xy * v.x + m[1].xy * v.y + m[2].xy * v.z + m[3].xy * v.w;
+}
+vec4 cpfx_mul_vec2_mat4x2(vec2 v, mat4 m) {
+  return vec4(dot(v, m[0].xy), dot(v, m[1].xy), dot(v, m[2].xy), dot(v, m[3].xy));
+}
+vec4 cpfx_mul_mat3x4_vec3(mat4 m, vec3 v) {
+  return m[0] * v.x + m[1] * v.y + m[2] * v.z;
+}
+vec3 cpfx_mul_vec4_mat3x4(vec4 v, mat4 m) {
+  return vec3(dot(v, m[0]), dot(v, m[1]), dot(v, m[2]));
 }
 mat3 cpfx_mul_mat2x3_mat2(mat3 a, mat2 b) {
   return cpfx_mat2x3(
