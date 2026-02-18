@@ -3746,9 +3746,7 @@ export class ShaderManager {
         );
         const captureFlipVerticalUser = parseBooleanLike(options?.captureFlipVertical);
         const captureFlipVertical = !captureFlipVerticalUser;
-        const includePlaceableRotation = !(
-          targetType === "token" && options?.rotateWithToken === true
-        );
+        const includePlaceableRotation = false;
         debugLog(this.moduleId, "create placeable image channel", {
           targetType,
           targetId,

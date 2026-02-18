@@ -592,6 +592,8 @@ export class PlaceableImageChannel {
       sourceW,
       sourceH,
     );
+    const appliedPlaceableRotationRad =
+      this.includePlaceableRotation === true ? draw.rotationRad : 0;
 
     const baseW = Math.max(1, draw.width * Math.abs(draw.scaleX));
     const baseH = Math.max(1, draw.height * Math.abs(draw.scaleY));
@@ -604,11 +606,11 @@ export class PlaceableImageChannel {
         )
       : (() => {
           const rotatedW =
-            Math.abs(Math.cos(draw.rotationRad)) * baseW +
-            Math.abs(Math.sin(draw.rotationRad)) * baseH;
+            Math.abs(Math.cos(appliedPlaceableRotationRad)) * baseW +
+            Math.abs(Math.sin(appliedPlaceableRotationRad)) * baseH;
           const rotatedH =
-            Math.abs(Math.sin(draw.rotationRad)) * baseW +
-            Math.abs(Math.cos(draw.rotationRad)) * baseH;
+            Math.abs(Math.sin(appliedPlaceableRotationRad)) * baseW +
+            Math.abs(Math.cos(appliedPlaceableRotationRad)) * baseH;
           return Math.min(
             this.width / Math.max(1, rotatedW),
             this.height / Math.max(1, rotatedH),
@@ -644,10 +646,9 @@ export class PlaceableImageChannel {
       drawAspect: baseH > 0 ? (baseW / baseH) : 0,
       fitScale: fit,
       placeableRotationDeg: Number((draw.rotationRad * 180) / Math.PI),
+      appliedPlaceableRotationDeg: Number((appliedPlaceableRotationRad * 180) / Math.PI),
     });
 
-    const appliedPlaceableRotationRad =
-      this.includePlaceableRotation === true ? draw.rotationRad : 0;
     const captureFlipX = effectiveCaptureFlipHorizontal ? -1 : 1;
     const captureFlipY = effectiveCaptureFlipVertical ? -1 : 1;
     const captureRotationRad = (effectiveCaptureRotationDeg * Math.PI) / 180;

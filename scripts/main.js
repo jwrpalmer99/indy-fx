@@ -4809,7 +4809,7 @@ function shaderOn(tokenId, opts = {}) {
   const getTokenRotationRaw = (tokenLike) =>
     getTokenRotationRad(tokenLike);
   const getTokenRotationForUniform = (tokenLike) =>
-    -getTokenRotationRaw(tokenLike);
+    cfg.rotateWithToken === true ? -getTokenRotationRaw(tokenLike) : 0;
   const getTokenRotationForContainer = (tokenLike) =>
     cfg.rotateWithToken === true ? getTokenRotationRaw(tokenLike) : 0;
   setCenter(container, tok, worldLayer);
@@ -4869,7 +4869,7 @@ function shaderOn(tokenId, opts = {}) {
   });
   const syncTokenRuntimeImageRotationMode = (liveTok) => {
     if (!Array.isArray(runtimeImageChannels) || !runtimeImageChannels.length) return;
-    const desiredIncludePlaceableRotation = !(cfg.rotateWithToken === true);
+    const desiredIncludePlaceableRotation = false;
     for (const runtimeImage of runtimeImageChannels) {
       if (!runtimeImage || typeof runtimeImage !== "object") continue;
       const targetType = String(runtimeImage.targetType ?? "").trim().toLowerCase();
@@ -5439,6 +5439,20 @@ function shaderOnTile(tileId, opts = {}) {
   if (!Number.isFinite(metrics.width) || !Number.isFinite(metrics.height) || metrics.width <= 0 || metrics.height <= 0) {
     return ui.notifications.warn("Tile has invalid dimensions.");
   }
+  const getTileRotationRaw = (tileLike) => getTileMetrics(tileLike).rotationRad;
+  const getTileRotationForUniform = (tileLike) =>
+    cfg.rotateWithToken === true ? -getTileRotationRaw(tileLike) : 0;
+  const getTileRotationForContainer = (tileLike) =>
+    cfg.rotateWithToken === true ? getTileRotationRaw(tileLike) : 0;
+  const getTileShaderSizeForMetrics = (tileMetrics) => {
+    if (cfg.rotateWithToken === true) {
+      return {
+        width: Math.max(1, Number(tileMetrics?.width ?? 1)),
+        height: Math.max(1, Number(tileMetrics?.height ?? 1)),
+      };
+    }
+    return getTileAxisAlignedSize(tileMetrics);
+  };
 
   const container = new PIXI.Container();
   container.zIndex = resolveShaderContainerZIndex(cfg);
@@ -5446,9 +5460,9 @@ function shaderOnTile(tileId, opts = {}) {
   addShaderContainerToWorldLayer(worldLayer, container, cfg);
 
   setCenterFromWorld(container, metrics.center, worldLayer);
-  container.rotation = 0;
+  container.rotation = getTileRotationForContainer(tile);
 
-  const shaderSize = getTileAxisAlignedSize(metrics);
+  const shaderSize = getTileShaderSizeForMetrics(metrics);
   const halfW = Math.max(1, shaderSize.width * 0.5);
   const halfH = Math.max(1, shaderSize.height * 0.5);
   const effectExtent = Math.max(halfW, halfH);
@@ -5482,6 +5496,9 @@ function shaderOnTile(tileId, opts = {}) {
     resolution: [Math.max(2, shaderSize.width), Math.max(2, shaderSize.height)]
   });
   const shader = shaderResult.shader;
+  if ("cpfxTokenRotation" in shader.uniforms) {
+    shader.uniforms.cpfxTokenRotation = getTileRotationForUniform(tile);
+  }
 
   const captureResolutionScale = getClientShaderCaptureResolutionScale();
   const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, {
@@ -5493,6 +5510,28 @@ function shaderOnTile(tileId, opts = {}) {
       shaderId: selectedShaderId,
     },
   });
+  const syncTileRuntimeImageRotationMode = (liveTile) => {
+    if (!Array.isArray(runtimeImageChannels) || !runtimeImageChannels.length) return;
+    const desiredIncludePlaceableRotation = false;
+    for (const runtimeImage of runtimeImageChannels) {
+      if (!runtimeImage || typeof runtimeImage !== "object") continue;
+      const targetType = String(runtimeImage.targetType ?? "").trim().toLowerCase();
+      const targetId = String(runtimeImage.targetId ?? "").trim();
+      if (targetType !== "tile" || targetId !== String(resolvedTileId)) continue;
+      const current = runtimeImage.includePlaceableRotation !== false;
+      if (current === desiredIncludePlaceableRotation) continue;
+      runtimeImage.includePlaceableRotation = desiredIncludePlaceableRotation;
+      runtimeImage.refresh?.({ force: true });
+      debugLog("tile runtime image rotation mode sync", {
+        tileId: resolvedTileId,
+        shaderId: selectedShaderId,
+        rotateWithToken: cfg.rotateWithToken === true,
+        includePlaceableRotation: desiredIncludePlaceableRotation,
+        tileRotationDeg: Number(liveTile?.document?.rotation ?? liveTile?.rotation ?? 0),
+      });
+    }
+  };
+  syncTileRuntimeImageRotationMode(tile);
 
   const mesh = new PIXI.Mesh(geom, shader);
   mesh.alpha = 1.0;
@@ -5565,9 +5604,13 @@ function shaderOnTile(tileId, opts = {}) {
     }
 
     const liveMetrics = getTileMetrics(liveTile);
-    const liveShaderSize = getTileAxisAlignedSize(liveMetrics);
+    const liveShaderSize = getTileShaderSizeForMetrics(liveMetrics);
     setCenterFromWorld(container, liveMetrics.center, worldLayer);
-    container.rotation = 0;
+    container.rotation = getTileRotationForContainer(liveTile);
+    if ("cpfxTokenRotation" in shader.uniforms) {
+      shader.uniforms.cpfxTokenRotation = getTileRotationForUniform(liveTile);
+    }
+    syncTileRuntimeImageRotationMode(liveTile);
 
     if (mesh.filters?.length) {
       const pad = Math.max(liveShaderSize.width, liveShaderSize.height) * 0.4 + cfg.bloomBlur * 30;
@@ -5651,6 +5694,7 @@ function shaderOnTile(tileId, opts = {}) {
     runtimeBufferChannels,
     runtimeImageChannels,
     customMaskTexture,
+    rotateWithToken: cfg.rotateWithToken === true,
     sourceOpts: foundry.utils.mergeObject(
       foundry.utils.mergeObject({}, macroOpts, { inplace: false }),
       { shaderId: selectedShaderId },
