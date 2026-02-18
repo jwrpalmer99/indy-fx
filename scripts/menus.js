@@ -891,6 +891,10 @@ export function createMenus({ moduleId, shaderManager }) {
           : document.createElement("div");
       const channels = {};
       for (const index of [0, 1, 2, 3]) {
+        const vflipRaw = String(
+          root.querySelector(`[name="channel${index}SamplerVflip"]`)?.value ??
+            "",
+        ).trim();
         channels[`iChannel${index}`] = {
           mode: String(
             root.querySelector(`[name="channel${index}Mode"]`)?.value ?? "auto",
@@ -901,6 +905,16 @@ export function createMenus({ moduleId, shaderManager }) {
           source: String(
             root.querySelector(`[name="channel${index}Source"]`)?.value ?? "",
           ).trim(),
+          samplerFilter: String(
+            root.querySelector(`[name="channel${index}SamplerFilter"]`)?.value ??
+              "",
+          ).trim(),
+          samplerWrap: String(
+            root.querySelector(`[name="channel${index}SamplerWrap"]`)?.value ??
+              "",
+          ).trim(),
+          samplerVflip:
+            vflipRaw === "" ? null : vflipRaw === "1" || vflipRaw === "true",
         };
       }
       const autoAssignCapture =
@@ -1138,7 +1152,17 @@ export function createMenus({ moduleId, shaderManager }) {
               mode: "auto",
               path: "",
               source: "",
+              samplerFilter: "",
+              samplerWrap: "",
+              samplerVflip: null,
             };
+            const rawVflip = channel.samplerVflip;
+            const vflipValue =
+              rawVflip === true || rawVflip === "true" || rawVflip === 1 || rawVflip === "1"
+                ? "1"
+                : rawVflip === false || rawVflip === "false" || rawVflip === 0 || rawVflip === "0"
+                  ? "0"
+                  : "";
             return {
               index,
               key,
@@ -1146,8 +1170,14 @@ export function createMenus({ moduleId, shaderManager }) {
               modeName: `channel${index}Mode`,
               pathName: `channel${index}Path`,
               sourceName: `channel${index}Source`,
+              filterName: `channel${index}SamplerFilter`,
+              wrapName: `channel${index}SamplerWrap`,
+              vflipName: `channel${index}SamplerVflip`,
               path: String(channel.path ?? ""),
               source: String(channel.source ?? ""),
+              filter: String(channel.samplerFilter ?? ""),
+              wrap: String(channel.samplerWrap ?? ""),
+              vflip: vflipValue,
             };
           }),
         },
@@ -1185,7 +1215,8 @@ export function createMenus({ moduleId, shaderManager }) {
         }
 
         let detail = "";
-        if (mode === "image") detail = path || "No image/video selected";
+        if (mode === "image" || mode === "cubemap" || mode === "volume")
+          detail = path || "No image/video selected";
         else if (mode === "buffer") {
           detail = source ? `${source.length} chars` : "No buffer code";
         } else if (mode === "sceneCapture") detail = "Scene clipped capture";
@@ -1251,6 +1282,9 @@ export function createMenus({ moduleId, shaderManager }) {
       const modeName = `channel${channelIndex}Mode`;
       const pathName = `channel${channelIndex}Path`;
       const sourceName = `channel${channelIndex}Source`;
+      const filterName = `channel${channelIndex}SamplerFilter`;
+      const wrapName = `channel${channelIndex}SamplerWrap`;
+      const vflipName = `channel${channelIndex}SamplerVflip`;
       const currentMode = String(
         root.querySelector(`[name="${modeName}"]`)?.value ?? "auto",
       );
@@ -1260,13 +1294,87 @@ export function createMenus({ moduleId, shaderManager }) {
       const currentSource = String(
         root.querySelector(`[name="${sourceName}"]`)?.value ?? "",
       );
+      const currentFilter = String(
+        root.querySelector(`[name="${filterName}"]`)?.value ?? "",
+      ).trim();
+      const currentWrap = String(
+        root.querySelector(`[name="${wrapName}"]`)?.value ?? "",
+      ).trim();
+      const currentVflipRaw = String(
+        root.querySelector(`[name="${vflipName}"]`)?.value ?? "",
+      ).trim();
+      const currentVflip = currentVflipRaw === "1" || currentVflipRaw === "true";
       const optionsHtml = Object.entries(choices)
         .map(
           ([value, label]) =>
             `<option value="${value}" ${value === currentMode ? "selected" : ""}>${label}</option>`,
         )
         .join("");
-      const content = `      <form class="indy-fx-channel-edit">        <div class="form-group">          <label>Type</label>          <div class="form-fields">            <select name="editChannelMode">${optionsHtml}</select>          </div>        </div>        <div class="form-group" data-channel-path-row>          <label>Image/Video Path</label>          <div class="form-fields">            <input type="text" name="editChannelPath" value="${String(currentPath).replace(/"/g, "&quot;")}" />            <button type="button" data-action="edit-channel-pick-image"><i class="fas fa-file-import"></i> Browse</button>          </div>        </div>        <div class="form-group" data-channel-source-row>          <label>Buffer Source</label>          <div class="form-fields">            <textarea name="editChannelSource" rows="10">${String(currentSource).replace(/</g, "&lt;")}</textarea>          </div>        </div>      </form>    `;
+      const filterOptionsHtml = [
+        { value: "", label: "Default" },
+        { value: "nearest", label: "Nearest" },
+        { value: "linear", label: "Linear" },
+        { value: "mipmap", label: "Mipmap" },
+      ]
+        .map(
+          ({ value, label }) =>
+            `<option value="${value}" ${value === currentFilter ? "selected" : ""}>${label}</option>`,
+        )
+        .join("");
+      const wrapOptionsHtml = [
+        { value: "", label: "Default" },
+        { value: "repeat", label: "Repeat" },
+        { value: "clamp", label: "Clamp" },
+        { value: "mirror", label: "Mirror" },
+      ]
+        .map(
+          ({ value, label }) =>
+            `<option value="${value}" ${value === currentWrap ? "selected" : ""}>${label}</option>`,
+        )
+        .join("");
+      const escapedPath = String(currentPath).replace(/"/g, "&quot;");
+      const escapedSource = String(currentSource).replace(/</g, "&lt;");
+      const content = `
+      <form class="indy-fx-channel-edit">
+        <div class="form-group">
+          <label>Type</label>
+          <div class="form-fields">
+            <select name="editChannelMode">${optionsHtml}</select>
+          </div>
+        </div>
+        <div class="form-group" data-channel-path-row>
+          <label>Image/Video Path</label>
+          <div class="form-fields">
+            <input type="text" name="editChannelPath" value="${escapedPath}" />
+            <button type="button" data-action="edit-channel-pick-image"><i class="fas fa-file-import"></i> Browse</button>
+          </div>
+        </div>
+        <div class="form-group" data-channel-source-row>
+          <label>Buffer Source</label>
+          <div class="form-fields">
+            <textarea name="editChannelSource" rows="10">${escapedSource}</textarea>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Filter</label>
+          <div class="form-fields">
+            <select name="editChannelSamplerFilter">${filterOptionsHtml}</select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Wrap</label>
+          <div class="form-fields">
+            <select name="editChannelSamplerWrap">${wrapOptionsHtml}</select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>VFlip</label>
+          <div class="form-fields">
+            <input type="checkbox" name="editChannelSamplerVflip" ${currentVflip ? "checked" : ""} />
+          </div>
+        </div>
+      </form>
+    `;
       const bindUi = (candidate) => {
         const dialogRoot =
           resolveElementRoot(candidate?.element) ??
@@ -1281,7 +1389,8 @@ export function createMenus({ moduleId, shaderManager }) {
         const syncUi = () => {
           const mode = String(modeInput?.value ?? "auto");
           if (pathRow instanceof HTMLElement)
-            pathRow.style.display = mode === "image" ? "" : "none";
+            pathRow.style.display =
+              mode === "image" || mode === "cubemap" || mode === "volume" ? "" : "none";
           if (sourceRow instanceof HTMLElement)
             sourceRow.style.display = mode === "buffer" ? "" : "none";
         };
@@ -1297,7 +1406,10 @@ export function createMenus({ moduleId, shaderManager }) {
               current,
               callback: (path) => {
                 if (pathInput) pathInput.value = path;
-                if (modeInput && modeInput.value !== "image") {
+                if (
+                  modeInput &&
+                  !["image", "cubemap", "volume"].includes(modeInput.value)
+                ) {
                   modeInput.value = "image";
                   syncUi();
                 }
@@ -1336,12 +1448,29 @@ export function createMenus({ moduleId, shaderManager }) {
                 dialogRoot.querySelector('[name="editChannelSource"]')?.value ??
                   "",
               ).trim();
+              const nextFilter = String(
+                dialogRoot.querySelector('[name="editChannelSamplerFilter"]')
+                  ?.value ?? "",
+              ).trim();
+              const nextWrap = String(
+                dialogRoot.querySelector('[name="editChannelSamplerWrap"]')?.value ??
+                  "",
+              ).trim();
+              const nextVflip =
+                dialogRoot.querySelector('[name="editChannelSamplerVflip"]')
+                  ?.checked === true;
               const modeInput = root.querySelector(`[name="${modeName}"]`);
               const pathInput = root.querySelector(`[name="${pathName}"]`);
               const sourceInput = root.querySelector(`[name="${sourceName}"]`);
+              const filterInput = root.querySelector(`[name="${filterName}"]`);
+              const wrapInput = root.querySelector(`[name="${wrapName}"]`);
+              const vflipInput = root.querySelector(`[name="${vflipName}"]`);
               if (modeInput) modeInput.value = nextMode;
               if (pathInput) pathInput.value = nextPath;
               if (sourceInput) sourceInput.value = nextSource;
+              if (filterInput) filterInput.value = nextFilter;
+              if (wrapInput) wrapInput.value = nextWrap;
+              if (vflipInput) vflipInput.value = nextVflip ? "1" : "0";
               if (typeof onChanged === "function") onChanged();
             },
           },
