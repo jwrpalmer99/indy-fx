@@ -13,6 +13,80 @@ const SHADERTOY_UNIFORM_NAMES = [
   "iDate"
 ];
 const SHADERTOY_LEGACY_UNIFORM_NAMES = ["resolution"];
+const ADAPTER_CACHE_LIMITS = Object.freeze({
+  validatedSource: 256,
+  rewrittenSource: 256,
+  fragment: 128,
+  bufferFragment: 128,
+  referencedChannels: 256,
+});
+const _validatedSourceCache = new Map();
+const _rewrittenSourceCache = new Map();
+const _fragmentCache = new Map();
+const _bufferFragmentCache = new Map();
+const _referencedChannelsCache = new Map();
+
+function getCachedLru(cache, key) {
+  if (!cache.has(key)) return undefined;
+  const value = cache.get(key);
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function setCachedLru(cache, key, value, limit) {
+  if (cache.has(key)) cache.delete(key);
+  cache.set(key, value);
+  const maxSize = Number(limit);
+  if (Number.isFinite(maxSize) && maxSize > 0) {
+    while (cache.size > maxSize) {
+      const oldestKey = cache.keys().next().value;
+      cache.delete(oldestKey);
+    }
+  }
+  return value;
+}
+
+function getValidatedShaderSourceCached(source) {
+  const rawSource = String(source ?? "");
+  const cached = getCachedLru(_validatedSourceCache, rawSource);
+  if (typeof cached === "string") return cached;
+
+  const normalized = injectKnownShaderToyDefines(
+    coerceMainToMainImage(normalizeShaderSource(rawSource)),
+  );
+  if (!normalized) {
+    throw new Error("Shader source is empty.");
+  }
+  if (!/void\s+mainImage\s*\(/.test(normalized)) {
+    throw new Error("Shader import requires void mainImage(...) or void main().");
+  }
+  return setCachedLru(
+    _validatedSourceCache,
+    rawSource,
+    normalized,
+    ADAPTER_CACHE_LIMITS.validatedSource,
+  );
+}
+
+function getCompatibilityRewrittenSourceCached(validatedSource) {
+  const key = String(validatedSource ?? "");
+  const cached = getCachedLru(_rewrittenSourceCache, key);
+  if (typeof cached === "string") return cached;
+  const rewritten = applyCompatibilityRewrites(key);
+  return setCachedLru(
+    _rewrittenSourceCache,
+    key,
+    rewritten,
+    ADAPTER_CACHE_LIMITS.rewrittenSource,
+  );
+}
+
+function stripCommentsForChannelScan(source) {
+  return String(source ?? "")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n\r]*/g, " ");
+}
 
 function normalizeShaderSource(source) {
   let next = String(source ?? "").replace(/\r\n/g, "\n").trim();
@@ -2150,33 +2224,37 @@ vec4 cpfx_textureGradCh${idx}(vec3 v, vec3 dPdx, vec3 dPdy) { return cpfx_textur
 }
 
 export function validateShaderToySource(source) {
-  const normalized = injectKnownShaderToyDefines(
-    coerceMainToMainImage(normalizeShaderSource(source)),
-  );
-  if (!normalized) {
-    throw new Error("Shader source is empty.");
-  }
-  if (!/void\s+mainImage\s*\(/.test(normalized)) {
-    throw new Error("Shader import requires void mainImage(...) or void main().");
-  }
-  return normalized;
+  return getValidatedShaderSourceCached(source);
 }
 
 export function extractReferencedChannels(source) {
-  const normalized = applyCompatibilityRewrites(validateShaderToySource(source));
+  const validated = getValidatedShaderSourceCached(source);
+  const cached = getCachedLru(_referencedChannelsCache, validated);
+  if (Array.isArray(cached)) return cached.slice();
+  const normalized = stripCommentsForChannelScan(validated);
   const found = new Set();
   const re = /\biChannel([0-3])\b/g;
   let match;
   while ((match = re.exec(normalized)) !== null) {
     found.add(Number(match[1]));
   }
-  return [...found].sort((a, b) => a - b);
+  const result = [...found].sort((a, b) => a - b);
+  setCachedLru(
+    _referencedChannelsCache,
+    validated,
+    result,
+    ADAPTER_CACHE_LIMITS.referencedChannels,
+  );
+  return result.slice();
 }
 
 export function adaptShaderToyFragment(source) {
-  const body = applyCompatibilityRewrites(validateShaderToySource(source));
+  const validated = getValidatedShaderSourceCached(source);
+  const cached = getCachedLru(_fragmentCache, validated);
+  if (typeof cached === "string") return cached;
+  const body = getCompatibilityRewrittenSourceCached(validated);
   const compatMacros = buildCompatMacroPreamble(body);
-  return `
+  const fragment = `
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable
 #endif
@@ -2905,12 +2983,21 @@ void main() {
   }
   gl_FragColor = vec4(shaderColor.rgb * a * intensity, a);
 }`;
+  return setCachedLru(
+    _fragmentCache,
+    validated,
+    fragment,
+    ADAPTER_CACHE_LIMITS.fragment,
+  );
 }
 
 export function adaptShaderToyBufferFragment(source) {
-  const body = applyCompatibilityRewrites(validateShaderToySource(source));
+  const validated = getValidatedShaderSourceCached(source);
+  const cached = getCachedLru(_bufferFragmentCache, validated);
+  if (typeof cached === "string") return cached;
+  const body = getCompatibilityRewrittenSourceCached(validated);
   const compatMacros = buildCompatMacroPreamble(body);
-  return `
+  const fragment = `
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable
 #endif
@@ -3600,6 +3687,12 @@ void main() {
   mainImage(shaderColor, fragCoord);
   gl_FragColor = shaderColor;
 }`;
+  return setCachedLru(
+    _bufferFragmentCache,
+    validated,
+    fragment,
+    ADAPTER_CACHE_LIMITS.bufferFragment,
+  );
 }
 
 const LIGHT_LAYER_TYPES = new Set(["coloration", "illumination", "background"]);
