@@ -507,6 +507,12 @@ function applyChannelSamplerToTexture(texture, channelCfg, mode) {
   base.update?.();
 }
 
+function getSamplerWrapUniformCode(wrap) {
+  if (wrap === "clamp") return 0;
+  if (wrap === "mirror") return 2;
+  return 1; // repeat
+}
+
 function normalizePositiveInt(value, fallback = 0) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -561,15 +567,72 @@ function getChannelTypeFromMode(mode) {
 }
 
 function resolveVolumeLayoutForChannel(channelCfg, resolution = [1, 1]) {
+  const width = Number(resolution?.[0] ?? 1);
+  const height = Number(resolution?.[1] ?? 1);
+  const deriveFromVoxelSize = (vx, vy, vz) => {
+    const voxelW = normalizePositiveInt(vx, 0);
+    const voxelH = normalizePositiveInt(vy, 0);
+    const depth = Math.max(1, normalizePositiveInt(vz, 0));
+    if (voxelW <= 0 || voxelH <= 0) return null;
+    const atlasW = Math.max(1, Math.floor(width));
+    const atlasH = Math.max(1, Math.floor(height));
+    if (atlasW % voxelW !== 0 || atlasH % voxelH !== 0) return null;
+    const tilesX = Math.max(1, Math.floor(atlasW / voxelW));
+    const tilesY = Math.max(1, Math.floor(atlasH / voxelH));
+    if (tilesX * tilesY < depth) return null;
+    return [tilesX, tilesY, depth];
+  };
+
   const tx = normalizePositiveInt(channelCfg?.volumeTilesX, 0);
   const ty = normalizePositiveInt(channelCfg?.volumeTilesY, 0);
   const dz = normalizePositiveInt(channelCfg?.volumeDepth, 0);
   if (tx > 0 && ty > 0) {
-    return [tx, ty, dz > 0 ? dz : tx * ty];
+    const depth = dz > 0 ? dz : tx * ty;
+    // Back-compat safety: older imports could store voxel dimensions into
+    // volumeTilesX/Y/Depth (for example 32x32x32) which causes seams/artifacts.
+    const candidateTileW = width / tx;
+    const candidateTileH = height / ty;
+    const looksLikeVoxelDims =
+      depth > 0 &&
+      tx * ty > depth * 8 &&
+      (candidateTileW <= 8 || candidateTileH <= 8);
+    if (looksLikeVoxelDims) {
+      const recovered = deriveFromVoxelSize(tx, ty, depth);
+      if (recovered) return recovered;
+    }
+    return [tx, ty, depth];
   }
-  const width = Number(resolution?.[0] ?? 1);
-  const height = Number(resolution?.[1] ?? 1);
+
+  const volumeSizeX = normalizePositiveInt(channelCfg?.volumeSizeX, 0);
+  const volumeSizeY = normalizePositiveInt(channelCfg?.volumeSizeY, 0);
+  const volumeSizeZ = normalizePositiveInt(channelCfg?.volumeSizeZ, 0);
+  if (volumeSizeX > 0 && volumeSizeY > 0 && volumeSizeZ > 0) {
+    const derived = deriveFromVoxelSize(volumeSizeX, volumeSizeY, volumeSizeZ);
+    if (derived) return derived;
+  }
+
   return inferVolumeLayoutFromResolution(width, height);
+}
+
+function computeVolumeAtlasSampleUniforms(layout, resolution = [1, 1]) {
+  const tilesX = Math.max(1, normalizePositiveInt(layout?.[0], 1));
+  const tilesY = Math.max(1, normalizePositiveInt(layout?.[1], 1));
+  const defaultDepth = tilesX * tilesY;
+  const depth = Math.max(1, normalizePositiveInt(layout?.[2], defaultDepth));
+  const atlasW = Math.max(1, Number(resolution?.[0] ?? 1));
+  const atlasH = Math.max(1, Number(resolution?.[1] ?? 1));
+
+  const tileSizeX = 1 / tilesX;
+  const tileSizeY = 1 / tilesY;
+  const insetX = 0.5 / atlasW;
+  const insetY = 0.5 / atlasH;
+  const innerX = Math.max(tileSizeX - 2 * insetX, 1e-6);
+  const innerY = Math.max(tileSizeY - 2 * insetY, 1e-6);
+
+  return {
+    sampleParams: [tilesX, Math.max(0, depth - 1), 0, 0],
+    uvParams: [insetX, insetY, innerX, innerY],
+  };
 }
 
 function normalizeChannelInput(raw, depth = 0) {
@@ -606,6 +669,9 @@ function normalizeChannelInput(raw, depth = 0) {
     volumeTilesX: normalizePositiveInt(raw.volumeTilesX, 0),
     volumeTilesY: normalizePositiveInt(raw.volumeTilesY, 0),
     volumeDepth: normalizePositiveInt(raw.volumeDepth, 0),
+    volumeSizeX: normalizePositiveInt(raw.volumeSizeX, 0),
+    volumeSizeY: normalizePositiveInt(raw.volumeSizeY, 0),
+    volumeSizeZ: normalizePositiveInt(raw.volumeSizeZ, 0),
     samplerFilter: normalizeSamplerFilter(raw.samplerFilter, ""),
     samplerWrap: normalizeSamplerWrap(raw.samplerWrap, ""),
     samplerVflip:
@@ -3431,6 +3497,12 @@ export class ShaderManager {
         source: "",
         channels: {},
         size: DEFAULT_BUFFER_SIZE,
+        volumeTilesX: 0,
+        volumeTilesY: 0,
+        volumeDepth: 0,
+        volumeSizeX: 0,
+        volumeSizeY: 0,
+        volumeSizeZ: 0,
         samplerFilter: "",
         samplerWrap: "",
         samplerVflip: null,
@@ -3477,6 +3549,9 @@ export class ShaderManager {
           volumeTilesX: candidate.volumeTilesX,
           volumeTilesY: candidate.volumeTilesY,
           volumeDepth: candidate.volumeDepth,
+          volumeSizeX: candidate.volumeSizeX,
+          volumeSizeY: candidate.volumeSizeY,
+          volumeSizeZ: candidate.volumeSizeZ,
           samplerFilter: candidate.samplerFilter,
           samplerWrap: candidate.samplerWrap,
           samplerVflip: candidate.samplerVflip,
@@ -3530,6 +3605,9 @@ export class ShaderManager {
           volumeTilesX: candidate.volumeTilesX,
           volumeTilesY: candidate.volumeTilesY,
           volumeDepth: candidate.volumeDepth,
+          volumeSizeX: candidate.volumeSizeX,
+          volumeSizeY: candidate.volumeSizeY,
+          volumeSizeZ: candidate.volumeSizeZ,
           samplerFilter: candidate.samplerFilter,
           samplerWrap: candidate.samplerWrap,
           samplerVflip: candidate.samplerVflip,
@@ -4154,6 +4232,19 @@ export class ShaderManager {
       const channelResolution = [];
       const channelTypes = [0, 0, 0, 0];
       const channelVflips = [0, 0, 0, 0];
+      const channelWraps = [0, 0, 0, 0];
+      const volumeSampleParams = [
+        [1, 0, 0, 0],
+        [1, 0, 0, 0],
+        [1, 0, 0, 0],
+        [1, 0, 0, 0],
+      ];
+      const volumeUvParams = [
+        [0, 0, 1, 1],
+        [0, 0, 1, 1],
+        [0, 0, 1, 1],
+        [0, 0, 1, 1],
+      ];
       const volumeLayouts = [
         [1, 1, 1],
         [1, 1, 1],
@@ -4173,6 +4264,12 @@ export class ShaderManager {
           source: "",
           channels: {},
           size: DEFAULT_BUFFER_SIZE,
+          volumeTilesX: 0,
+          volumeTilesY: 0,
+          volumeDepth: 0,
+          volumeSizeX: 0,
+          volumeSizeY: 0,
+          volumeSizeZ: 0,
         };
         // Some imported shaders depend on iChannel0 for base color and render black when unset.
         const effectiveChannelCfg =
@@ -4218,15 +4315,29 @@ export class ShaderManager {
         const resolvedMode = normalizeChannelMode(
           effectiveChannelCfg?.mode ?? channelCfg?.mode ?? "none",
         );
+        const samplerDefaults = getChannelSamplerDefaults(resolvedMode);
+        const resolvedSamplerWrap = normalizeSamplerWrap(
+          effectiveChannelCfg?.samplerWrap,
+          samplerDefaults.wrap,
+        );
         channelTypes[index] = getChannelTypeFromMode(resolvedMode);
         channelVflips[index] = parseBooleanLike(effectiveChannelCfg?.samplerVflip)
           ? 1
           : 0;
+        channelWraps[index] = getSamplerWrapUniformCode(resolvedSamplerWrap);
         if (channelTypes[index] === 2) {
           volumeLayouts[index] = resolveVolumeLayoutForChannel(
             effectiveChannelCfg,
             [resolvedWidth, resolvedHeight],
           );
+        }
+        {
+          const params = computeVolumeAtlasSampleUniforms(
+            volumeLayouts[index],
+            [resolvedWidth, resolvedHeight],
+          );
+          volumeSampleParams[index] = params.sampleParams;
+          volumeUvParams[index] = params.uvParams;
         }
         if (isDebugLoggingEnabled(this.moduleId)) {
           debugLog(this.moduleId, "makeShader imported channel bind", {
@@ -4238,8 +4349,12 @@ export class ShaderManager {
             effectiveMode: normalizeChannelMode(effectiveChannelCfg?.mode ?? "none"),
             channelType: channelTypes[index],
             volumeLayout: volumeLayouts[index],
+            volumeSampleParams: volumeSampleParams[index],
+            volumeUvParams: volumeUvParams[index],
             samplerFilter: normalizeSamplerFilter(effectiveChannelCfg?.samplerFilter, ""),
             samplerWrap: normalizeSamplerWrap(effectiveChannelCfg?.samplerWrap, ""),
+            samplerWrapResolved: resolvedSamplerWrap,
+            samplerWrapUniform: channelWraps[index],
             samplerVflip: parseBooleanLike(effectiveChannelCfg?.samplerVflip),
             targetType: cfg.targetType ?? null,
             targetId: cfg.targetId ?? null,
@@ -4294,17 +4409,32 @@ export class ShaderManager {
       uniforms.cpfxSamplerVflip1 = Number(channelVflips[1] ?? 0);
       uniforms.cpfxSamplerVflip2 = Number(channelVflips[2] ?? 0);
       uniforms.cpfxSamplerVflip3 = Number(channelVflips[3] ?? 0);
+      uniforms.cpfxSamplerWrap0 = Number(channelWraps[0] ?? 0);
+      uniforms.cpfxSamplerWrap1 = Number(channelWraps[1] ?? 0);
+      uniforms.cpfxSamplerWrap2 = Number(channelWraps[2] ?? 0);
+      uniforms.cpfxSamplerWrap3 = Number(channelWraps[3] ?? 0);
       uniforms.cpfxVolumeLayout0 = volumeLayouts[0];
       uniforms.cpfxVolumeLayout1 = volumeLayouts[1];
       uniforms.cpfxVolumeLayout2 = volumeLayouts[2];
       uniforms.cpfxVolumeLayout3 = volumeLayouts[3];
+      uniforms.cpfxVolumeSampleParams0 = volumeSampleParams[0];
+      uniforms.cpfxVolumeSampleParams1 = volumeSampleParams[1];
+      uniforms.cpfxVolumeSampleParams2 = volumeSampleParams[2];
+      uniforms.cpfxVolumeSampleParams3 = volumeSampleParams[3];
+      uniforms.cpfxVolumeUvParams0 = volumeUvParams[0];
+      uniforms.cpfxVolumeUvParams1 = volumeUvParams[1];
+      uniforms.cpfxVolumeUvParams2 = volumeUvParams[2];
+      uniforms.cpfxVolumeUvParams3 = volumeUvParams[3];
       debugLog(this.moduleId, "makeShader imported channel resolutions", {
         shaderId: def.id,
         previewMode: cfg.previewMode === true,
         iChannelResolution: channelResolution,
         cpfxChannelType: channelTypes,
         cpfxSamplerVflip: channelVflips,
+        cpfxSamplerWrap: channelWraps,
         cpfxVolumeLayout: volumeLayouts,
+        cpfxVolumeSampleParams: volumeSampleParams,
+        cpfxVolumeUvParams: volumeUvParams,
       });
     }
 
@@ -4686,18 +4816,27 @@ export class ShaderManager {
         return { mode, ...samplerCfg };
       }
       const volumeLayout =
+        this._parseShaderToyVolumeLayout(input?.sampler?.layout) ??
+        this._parseShaderToyVolumeLayout(input?.layout) ??
+        this._parseShaderToyVolumeLayout(input?.volume?.layout) ??
+        null;
+      const volumeSize =
         this._parseShaderToyVolumeLayout(input?.sampler?.size) ??
         this._parseShaderToyVolumeLayout(input?.sampler?.resolution) ??
         this._parseShaderToyVolumeLayout(input?.size) ??
         this._parseShaderToyVolumeLayout(input?.resolution) ??
         null;
       const [volumeTilesX, volumeTilesY, volumeDepth] = volumeLayout ?? [0, 0, 0];
+      const [volumeSizeX, volumeSizeY, volumeSizeZ] = volumeSize ?? [0, 0, 0];
       return {
         mode: "volume",
         path,
         volumeTilesX,
         volumeTilesY,
         volumeDepth,
+        volumeSizeX,
+        volumeSizeY,
+        volumeSizeZ,
         ...samplerCfg,
       };
     }

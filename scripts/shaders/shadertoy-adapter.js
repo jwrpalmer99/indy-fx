@@ -2172,31 +2172,63 @@ float cpfx_channelVflip(int idx) {
     (idx == 1 ? cpfxSamplerVflip1 :
       (idx == 2 ? cpfxSamplerVflip2 : cpfxSamplerVflip3));
 }
+float cpfx_channelWrap(int idx) {
+  return idx == 0 ? cpfxSamplerWrap0 :
+    (idx == 1 ? cpfxSamplerWrap1 :
+      (idx == 2 ? cpfxSamplerWrap2 : cpfxSamplerWrap3));
+}
+vec4 cpfx_volumeSampleParams(int idx) {
+  return idx == 0 ? cpfxVolumeSampleParams0 :
+    (idx == 1 ? cpfxVolumeSampleParams1 :
+      (idx == 2 ? cpfxVolumeSampleParams2 : cpfxVolumeSampleParams3));
+}
+vec4 cpfx_volumeUvParams(int idx) {
+  return idx == 0 ? cpfxVolumeUvParams0 :
+    (idx == 1 ? cpfxVolumeUvParams1 :
+      (idx == 2 ? cpfxVolumeUvParams2 : cpfxVolumeUvParams3));
+}
 vec2 cpfx_applyChannelUv(int idx, vec2 uv) {
   if (cpfx_channelVflip(idx) > 0.5) uv.y = 1.0 - uv.y;
   return uv;
 }
+vec3 cpfx_wrap013(vec3 v, float mode) {
+  // mode: 0 clamp, 1 repeat, 2 mirrored repeat
+  if (mode < 0.5) return clamp(v, vec3(0.0), vec3(1.0));
+  if (mode > 1.5) {
+    vec3 t = mod(mod(v, 2.0) + 2.0, 2.0);
+    return mix(t, 2.0 - t, step(vec3(1.0), t));
+  }
+  return fract(v);
+}
 
 vec4 cpfx_sampleVolumeAtlas(sampler2D s, vec3 uvw, int idx) {
-  vec3 layout = cpfx_volumeLayout(idx);
-  vec2 atlasRes = max(cpfx_channelResolution(idx), vec2(1.0));
-  float tilesX = max(1.0, floor(layout.x + 0.5));
-  float tilesY = max(1.0, floor(layout.y + 0.5));
-  float depth = max(1.0, floor(layout.z + 0.5));
+  float wrapMode = cpfx_channelWrap(idx);
+  float vflip = cpfx_channelVflip(idx);
+  vec3 uvwWrapped;
+  if (wrapMode < 0.5 && vflip <= 0.5) {
+    uvwWrapped = clamp(uvw, vec3(0.0), vec3(1.0));
+  } else {
+    uvwWrapped = cpfx_wrap013(uvw, wrapMode);
+    if (vflip > 0.5) uvwWrapped.y = 1.0 - uvwWrapped.y;
+  }
 
-  vec2 tileSize = vec2(1.0 / tilesX, 1.0 / tilesY);
-  vec2 inset = 0.5 / atlasRes;
-  vec2 inner = max(tileSize - 2.0 * inset, vec2(1e-6));
-  vec2 xy = fract(uvw.xy);
-  float z = clamp(uvw.z, 0.0, 1.0) * (depth - 1.0);
+  vec4 sp = cpfx_volumeSampleParams(idx);
+  vec4 up = cpfx_volumeUvParams(idx);
+  float tilesX = max(1.0, sp.x);
+  float depthMinus1 = max(0.0, sp.y);
+  vec2 inset = max(up.xy, vec2(0.0));
+  vec2 inner = max(up.zw, vec2(1e-6));
+  vec2 tileSize = inner + 2.0 * inset;
+
+  float z = uvwWrapped.z * depthMinus1;
   float z0 = floor(z);
-  float z1 = min(z0 + 1.0, depth - 1.0);
+  float z1 = min(z0 + 1.0, depthMinus1);
   float f = fract(z);
 
   vec2 tile0 = vec2(mod(z0, tilesX), floor(z0 / tilesX));
   vec2 tile1 = vec2(mod(z1, tilesX), floor(z1 / tilesX));
-  vec2 uv0 = cpfx_applyChannelUv(idx, tile0 * tileSize + inset + xy * inner);
-  vec2 uv1 = cpfx_applyChannelUv(idx, tile1 * tileSize + inset + xy * inner);
+  vec2 uv0 = tile0 * tileSize + inset + uvwWrapped.xy * inner;
+  vec2 uv1 = tile1 * tileSize + inset + uvwWrapped.xy * inner;
   return mix(texture2D(s, uv0), texture2D(s, uv1), f);
 }
 `;
@@ -2258,6 +2290,9 @@ export function adaptShaderToyFragment(source) {
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable
 #endif
+#ifdef GL_EXT_shader_texture_lod
+#extension GL_EXT_shader_texture_lod : enable
+#endif
 #ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
 #else
@@ -2286,10 +2321,22 @@ uniform vec3 cpfxVolumeLayout0;
 uniform vec3 cpfxVolumeLayout1;
 uniform vec3 cpfxVolumeLayout2;
 uniform vec3 cpfxVolumeLayout3;
+uniform vec4 cpfxVolumeSampleParams0;
+uniform vec4 cpfxVolumeSampleParams1;
+uniform vec4 cpfxVolumeSampleParams2;
+uniform vec4 cpfxVolumeSampleParams3;
+uniform vec4 cpfxVolumeUvParams0;
+uniform vec4 cpfxVolumeUvParams1;
+uniform vec4 cpfxVolumeUvParams2;
+uniform vec4 cpfxVolumeUvParams3;
 uniform float cpfxSamplerVflip0;
 uniform float cpfxSamplerVflip1;
 uniform float cpfxSamplerVflip2;
 uniform float cpfxSamplerVflip3;
+uniform float cpfxSamplerWrap0;
+uniform float cpfxSamplerWrap1;
+uniform float cpfxSamplerWrap2;
+uniform float cpfxSamplerWrap3;
 uniform float debugMode;
 uniform float intensity;
 uniform float shaderScale;
@@ -2388,14 +2435,22 @@ vec4 textureCompat(sampler2D s, vec3 dir, float bias) {
 }
 
 vec4 cpfx_textureLod(sampler2D s, vec2 uv, float lod) {
+#ifdef GL_EXT_shader_texture_lod
+  return texture2DLodEXT(s, uv, lod);
+#else
   return textureCompat(s, uv);
+#endif
 }
 
 vec4 cpfx_textureLod(sampler2D s, vec3 dir, float lod) {
   return textureCompat(s, dir);
 }
 vec4 cpfx_textureGrad(sampler2D s, vec2 uv, vec2 dPdx, vec2 dPdy) {
+#ifdef GL_EXT_shader_texture_lod
+  return texture2DGradEXT(s, uv, dPdx, dPdy);
+#else
   return textureCompat(s, uv);
+#endif
 }
 vec4 cpfx_textureGrad(sampler2D s, vec3 dir, vec3 dPdx, vec3 dPdy) {
   return textureCompat(s, dir);
@@ -3001,6 +3056,9 @@ export function adaptShaderToyBufferFragment(source) {
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable
 #endif
+#ifdef GL_EXT_shader_texture_lod
+#extension GL_EXT_shader_texture_lod : enable
+#endif
 #ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
 #else
@@ -3028,10 +3086,22 @@ uniform vec3 cpfxVolumeLayout0;
 uniform vec3 cpfxVolumeLayout1;
 uniform vec3 cpfxVolumeLayout2;
 uniform vec3 cpfxVolumeLayout3;
+uniform vec4 cpfxVolumeSampleParams0;
+uniform vec4 cpfxVolumeSampleParams1;
+uniform vec4 cpfxVolumeSampleParams2;
+uniform vec4 cpfxVolumeSampleParams3;
+uniform vec4 cpfxVolumeUvParams0;
+uniform vec4 cpfxVolumeUvParams1;
+uniform vec4 cpfxVolumeUvParams2;
+uniform vec4 cpfxVolumeUvParams3;
 uniform float cpfxSamplerVflip0;
 uniform float cpfxSamplerVflip1;
 uniform float cpfxSamplerVflip2;
 uniform float cpfxSamplerVflip3;
+uniform float cpfxSamplerWrap0;
+uniform float cpfxSamplerWrap1;
+uniform float cpfxSamplerWrap2;
+uniform float cpfxSamplerWrap3;
 uniform float intensity;
 uniform float shaderScale;
 uniform vec2 shaderScaleXY;
@@ -3129,14 +3199,22 @@ vec4 textureCompat(sampler2D s, vec3 dir, float bias) {
 }
 
 vec4 cpfx_textureLod(sampler2D s, vec2 uv, float lod) {
+#ifdef GL_EXT_shader_texture_lod
+  return texture2DLodEXT(s, uv, lod);
+#else
   return textureCompat(s, uv);
+#endif
 }
 
 vec4 cpfx_textureLod(sampler2D s, vec3 dir, float lod) {
   return textureCompat(s, dir);
 }
 vec4 cpfx_textureGrad(sampler2D s, vec2 uv, vec2 dPdx, vec2 dPdy) {
+#ifdef GL_EXT_shader_texture_lod
+  return texture2DGradEXT(s, uv, dPdx, dPdy);
+#else
   return textureCompat(s, uv);
+#endif
 }
 vec4 cpfx_textureGrad(sampler2D s, vec3 dir, vec3 dPdx, vec3 dPdy) {
   return textureCompat(s, dir);
