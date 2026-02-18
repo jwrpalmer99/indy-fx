@@ -1960,6 +1960,13 @@ function applyCompatibilityRewrites(source) {
     /(\b[A-Za-z_]\w*\b|\([^()]*\))\s*\^\s*(\b[A-Za-z_]\w*\b|\([^()]*\))/g,
     "cpfx_bitxor($1, $2)",
   );
+  // Some ES3 hash snippets cast a scalar bitand result from a vector constructor:
+  // float(cpfx_bitand(n, ivec3(0x7fffffff))) -> float(cpfx_bitand(n, 0x7fffffff))
+  // Keep this scalar to avoid illegal mixed scalar/vector overload resolution.
+  next = next.replace(
+    /float\s*\(\s*cpfx_bitand\s*\(\s*([^,]+?)\s*,\s*ivec[234]\s*\(\s*([^)]+?)\s*\)\s*\)\s*\)/g,
+    "float(cpfx_bitand($1, $2))",
+  );
 
   next = rewriteTextureBuiltins(next);
 
@@ -1989,6 +1996,10 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(/\buintBitsToFloat\s*\(/g, "cpfx_uintBitsToFloat(");
   next = next.replace(/\bfloat\s*\(\s*0x[fF]{8}\s*\)/g, "16777215.0");
   next = next.replace(/\b0x[fF]{8}\b/g, "16777215");
+  // Re-apply textureLod/textureGrad mapping after macro unmasking so function-like
+  // macros (for example #define D(d) -textureLod(...).w) are also translated.
+  next = next.replace(/\btextureLod\s*\(/g, "cpfx_textureLod(");
+  next = next.replace(/\btextureGrad\s*\(/g, "cpfx_textureGrad(");
   // Re-run macro-based int loop init normalization after unmasking.
   // Some shaders define runtime init symbols (for example ZEROU) in preprocessor
   // sections and use them in `for(int i=MACRO; ...)`, which GLSL ES 1.00 rejects.
@@ -2718,6 +2729,9 @@ ivec4 cpfx_bitand(ivec4 a, ivec4 b) { return ivec4(cpfx_bitand(a.x, b.x), cpfx_b
 ivec2 cpfx_bitand(ivec2 a, int b) { return cpfx_bitand(a, ivec2(b)); }
 ivec3 cpfx_bitand(ivec3 a, int b) { return cpfx_bitand(a, ivec3(b)); }
 ivec4 cpfx_bitand(ivec4 a, int b) { return cpfx_bitand(a, ivec4(b)); }
+ivec2 cpfx_bitand(int a, ivec2 b) { return cpfx_bitand(ivec2(a), b); }
+ivec3 cpfx_bitand(int a, ivec3 b) { return cpfx_bitand(ivec3(a), b); }
+ivec4 cpfx_bitand(int a, ivec4 b) { return cpfx_bitand(ivec4(a), b); }
 
 int cpfx_bitor(int a, int b) {
   return cpfx_wrap_u24(a + b - cpfx_bitand(a, b));
@@ -2731,6 +2745,9 @@ ivec4 cpfx_bitor(ivec4 a, ivec4 b) { return ivec4(cpfx_bitor(a.x, b.x), cpfx_bit
 ivec2 cpfx_bitor(ivec2 a, int b) { return cpfx_bitor(a, ivec2(b)); }
 ivec3 cpfx_bitor(ivec3 a, int b) { return cpfx_bitor(a, ivec3(b)); }
 ivec4 cpfx_bitor(ivec4 a, int b) { return cpfx_bitor(a, ivec4(b)); }
+ivec2 cpfx_bitor(int a, ivec2 b) { return cpfx_bitor(ivec2(a), b); }
+ivec3 cpfx_bitor(int a, ivec3 b) { return cpfx_bitor(ivec3(a), b); }
+ivec4 cpfx_bitor(int a, ivec4 b) { return cpfx_bitor(ivec4(a), b); }
 
 int cpfx_bitxor(int a, int b) {
   return cpfx_wrap_u24(a + b - 2 * cpfx_bitand(a, b));
@@ -2744,6 +2761,9 @@ ivec4 cpfx_bitxor(ivec4 a, ivec4 b) { return ivec4(cpfx_bitxor(a.x, b.x), cpfx_b
 ivec2 cpfx_bitxor(ivec2 a, int b) { return cpfx_bitxor(a, ivec2(b)); }
 ivec3 cpfx_bitxor(ivec3 a, int b) { return cpfx_bitxor(a, ivec3(b)); }
 ivec4 cpfx_bitxor(ivec4 a, int b) { return cpfx_bitxor(a, ivec4(b)); }
+ivec2 cpfx_bitxor(int a, ivec2 b) { return cpfx_bitxor(ivec2(a), b); }
+ivec3 cpfx_bitxor(int a, ivec3 b) { return cpfx_bitxor(ivec3(a), b); }
+ivec4 cpfx_bitxor(int a, ivec4 b) { return cpfx_bitxor(ivec4(a), b); }
 
 int cpfx_floatBitsToUint(float v) {
   float av = abs(v);
@@ -3441,6 +3461,9 @@ ivec4 cpfx_bitand(ivec4 a, ivec4 b) { return ivec4(cpfx_bitand(a.x, b.x), cpfx_b
 ivec2 cpfx_bitand(ivec2 a, int b) { return cpfx_bitand(a, ivec2(b)); }
 ivec3 cpfx_bitand(ivec3 a, int b) { return cpfx_bitand(a, ivec3(b)); }
 ivec4 cpfx_bitand(ivec4 a, int b) { return cpfx_bitand(a, ivec4(b)); }
+ivec2 cpfx_bitand(int a, ivec2 b) { return cpfx_bitand(ivec2(a), b); }
+ivec3 cpfx_bitand(int a, ivec3 b) { return cpfx_bitand(ivec3(a), b); }
+ivec4 cpfx_bitand(int a, ivec4 b) { return cpfx_bitand(ivec4(a), b); }
 
 int cpfx_bitor(int a, int b) {
   return cpfx_wrap_u24(a + b - cpfx_bitand(a, b));
@@ -3454,6 +3477,9 @@ ivec4 cpfx_bitor(ivec4 a, ivec4 b) { return ivec4(cpfx_bitor(a.x, b.x), cpfx_bit
 ivec2 cpfx_bitor(ivec2 a, int b) { return cpfx_bitor(a, ivec2(b)); }
 ivec3 cpfx_bitor(ivec3 a, int b) { return cpfx_bitor(a, ivec3(b)); }
 ivec4 cpfx_bitor(ivec4 a, int b) { return cpfx_bitor(a, ivec4(b)); }
+ivec2 cpfx_bitor(int a, ivec2 b) { return cpfx_bitor(ivec2(a), b); }
+ivec3 cpfx_bitor(int a, ivec3 b) { return cpfx_bitor(ivec3(a), b); }
+ivec4 cpfx_bitor(int a, ivec4 b) { return cpfx_bitor(ivec4(a), b); }
 
 int cpfx_bitxor(int a, int b) {
   return cpfx_wrap_u24(a + b - 2 * cpfx_bitand(a, b));
@@ -3467,6 +3493,9 @@ ivec4 cpfx_bitxor(ivec4 a, ivec4 b) { return ivec4(cpfx_bitxor(a.x, b.x), cpfx_b
 ivec2 cpfx_bitxor(ivec2 a, int b) { return cpfx_bitxor(a, ivec2(b)); }
 ivec3 cpfx_bitxor(ivec3 a, int b) { return cpfx_bitxor(a, ivec3(b)); }
 ivec4 cpfx_bitxor(ivec4 a, int b) { return cpfx_bitxor(a, ivec4(b)); }
+ivec2 cpfx_bitxor(int a, ivec2 b) { return cpfx_bitxor(ivec2(a), b); }
+ivec3 cpfx_bitxor(int a, ivec3 b) { return cpfx_bitxor(ivec3(a), b); }
+ivec4 cpfx_bitxor(int a, ivec4 b) { return cpfx_bitxor(ivec4(a), b); }
 
 int cpfx_floatBitsToUint(float v) {
   float av = abs(v);
@@ -3673,5 +3702,4 @@ uniform vec3 color;`,
 
   return fragment;
 }
-
 
