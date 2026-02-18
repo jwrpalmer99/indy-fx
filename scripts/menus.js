@@ -1516,15 +1516,51 @@ export function createMenus({ moduleId, shaderManager }) {
       return { changed: nextSource !== source, source: nextSource };
     }
     async _openShaderVariableEditor(root, refreshPreview) {
-      const sourceInput = root?.querySelector?.('[name="editSource"]');
-      if (!(sourceInput instanceof HTMLTextAreaElement)) {
+      const sourceInputs = [];
+      const seenInputs = new Set();
+      const registerSourceInput = (input) => {
+        if (!(input instanceof HTMLTextAreaElement)) return;
+        if (seenInputs.has(input)) return;
+        seenInputs.add(input);
+        sourceInputs.push(input);
+      };
+
+      registerSourceInput(root?.querySelector?.('[name="editSource"]'));
+      registerSourceInput(root?.querySelector?.('[name="editCommonSource"]'));
+      for (const input of root?.querySelectorAll?.(
+        'textarea[name^="channel"][name$="Source"]',
+      ) ?? []) {
+        registerSourceInput(input);
+      }
+
+      if (!sourceInputs.length) {
         ui.notifications.warn("Shader source editor not found.");
         return;
       }
 
-      const variables = extractEditableShaderVariables(sourceInput.value);
+      const variableByKey = new Map();
+      for (const sourceInput of sourceInputs) {
+        const extracted = extractEditableShaderVariables(sourceInput.value);
+        for (const variable of extracted) {
+          const key = [
+            String(variable?.declaration ?? "const"),
+            String(variable?.kind ?? ""),
+            String(variable?.type ?? ""),
+            String(variable?.name ?? ""),
+          ].join(":");
+          if (!key || variableByKey.has(key)) continue;
+          variableByKey.set(key, variable);
+        }
+      }
+      const variables = Array.from(variableByKey.values()).sort((a, b) =>
+        String(a?.name ?? "").localeCompare(String(b?.name ?? ""), undefined, {
+          sensitivity: "base",
+        }),
+      );
       if (!variables.length) {
-        ui.notifications.info("No editable const/#define bool/float/int/vec3/vec4 variables detected.");
+        ui.notifications.info(
+          "No editable const/#define bool/float/int/vec3/vec4 variables detected.",
+        );
         return;
       }
 
@@ -1617,8 +1653,15 @@ export function createMenus({ moduleId, shaderManager }) {
 
       const applyFromDialog = (dialogRoot) => {
         const nextVariables = readDialogVariables(dialogRoot);
-        sourceInput.value = applyEditableShaderVariables(sourceInput.value, nextVariables);
-        sourceInput.dispatchEvent(new Event("change", { bubbles: true }));
+        for (const sourceInput of sourceInputs) {
+          const nextSource = applyEditableShaderVariables(
+            sourceInput.value,
+            nextVariables,
+          );
+          if (nextSource === sourceInput.value) continue;
+          sourceInput.value = nextSource;
+          sourceInput.dispatchEvent(new Event("change", { bubbles: true }));
+        }
         if (typeof refreshPreview === "function") refreshPreview();
       };
 

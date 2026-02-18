@@ -259,7 +259,7 @@ export class ShaderToyBufferChannel {
     uniforms[`cpfxSamplerVflip${index}`] = options?.samplerVflip ? 1 : 0;
   }
 
-  setChannelSelf(index, resolution = [this.width, this.height]) {
+  setChannelSelf(index, resolution = [this.width, this.height], options = {}) {
     if (!this.mesh?.shader?.uniforms) return;
     if (!Number.isInteger(index) || index < 0 || index > 3) return;
     this._selfChannelIndices.add(index);
@@ -268,7 +268,7 @@ export class ShaderToyBufferChannel {
     this._setChannelResolution(index, resolution);
     uniforms[`cpfxChannelType${index}`] = 0;
     uniforms[`cpfxVolumeLayout${index}`] = [1, 1, 1];
-    uniforms[`cpfxSamplerVflip${index}`] = 0;
+    uniforms[`cpfxSamplerVflip${index}`] = options?.samplerVflip ? 1 : 0;
   }
 
   update(dtSeconds = 1 / 60, renderer = canvas?.app?.renderer) {

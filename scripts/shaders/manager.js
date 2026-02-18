@@ -801,16 +801,19 @@ function createPreviewGeometry(size) {
     .addIndex(indices);
 }
 
-function updatePreviewShaderUniforms(shader, dtSeconds, speed, frameTicker) {
-  const dt = Math.max(0, Number(dtSeconds) || 0);
-  shader.uniforms.time = frameTicker * 0.015 * speed;
+function updatePreviewShaderUniforms(shader, dtSeconds, speed, timeSeconds) {
+  const safeDt = Math.max(0, Number(dtSeconds) || 0);
+  const safeSpeed = Math.max(0, Number(speed) || 0);
+  const safeTime = Math.max(0, Number(timeSeconds) || 0);
+  const shaderDt = safeDt * safeSpeed;
+  shader.uniforms.time = safeTime * safeSpeed;
   if ("uTime" in shader.uniforms) shader.uniforms.uTime = shader.uniforms.time;
   if ("iTime" in shader.uniforms) shader.uniforms.iTime = shader.uniforms.time;
-  if ("iTimeDelta" in shader.uniforms) shader.uniforms.iTimeDelta = dt;
+  if ("iTimeDelta" in shader.uniforms) shader.uniforms.iTimeDelta = shaderDt;
   if ("iFrame" in shader.uniforms)
     shader.uniforms.iFrame = (shader.uniforms.iFrame ?? 0) + 1;
   if ("iFrameRate" in shader.uniforms)
-    shader.uniforms.iFrameRate = dt > 0 ? 1 / dt : 60;
+    shader.uniforms.iFrameRate = shaderDt > 0 ? 1 / shaderDt : 60;
   if ("iDate" in shader.uniforms) {
     const now = new Date();
     const seconds =
@@ -2191,7 +2194,7 @@ export class ShaderManager {
     container.addChild(mesh);
     phaseMs.meshSetup = perfNow() - tMesh0;
 
-    let frameTicker = 0;
+    let timeSeconds = 0;
     const speed = toFiniteNumber(runtimeDefaults.speed, 1);
     const tBuffers0 = perfNow();
     const runtimeBuffers = (shaderResult.runtimeBufferChannels ?? [])
@@ -2234,15 +2237,15 @@ export class ShaderManager {
       step: (dtSeconds = 1 / 60) => {
         const dt = Math.max(0, Number(dtSeconds) || 0);
         pendingBufferDt += dt;
-        frameTicker += dt * 60;
-        updatePreviewShaderUniforms(shader, dt, speed, frameTicker);
+        timeSeconds += dt;
+        updatePreviewShaderUniforms(shader, dt, speed, timeSeconds);
       },
       render: (renderer, target = null) => {
         if (!renderer) return;
         const bufferDt = pendingBufferDt > 0 ? pendingBufferDt : 1 / 60;
         pendingBufferDt = 0;
         for (const runtimeBuffer of runtimeBuffers) {
-          runtimeBuffer.update(bufferDt, renderer);
+          runtimeBuffer.update(bufferDt * Math.max(0, Number(speed) || 0), renderer);
         }
         if (target) renderer.render(container, { renderTexture: target, clear: true });
         else renderer.render(container, { clear: true });
@@ -2545,7 +2548,7 @@ export class ShaderManager {
       .filter((buffer) => buffer && typeof buffer.update === "function");
 
     let pendingBufferDt = 0;
-    let frameTicker = 0;
+    let timeSeconds = 0;
 
     return {
       size,
@@ -2554,8 +2557,8 @@ export class ShaderManager {
       step: (dtSeconds = 1 / 60) => {
         const dt = Math.max(0, Number(dtSeconds) || 0);
         pendingBufferDt += dt;
-        frameTicker += dt * 60;
-        updatePreviewShaderUniforms(shader, dt, 1, frameTicker);
+        timeSeconds += dt;
+        updatePreviewShaderUniforms(shader, dt, 1, timeSeconds);
       },
       render: (renderer, target = null) => {
         if (!renderer) return;
@@ -3881,8 +3884,15 @@ export class ShaderManager {
             debugLog(this.moduleId, "binding buffer self-feedback channel", {
               channel: index,
               size: [bufferWidth, bufferHeight],
+              samplerVflip: parseBooleanLike(childCfg?.samplerVflip),
             });
-            runtimeBuffer.setChannelSelf(index, [bufferWidth, bufferHeight]);
+            runtimeBuffer.setChannelSelf(
+              index,
+              [bufferWidth, bufferHeight],
+              {
+                samplerVflip: parseBooleanLike(childCfg?.samplerVflip),
+              },
+            );
             continue;
           }
           const resolved = this.resolveImportedChannelTexture(

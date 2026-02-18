@@ -36,6 +36,13 @@ export const DEBUG_SETTINGS_KEYS = [
 export function registerModuleSettings({ moduleId, shaderManager, menus }) {
   const { ShaderSettingsMenu, DebugSettingsMenu, ShaderLibraryMenu } = menus;
   shaderManager.registerSettings();
+  const notifyClientPerformanceSettingChanged = (key, value) => {
+    try {
+      Hooks.callAll(`${moduleId}.clientPerformanceSettingsChanged`, { key, value });
+    } catch (_err) {
+      // Non-fatal.
+    }
+  };
 
   // World (GM config, shared defaults)
   game.settings.register(moduleId, "gmOnlyBroadcast", {
@@ -206,6 +213,39 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
     type: Number,
     default: 300,
     range: { min: 0, max: 2000, step: 25 }
+  });
+
+  game.settings.register(moduleId, "shaderCaptureResolutionScale", {
+    name: "Capture resolution scale",
+    hint: "Client performance setting. Scales shader capture resolution (scene capture textures) to reduce GPU load.",
+    scope: "client",
+    config: true,
+    type: Number,
+    default: 1.0,
+    range: { min: 0.25, max: 1.0, step: 0.05 },
+    onChange: (value) => notifyClientPerformanceSettingChanged("shaderCaptureResolutionScale", value),
+  });
+
+  game.settings.register(moduleId, "shaderCaptureMaxFps", {
+    name: "Capture update max FPS",
+    hint: "Client performance setting. Caps how often runtime shader captures and shader buffers update.",
+    scope: "client",
+    config: true,
+    type: Number,
+    default: 240,
+    range: { min: 10, max: 240, step: 1 },
+    onChange: (value) => notifyClientPerformanceSettingChanged("shaderCaptureMaxFps", value),
+  });
+
+  game.settings.register(moduleId, "shaderDrawMaxFps", {
+    name: "Shader draw update max FPS",
+    hint: "Client performance setting. Caps how often shader time uniforms update. Uses compensated delta-time so animation speed remains correct.",
+    scope: "client",
+    config: true,
+    type: Number,
+    default: 240,
+    range: { min: 10, max: 240, step: 1 },
+    onChange: (value) => notifyClientPerformanceSettingChanged("shaderDrawMaxFps", value),
   });
 
 game.settings.register(moduleId, "shaderRadiusUnits", {

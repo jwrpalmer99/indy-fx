@@ -5,6 +5,12 @@ function clamp01(value) {
   return Math.max(0, Math.min(1, Number(value ?? 0)));
 }
 
+function normalizeCaptureResolutionScale(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 1.0;
+  return Math.max(0.25, Math.min(1.0, n));
+}
+
 export function resolveShaderWorldLayer(moduleId, cfg, { allowTokenLayer = false, tokenTarget = null } = {}) {
   const shaderLayerSetting = cfg.layer ?? game.settings.get(moduleId, "shaderLayer") ?? "inherit";
   const layerNameRaw = shaderLayerSetting === "inherit"
@@ -97,14 +103,28 @@ export function createQuadGeometry(halfWidth, halfHeight) {
     .addIndex(indices);
 }
 
-export function setupShaderRuntimeChannels(shaderResult, shader, { captureSourceContainer = null } = {}) {
+export function setupShaderRuntimeChannels(
+  shaderResult,
+  shader,
+  { captureSourceContainer = null, captureResolutionScale = 1.0 } = {},
+) {
   const sceneAreaChannels = [];
   const runtimeBufferChannels = [];
   const runtimeImageChannels = [];
   const sceneCaptureBySize = new Map();
+  const resolvedCaptureResolutionScale =
+    normalizeCaptureResolutionScale(captureResolutionScale);
 
   for (const runtimeChannel of shaderResult.runtimeChannels ?? []) {
-    const captureSize = runtimeChannel?.size ?? 512;
+    const rawCaptureSize = Number(runtimeChannel?.size ?? 512);
+    const baseCaptureSize =
+      Number.isFinite(rawCaptureSize) && rawCaptureSize > 0
+        ? rawCaptureSize
+        : 512;
+    const captureSize = Math.max(
+      16,
+      Math.round(baseCaptureSize * resolvedCaptureResolutionScale),
+    );
     const channelIndex = runtimeChannel?.channel;
     if (!Number.isInteger(channelIndex) || channelIndex < 0 || channelIndex > 3) continue;
 
@@ -175,12 +195,16 @@ export function createFadeAlphaComputer(cfg) {
 }
 
 export function updateShaderTimeUniforms(shader, dt, speed, timeTicks) {
-  shader.uniforms.time = timeTicks * 0.015 * speed;
+  const safeDt = Math.max(0, Number(dt) || 0);
+  const safeSpeed = Math.max(0, Number(speed) || 0);
+  const safeTime = Math.max(0, Number(timeTicks) || 0);
+  const shaderDt = safeDt * safeSpeed;
+  shader.uniforms.time = safeTime * safeSpeed;
   if ("uTime" in shader.uniforms) shader.uniforms.uTime = shader.uniforms.time;
   if ("iTime" in shader.uniforms) shader.uniforms.iTime = shader.uniforms.time;
-  if ("iTimeDelta" in shader.uniforms) shader.uniforms.iTimeDelta = dt;
+  if ("iTimeDelta" in shader.uniforms) shader.uniforms.iTimeDelta = shaderDt;
   if ("iFrame" in shader.uniforms) shader.uniforms.iFrame = (shader.uniforms.iFrame ?? 0) + 1;
-  if ("iFrameRate" in shader.uniforms) shader.uniforms.iFrameRate = dt > 0 ? (1 / dt) : 60;
+  if ("iFrameRate" in shader.uniforms) shader.uniforms.iFrameRate = shaderDt > 0 ? (1 / shaderDt) : 60;
   if ("iDate" in shader.uniforms) {
     const now = new Date();
     const seconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds() + (now.getMilliseconds() / 1000);

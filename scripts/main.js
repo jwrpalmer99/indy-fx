@@ -639,6 +639,20 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
       dtRaw > 10 ? (dtRaw / 1000) : (dtRaw / 60),
     ) / 1000,
   );
+  const runtimeCaptureMaxFps = getClientShaderCaptureMaxFps();
+  const runtimeBufferDt = consumeThrottledUpdateDt(
+    source,
+    dtSeconds,
+    runtimeCaptureMaxFps,
+    "_indyFxRuntimeBufferAccumMs",
+  );
+  const runtimeDrawMaxFps = getClientShaderDrawMaxFps();
+  const runtimeDrawDt = consumeThrottledUpdateDt(
+    source,
+    dtSeconds,
+    runtimeDrawMaxFps,
+    "_indyFxRuntimeDrawAccumMs",
+  );
   const nowDate = new Date();
   const daySeconds =
     nowDate.getHours() * 3600 +
@@ -668,8 +682,7 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
   source._indyFxFoundryBrightRadius = radii.brightRadius;
   source._indyFxFoundryDimRadius = radii.dimRadius;
   source._indyFxFoundryRawRadii = radii?.raw ?? null;
-  const frame = source._indyFxLightFrameCounter;
-  const frameRate = dtSeconds > 0 ? (1 / dtSeconds) : 60;
+  const frameRate = runtimeDrawDt > 0 ? (1 / runtimeDrawDt) : 60;
 
   for (const layer of Object.values(layers)) {
     const uniforms = layer?.shader?.uniforms;
@@ -678,12 +691,11 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     const runtimeBuffers = Array.isArray(layer?._indyFxRuntimeBuffers)
       ? layer._indyFxRuntimeBuffers
       : [];
-    if (runtimeBuffers.length > 0) {
+    if (runtimeBuffers.length > 0 && runtimeBufferDt > 0) {
       const renderer = canvas?.app?.renderer;
-      const bufferDt = dtSeconds > 0 ? dtSeconds : (1 / 60);
       for (const runtimeBuffer of runtimeBuffers) {
         try {
-          runtimeBuffer?.update?.(bufferDt, renderer);
+          runtimeBuffer?.update?.(runtimeBufferDt, renderer);
         } catch (_err) {
           // Non-fatal.
         }
@@ -746,17 +758,19 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
       ch3w, ch3h, 1,
     ];
     uniforms.iMouse = [0, 0, 0, 0];
-    uniforms.uTime = t;
-    uniforms.iTime = t;
-    uniforms.iTimeDelta = dtSeconds;
-    uniforms.iFrame = frame;
-    uniforms.iFrameRate = frameRate;
-    uniforms.iDate = [
-      nowDate.getFullYear(),
-      nowDate.getMonth() + 1,
-      nowDate.getDate(),
-      daySeconds,
-    ];
+    if (runtimeDrawDt > 0) {
+      uniforms.uTime = t;
+      uniforms.iTime = t;
+      uniforms.iTimeDelta = runtimeDrawDt;
+      uniforms.iFrame = toFiniteLightNumber(uniforms.iFrame, 0) + 1;
+      uniforms.iFrameRate = frameRate;
+      uniforms.iDate = [
+        nowDate.getFullYear(),
+        nowDate.getMonth() + 1,
+        nowDate.getDate(),
+        daySeconds,
+      ];
+    }
     uniforms.shaderScale = Math.max(
       0.01,
       toFiniteLightNumber(uniforms.shaderScale, 1),
@@ -1863,6 +1877,7 @@ const _activeRegionShaderByRegion = new Map();
 const _activeTileShader = new Map();
 const _muteRegionBehaviorSync = new Set();
 let _persistentRestoreGeneration = 0;
+let _clientPerformanceRefreshHandle = null;
 const _tmpPoint = new PIXI.Point();
 let _shaderPlacementCleanup = null;
 const TOKEN_SHADER_FLAG = "tokenShader";
@@ -2605,7 +2620,7 @@ async function openDocumentShaderConfigDialog(app) {
         flagKey: target?.flagKey ?? null,
         shaderId: next?.shaderId ?? null,
       });
-      ui.notifications.info("indyFX effect disabled.");
+      //ui.notifications.info("indyFX effect disabled.");
       return;
     }
 
@@ -2641,7 +2656,7 @@ async function openDocumentShaderConfigDialog(app) {
       persisted: shouldPersistDocumentShader(next),
       displayTimeMs: next?.displayTimeMs ?? null,
     });
-    ui.notifications.info(action === "save" ? "indyFX effect saved." : "indyFX effect applied.");
+    //ui.notifications.info(action === "save" ? "indyFX effect saved." : "indyFX effect applied.");
   };
 
   const openInstanceShaderVariableEditor = async () => {
@@ -3204,6 +3219,7 @@ function createRegionEffectKey(regionId, behaviorId = null) {
 
 function registerActiveRegionShaderEntry(effectKey, entry) {
   if (!effectKey || !entry) return;
+  if (!entry.sceneId) entry.sceneId = String(canvas?.scene?.id ?? "");
   _activeRegionShader.set(effectKey, entry);
   const regionId = entry.regionId;
   if (!regionId) return;
@@ -3712,8 +3728,179 @@ function getPersistedShaderId(opts) {
 function _isActiveEntryUsable(entry) {
   if (!entry || typeof entry !== "object") return false;
   if (entry.container?.destroyed) return false;
+  if (!entry.container?.parent) return false;
+  const currentSceneId = String(canvas?.scene?.id ?? "");
+  const entrySceneId = String(entry?.sceneId ?? "");
+  if (currentSceneId && entrySceneId && currentSceneId !== entrySceneId) return false;
   if (typeof entry.tickerFn !== "function") return false;
   return true;
+}
+
+function getCurrentSceneTemplateDocs() {
+  const fromPlaceables = Array.isArray(canvas?.templates?.placeables)
+    ? canvas.templates.placeables
+      .map((template) => template?.document ?? null)
+      .filter((doc) => !!doc?.id)
+    : [];
+  const fromScene = Array.isArray(canvas.scene?.templates?.contents)
+    ? canvas.scene.templates.contents
+    : [];
+  const byId = new Map();
+  for (const doc of fromScene) {
+    if (!doc?.id) continue;
+    byId.set(String(doc.id), doc);
+  }
+  for (const doc of fromPlaceables) {
+    if (!doc?.id) continue;
+    const key = String(doc.id);
+    if (!byId.has(key)) byId.set(key, doc);
+  }
+  return Array.from(byId.values());
+}
+
+function ensureTemplateShaderFromPersist(templateOrDoc, { reason = "unknown", forceRebuild = false } = {}) {
+  const doc = templateOrDoc?.document ?? templateOrDoc ?? null;
+  const templateId = String(doc?.id ?? "").trim();
+  if (!templateId) return false;
+  const currentSceneId = String(canvas?.scene?.id ?? "");
+  const docSceneId = String(doc?.parent?.id ?? doc?.parentCollection?.parent?.id ?? "");
+  if (currentSceneId && docSceneId && currentSceneId !== docSceneId) {
+    debugLog("skip template persist ensure for non-current scene doc", {
+      reason,
+      templateId,
+      currentSceneId,
+      docSceneId,
+    });
+    return false;
+  }
+
+  const opts = readShaderFlag(doc, TEMPLATE_SHADER_FLAG);
+  if (!opts || parsePersistDisabled(opts?._disabled)) {
+    if (forceRebuild && _activeTemplateShader.has(templateId)) {
+      shaderOffTemplate(templateId, { skipPersist: true });
+    }
+    return false;
+  }
+
+  const persistedShaderId = getPersistedShaderId(opts);
+  if (!persistedShaderId) return false;
+
+  const existing = _activeTemplateShader.get(templateId);
+  if (!forceRebuild && _isActiveEntryUsable(existing)) return true;
+  if (existing) shaderOffTemplate(templateId, { skipPersist: true });
+
+  if (!canvas.templates?.get?.(templateId)) return false;
+  const sourceOpts = sanitizeShaderPersistOpts({
+    ...opts,
+    shaderId: persistedShaderId,
+    _skipPersist: true,
+    _fromPersist: true,
+  });
+  shaderOnTemplate(templateId, sourceOpts);
+  const applied = _isActiveEntryUsable(_activeTemplateShader.get(templateId));
+  if (!applied && _activeTemplateShader.has(templateId)) {
+    shaderOffTemplate(templateId, { skipPersist: true });
+  }
+  debugLog("ensure template shader from persist", {
+    reason,
+    templateId,
+    applied,
+  });
+  return applied;
+}
+
+function ensurePersistentTemplateShadersReady({ reason = "unknown" } = {}) {
+  const templateDocs = getCurrentSceneTemplateDocs();
+  let applied = 0;
+  let pending = 0;
+  let eligible = 0;
+  for (const doc of templateDocs) {
+    const templateId = String(doc?.id ?? "").trim();
+    if (!templateId) continue;
+    const opts = readShaderFlag(doc, TEMPLATE_SHADER_FLAG);
+    const isEligible = !!opts && !parsePersistDisabled(opts?._disabled) && !!getPersistedShaderId(opts);
+    if (isEligible) eligible += 1;
+    const ok = ensureTemplateShaderFromPersist(doc, { reason });
+    if (ok) applied += 1;
+    else if (isEligible) pending += 1;
+  }
+  debugLog("ensure persistent template shaders summary", {
+    reason,
+    docs: templateDocs.length,
+    eligible,
+    applied,
+    pending,
+  });
+  return { applied, pending };
+}
+
+function schedulePersistentTemplateEnsure(reason = "unknown") {
+  const delays = [0, 80, 200, 450, 900, 1700];
+  let resolved = false;
+  for (const delay of delays) {
+    setTimeout(() => {
+      try {
+        if (resolved) return;
+        if (!canvas?.ready) return;
+        const summary = ensurePersistentTemplateShadersReady({ reason: `${reason}:${delay}` });
+        if (Number(summary?.pending ?? 0) <= 0 && Number(summary?.applied ?? 0) > 0) {
+          resolved = true;
+        }
+      } catch (_err) {
+        // Non-fatal.
+      }
+    }, delay);
+  }
+}
+
+function clearAllActiveShaderEntries({ reason = "teardown" } = {}) {
+  _persistentRestoreGeneration += 1;
+  const ticker = canvas?.app?.ticker ?? null;
+
+  for (const [tokenId, entry] of Array.from(_activeShader.entries())) {
+    try {
+      ticker?.remove?.(entry?.tickerFn);
+      destroyShaderRuntimeEntry(entry);
+    } catch (_err) {
+      // Non-fatal during teardown.
+    }
+    _activeShader.delete(tokenId);
+  }
+
+  for (const [templateId, entry] of Array.from(_activeTemplateShader.entries())) {
+    try {
+      ticker?.remove?.(entry?.tickerFn);
+      destroyShaderRuntimeEntry(entry);
+    } catch (_err) {
+      // Non-fatal during teardown.
+    }
+    _activeTemplateShader.delete(templateId);
+  }
+
+  for (const [tileId, entry] of Array.from(_activeTileShader.entries())) {
+    try {
+      ticker?.remove?.(entry?.tickerFn);
+      destroyShaderRuntimeEntry(entry, { preserveWhiteMask: true });
+    } catch (_err) {
+      // Non-fatal during teardown.
+    }
+    _activeTileShader.delete(tileId);
+  }
+
+  for (const entry of Array.from(_activeRegionShader.values())) {
+    try {
+      ticker?.remove?.(entry?.tickerFn);
+      for (const cluster of (entry?.clusterStates ?? [])) {
+        destroyRegionClusterRuntime(cluster);
+      }
+      entry?.container?.destroy?.({ children: true });
+    } catch (_err) {
+      // Non-fatal during teardown.
+    }
+    unregisterActiveRegionShaderEntry(entry?.effectKey);
+  }
+
+  debugLog("cleared active shader entries", { reason });
 }
 
 function hasAnyPersistedDocumentShaderFlags() {
@@ -3750,9 +3937,6 @@ function restorePersistentTokenTemplateTileShaders() {
   };
   const hasPersistedFlags = hasAnyPersistedDocumentShaderFlags();
   const hasActiveEntries = hasAnyActivePersistentShaderEntries();
-  if (!hasPersistedFlags && !hasActiveEntries) {
-    return summary;
-  }
 
   const tokenDocs = Array.isArray(canvas.scene?.tokens?.contents)
     ? canvas.scene.tokens.contents
@@ -3772,7 +3956,7 @@ function restorePersistentTokenTemplateTileShaders() {
         summary.token.skipped += 1;
         continue;
       }
-      _activeShader.delete(tokenId);
+      shaderOff(tokenId, { skipPersist: true });
     }
     const persistedShaderId = getPersistedShaderId(opts);
     if (!persistedShaderId) {
@@ -3789,12 +3973,16 @@ function restorePersistentTokenTemplateTileShaders() {
       _skipPersist: true,
       _fromPersist: true,
     }));
-    summary.token.applied += 1;
+    const appliedEntry = _activeShader.get(tokenId);
+    if (_isActiveEntryUsable(appliedEntry)) {
+      summary.token.applied += 1;
+    } else {
+      if (appliedEntry) shaderOff(tokenId, { skipPersist: true });
+      summary.token.pending += 1;
+    }
   }
 
-  const templateDocs = Array.isArray(canvas.scene?.templates?.contents)
-    ? canvas.scene.templates.contents
-    : [];
+  const templateDocs = getCurrentSceneTemplateDocs();
   for (const templateDoc of templateDocs) {
     const templateId = templateDoc?.id;
     if (!templateId) continue;
@@ -3810,7 +3998,7 @@ function restorePersistentTokenTemplateTileShaders() {
         summary.template.skipped += 1;
         continue;
       }
-      _activeTemplateShader.delete(templateId);
+      shaderOffTemplate(templateId, { skipPersist: true });
     }
     const persistedShaderId = getPersistedShaderId(opts);
     if (!persistedShaderId) {
@@ -3827,7 +4015,13 @@ function restorePersistentTokenTemplateTileShaders() {
       _skipPersist: true,
       _fromPersist: true,
     }));
-    summary.template.applied += 1;
+    const appliedEntry = _activeTemplateShader.get(templateId);
+    if (_isActiveEntryUsable(appliedEntry)) {
+      summary.template.applied += 1;
+    } else {
+      if (appliedEntry) shaderOffTemplate(templateId, { skipPersist: true });
+      summary.template.pending += 1;
+    }
   }
 
   const tileDocs = Array.isArray(canvas.scene?.tiles?.contents)
@@ -3848,7 +4042,7 @@ function restorePersistentTokenTemplateTileShaders() {
         summary.tile.skipped += 1;
         continue;
       }
-      _activeTileShader.delete(tileId);
+      shaderOffTile(tileId, { skipPersist: true });
     }
     const persistedShaderId = getPersistedShaderId(opts);
     if (!persistedShaderId) {
@@ -3865,7 +4059,13 @@ function restorePersistentTokenTemplateTileShaders() {
       _skipPersist: true,
       _fromPersist: true,
     }));
-    summary.tile.applied += 1;
+    const appliedEntry = _activeTileShader.get(tileId);
+    if (_isActiveEntryUsable(appliedEntry)) {
+      summary.tile.applied += 1;
+    } else {
+      if (appliedEntry) shaderOffTile(tileId, { skipPersist: true });
+      summary.tile.pending += 1;
+    }
   }
   const appliedTotal =
     summary.token.applied +
@@ -3889,26 +4089,17 @@ function restorePersistentTokenTemplateTileShaders() {
 }
 
 function scheduleDeferredPersistentShaderRestore() {
-  if (!hasAnyPersistedDocumentShaderFlags() && !hasAnyActivePersistentShaderEntries()) return;
   const generation = ++_persistentRestoreGeneration;
-  const delays = [60, 180, 420, 900, 1600, 2800, 4500];
+  const delays = [60, 180, 420, 900, 1600, 2800, 4500, 7000, 10000];
   for (const delay of delays) {
     setTimeout(() => {
       if (generation !== _persistentRestoreGeneration) return;
-      if (!hasAnyPersistedDocumentShaderFlags() && !hasAnyActivePersistentShaderEntries()) {
-        _persistentRestoreGeneration += 1;
-        return;
-      }
       try {
         const summary = restorePersistentTokenTemplateTileShaders();
         const pendingTotal =
           Number(summary?.token?.pending ?? 0) +
           Number(summary?.template?.pending ?? 0) +
           Number(summary?.tile?.pending ?? 0);
-        if (pendingTotal <= 0) {
-          _persistentRestoreGeneration += 1;
-          return;
-        }
         if (pendingTotal > 0) {
           debugLog("deferred persistent shader restore pending", {
             delay,
@@ -4130,6 +4321,53 @@ function parseBooleanLike(value, fallback = false) {
   if (["1", "true", "on", "yes", "y"].includes(normalized)) return true;
   if (["0", "false", "off", "no", "n"].includes(normalized)) return false;
   return fallback;
+}
+
+function getClientShaderCaptureResolutionScale() {
+  try {
+    const raw = Number(game?.settings?.get?.(MODULE_ID, "shaderCaptureResolutionScale"));
+    if (!Number.isFinite(raw)) return 1.0;
+    return Math.max(0.25, Math.min(1.0, raw));
+  } catch (_err) {
+    return 1.0;
+  }
+}
+
+function getClientShaderCaptureMaxFps() {
+  try {
+    const raw = Number(game?.settings?.get?.(MODULE_ID, "shaderCaptureMaxFps"));
+    if (!Number.isFinite(raw)) return 240;
+    return Math.max(10, Math.min(240, Math.round(raw)));
+  } catch (_err) {
+    return 240;
+  }
+}
+
+function getClientShaderDrawMaxFps() {
+  try {
+    const raw = Number(game?.settings?.get?.(MODULE_ID, "shaderDrawMaxFps"));
+    if (!Number.isFinite(raw)) return 240;
+    return Math.max(10, Math.min(240, Math.round(raw)));
+  } catch (_err) {
+    return 240;
+  }
+}
+
+function consumeThrottledUpdateDt(
+  state,
+  dtSeconds,
+  maxFps,
+  key = "accumMs",
+) {
+  if (!state || typeof state !== "object") return 0;
+  const dtMs = Math.max(0, Number(dtSeconds) || 0) * 1000;
+  state[key] = Math.max(0, Number(state[key]) || 0) + dtMs;
+  const fps = Math.max(10, Math.min(240, Number(maxFps) || 240));
+  const intervalMs = 1000 / fps;
+  if (state[key] + 0.0001 < intervalMs) return 0;
+  const updateDt = Math.max(1 / 240, state[key] / 1000);
+  state[key] = 0;
+  return updateDt;
 }
 
 function getImportedShaderDefaultsForSelection(macroOpts = {}) {
@@ -4471,8 +4709,10 @@ function shaderOn(tokenId, opts = {}) {
   const captureSourceContainer = worldLayer === tok
     ? (tok.parent ?? canvas.tokens)
     : worldLayer;
+  const captureResolutionScale = getClientShaderCaptureResolutionScale();
   const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, {
-    captureSourceContainer
+    captureSourceContainer,
+    captureResolutionScale
   });
   const mesh = new PIXI.Mesh(geom, shader);
   mesh.alpha = 1.0;
@@ -4495,8 +4735,10 @@ function shaderOn(tokenId, opts = {}) {
     container.addChild(spriteDebugGfx);
     updateSpriteDebugGfx(spriteDebugGfx, effectExtent);
   }
-    let t = 0;
+  let t = 0;
   let elapsedMs = 0;
+  const captureThrottleState = {};
+  const drawThrottleState = {};
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
   if ("globalAlpha" in shader.uniforms) {
     shader.uniforms.globalAlpha = computeFadeAlpha(0);
@@ -4505,6 +4747,19 @@ function shaderOn(tokenId, opts = {}) {
     const liveTok = canvas.tokens?.get(tokenId);
     if (!liveTok) return shaderOff(tokenId, { skipPersist: true });
     const dt = Number.isFinite(canvas.app.ticker.deltaMS) ? (canvas.app.ticker.deltaMS / 1000) : (delta / 60);
+    const speedScale = Math.max(0, Number(cfg.speed ?? 1) || 0);
+    const captureUpdateDt = consumeThrottledUpdateDt(
+      captureThrottleState,
+      dt,
+      getClientShaderCaptureMaxFps(),
+      "_indyFxCaptureAccumMs",
+    );
+    const drawUpdateDt = consumeThrottledUpdateDt(
+      drawThrottleState,
+      dt,
+      getClientShaderDrawMaxFps(),
+      "_indyFxDrawAccumMs",
+    );
     elapsedMs += dt * 1000;
     if (displayTimeMs > 0 && elapsedMs >= displayTimeMs) {
       return shaderOff(tokenId, { skipPersist: true });
@@ -4528,12 +4783,12 @@ function shaderOn(tokenId, opts = {}) {
     }
     if (debugGfx) updateDebugGfx(debugGfx, liveTok, worldLayer, effectExtent);
     if (spriteDebugGfx) updateSpriteDebugGfx(spriteDebugGfx, effectExtent);
-    if (runtimeBufferChannels.length) {
+    if (runtimeBufferChannels.length && captureUpdateDt > 0) {
       for (const runtimeBuffer of runtimeBufferChannels) {
-        runtimeBuffer.update(dt);
+        runtimeBuffer.update(captureUpdateDt * speedScale);
       }
     }
-    if (sceneAreaChannels.length) {
+    if (sceneAreaChannels.length && captureUpdateDt > 0) {
       const liveCenter = getTokenCenter(liveTok);
       const captureScale = Math.max(0.01, Number(cfg.captureScale ?? 1.0));
       const captureRadius = effectExtent * captureScale;
@@ -4555,12 +4810,15 @@ function shaderOn(tokenId, opts = {}) {
         });
       }
     }
-    t += delta;
-    updateShaderTimeUniforms(shader, dt, cfg.speed, t);
+    t += dt;
+    if (drawUpdateDt > 0) {
+      updateShaderTimeUniforms(shader, drawUpdateDt, speedScale, t);
+    }
   };
 
   canvas.app.ticker.add(tickerFn);
   _activeShader.set(tokenId, {
+    sceneId: String(canvas?.scene?.id ?? ""),
     container,
     tickerFn,
     debugGfx,
@@ -4732,7 +4990,11 @@ function shaderOnTemplate(templateId, opts = {}) {
   });
   const shader = shaderResult.shader;
 
-  const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, { captureSourceContainer: worldLayer });
+  const captureResolutionScale = getClientShaderCaptureResolutionScale();
+  const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, {
+    captureSourceContainer: worldLayer,
+    captureResolutionScale
+  });
   const mesh = new PIXI.Mesh(geom, shader);
   mesh.alpha = 1.0;
   mesh.blendMode = PIXI.BLEND_MODES.NORMAL;
@@ -4758,6 +5020,10 @@ function shaderOnTemplate(templateId, opts = {}) {
 
   let t = 0;
   let elapsedMs = 0;
+  const captureThrottleState = {};
+  const drawThrottleState = {};
+  let missingTemplateMs = 0;
+  const missingTemplateGraceMs = 2000;
   let templateShapeSignature = getTemplateShapeSignature(template);
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
   if ("globalAlpha" in shader.uniforms) {
@@ -4765,8 +5031,14 @@ function shaderOnTemplate(templateId, opts = {}) {
   }
 
   const tickerFn = (delta) => {
+    const dtMs = Number.isFinite(canvas.app.ticker.deltaMS) ? canvas.app.ticker.deltaMS : (1000 / 60);
     const liveTemplate = canvas.templates?.get(resolvedTemplateId);
-    if (!liveTemplate) return shaderOffTemplate(resolvedTemplateId, { skipPersist: true });
+    if (!liveTemplate) {
+      missingTemplateMs += Math.max(0, dtMs);
+      if (missingTemplateMs < missingTemplateGraceMs) return;
+      return shaderOffTemplate(resolvedTemplateId, { skipPersist: true });
+    }
+    missingTemplateMs = 0;
 
     const liveShapeSig = getTemplateShapeSignature(liveTemplate);
     if (liveShapeSig !== templateShapeSignature) {
@@ -4778,7 +5050,20 @@ function shaderOnTemplate(templateId, opts = {}) {
       return;
     }
 
-    const dt = Number.isFinite(canvas.app.ticker.deltaMS) ? (canvas.app.ticker.deltaMS / 1000) : (delta / 60);
+    const dt = dtMs / 1000;
+    const speedScale = Math.max(0, Number(cfg.speed ?? 1) || 0);
+    const captureUpdateDt = consumeThrottledUpdateDt(
+      captureThrottleState,
+      dt,
+      getClientShaderCaptureMaxFps(),
+      "_indyFxCaptureAccumMs",
+    );
+    const drawUpdateDt = consumeThrottledUpdateDt(
+      drawThrottleState,
+      dt,
+      getClientShaderDrawMaxFps(),
+      "_indyFxDrawAccumMs",
+    );
     elapsedMs += dt * 1000;
     if (displayTimeMs > 0 && elapsedMs >= displayTimeMs) {
       return shaderOffTemplate(resolvedTemplateId, { skipPersist: true });
@@ -4801,12 +5086,12 @@ function shaderOnTemplate(templateId, opts = {}) {
     }
     if (debugGfx) updateDebugGfxAtWorld(debugGfx, liveCenter, worldLayer, effectExtent);
     if (spriteDebugGfx) updateSpriteDebugGfx(spriteDebugGfx, effectExtent);
-    if (runtimeBufferChannels.length) {
+    if (runtimeBufferChannels.length && captureUpdateDt > 0) {
       for (const runtimeBuffer of runtimeBufferChannels) {
-        runtimeBuffer.update(dt);
+        runtimeBuffer.update(captureUpdateDt * speedScale);
       }
     }
-    if (sceneAreaChannels.length) {
+    if (sceneAreaChannels.length && captureUpdateDt > 0) {
       const captureScale = Math.max(0.01, Number(cfg.captureScale ?? 1.0));
       const captureRadius = effectExtent * captureScale;
       const captureRotationDeg = Number.isFinite(Number(cfg.captureRotationDeg))
@@ -4828,12 +5113,15 @@ function shaderOnTemplate(templateId, opts = {}) {
       }
     }
 
-    t += delta;
-    updateShaderTimeUniforms(shader, dt, cfg.speed, t);
+    t += dt;
+    if (drawUpdateDt > 0) {
+      updateShaderTimeUniforms(shader, drawUpdateDt, speedScale, t);
+    }
   };
 
   canvas.app.ticker.add(tickerFn);
   _activeTemplateShader.set(resolvedTemplateId, {
+    sceneId: String(canvas?.scene?.id ?? ""),
     container,
     tickerFn,
     debugGfx,
@@ -4979,7 +5267,11 @@ function shaderOnTile(tileId, opts = {}) {
   });
   const shader = shaderResult.shader;
 
-  const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, { captureSourceContainer: worldLayer });
+  const captureResolutionScale = getClientShaderCaptureResolutionScale();
+  const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, {
+    captureSourceContainer: worldLayer,
+    captureResolutionScale
+  });
 
   const mesh = new PIXI.Mesh(geom, shader);
   mesh.alpha = 1.0;
@@ -5006,6 +5298,8 @@ function shaderOnTile(tileId, opts = {}) {
 
   let t = 0;
   let elapsedMs = 0;
+  const captureThrottleState = {};
+  const drawThrottleState = {};
   let tileShapeSignature = getTileShapeSignature(tile);
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
   if ("globalAlpha" in shader.uniforms) {
@@ -5027,6 +5321,19 @@ function shaderOnTile(tileId, opts = {}) {
     }
 
     const dt = Number.isFinite(canvas.app.ticker.deltaMS) ? (canvas.app.ticker.deltaMS / 1000) : (delta / 60);
+    const speedScale = Math.max(0, Number(cfg.speed ?? 1) || 0);
+    const captureUpdateDt = consumeThrottledUpdateDt(
+      captureThrottleState,
+      dt,
+      getClientShaderCaptureMaxFps(),
+      "_indyFxCaptureAccumMs",
+    );
+    const drawUpdateDt = consumeThrottledUpdateDt(
+      drawThrottleState,
+      dt,
+      getClientShaderDrawMaxFps(),
+      "_indyFxDrawAccumMs",
+    );
     elapsedMs += dt * 1000;
     if (displayTimeMs > 0 && elapsedMs >= displayTimeMs) {
       return shaderOffTile(resolvedTileId, { skipPersist: true });
@@ -5054,11 +5361,13 @@ function shaderOnTile(tileId, opts = {}) {
     if (debugGfx) updateDebugGfxAtWorld(debugGfx, liveMetrics.center, worldLayer, Math.max(liveShaderSize.width, liveShaderSize.height) * 0.5);
     if (spriteDebugGfx) updateSpriteDebugGfx(spriteDebugGfx, Math.max(liveShaderSize.width, liveShaderSize.height) * 0.5);
 
-    for (const runtimeBuffer of runtimeBufferChannels) {
-      runtimeBuffer.update(dt);
+    if (captureUpdateDt > 0) {
+      for (const runtimeBuffer of runtimeBufferChannels) {
+        runtimeBuffer.update(captureUpdateDt * speedScale);
+      }
     }
 
-    if (sceneAreaChannels.length) {
+    if (sceneAreaChannels.length && captureUpdateDt > 0) {
       const captureScale = Math.max(0.01, Number(cfg.captureScale ?? 1.0));
       const captureRadiusX = liveShaderSize.width * 0.5 * captureScale;
       const captureRadiusY = liveShaderSize.height * 0.5 * captureScale;
@@ -5081,12 +5390,15 @@ function shaderOnTile(tileId, opts = {}) {
       }
     }
 
-    t += delta;
-    updateShaderTimeUniforms(shader, dt, cfg.speed, t);
+    t += dt;
+    if (drawUpdateDt > 0) {
+      updateShaderTimeUniforms(shader, drawUpdateDt, speedScale, t);
+    }
   };
 
   canvas.app.ticker.add(tickerFn);
   _activeTileShader.set(resolvedTileId, {
+    sceneId: String(canvas?.scene?.id ?? ""),
     container,
     tickerFn,
     debugGfx,
@@ -5266,6 +5578,120 @@ function schedulePostRestoreImageChannelRefreshes() {
   }
 }
 
+function refreshActiveShadersForClientPerformanceSettings({ reason = "client-performance-setting-change" } = {}) {
+  if (!canvas?.ready) return;
+  let rebuilt = {
+    token: 0,
+    template: 0,
+    tile: 0,
+    region: 0,
+  };
+
+  const tokenEntries = Array.from(_activeShader.entries()).map(([tokenId, entry]) => ({
+    tokenId,
+    sourceOpts: foundry.utils.mergeObject({}, entry?.sourceOpts ?? {}, { inplace: false }),
+  }));
+  for (const { tokenId, sourceOpts } of tokenEntries) {
+    if (!canvas.tokens?.get?.(tokenId)) continue;
+    try {
+      shaderOff(tokenId, { skipPersist: true });
+      shaderOn(tokenId, sourceOpts);
+      rebuilt.token += 1;
+    } catch (_err) {
+      // Non-fatal.
+    }
+  }
+
+  const templateEntries = Array.from(_activeTemplateShader.entries()).map(([templateId, entry]) => ({
+    templateId,
+    sourceOpts: foundry.utils.mergeObject({}, entry?.sourceOpts ?? {}, { inplace: false }),
+  }));
+  for (const { templateId, sourceOpts } of templateEntries) {
+    if (!canvas.templates?.get?.(templateId)) continue;
+    try {
+      shaderOffTemplate(templateId, { skipPersist: true });
+      shaderOnTemplate(templateId, sourceOpts);
+      rebuilt.template += 1;
+    } catch (_err) {
+      // Non-fatal.
+    }
+  }
+
+  const tileEntries = Array.from(_activeTileShader.entries()).map(([tileId, entry]) => ({
+    tileId,
+    sourceOpts: foundry.utils.mergeObject({}, entry?.sourceOpts ?? {}, { inplace: false }),
+  }));
+  for (const { tileId, sourceOpts } of tileEntries) {
+    if (!getTilePlaceable(tileId)) continue;
+    try {
+      shaderOffTile(tileId, { skipPersist: true });
+      shaderOnTile(tileId, sourceOpts);
+      rebuilt.tile += 1;
+    } catch (_err) {
+      // Non-fatal.
+    }
+  }
+
+  const regionEntries = Array.from(_activeRegionShader.values()).map((entry) => ({
+    regionId: String(entry?.regionId ?? ""),
+    effectKey: String(entry?.effectKey ?? ""),
+    fromBehavior: entry?.fromBehavior === true,
+    sourceOpts: foundry.utils.mergeObject({}, entry?.sourceOpts ?? {}, { inplace: false }),
+  }));
+  const rebuiltBehaviorRegions = new Set();
+  for (const entry of regionEntries) {
+    if (!entry.regionId) continue;
+    if (entry.fromBehavior) {
+      if (rebuiltBehaviorRegions.has(entry.regionId)) continue;
+      rebuiltBehaviorRegions.add(entry.regionId);
+      try {
+        syncRegionShaderFromBehavior(entry.regionId, { rebuild: true });
+        rebuilt.region += 1;
+      } catch (_err) {
+        // Non-fatal.
+      }
+      continue;
+    }
+    try {
+      shaderOffRegion(entry.regionId, { skipPersist: true, fromBehavior: false, effectKey: entry.effectKey });
+      shaderOnRegion(entry.regionId, entry.sourceOpts);
+      rebuilt.region += 1;
+    } catch (_err) {
+      // Non-fatal.
+    }
+  }
+
+  try {
+    refreshActivePlaceableImageChannels();
+    refreshActiveSceneCaptureChannels();
+  } catch (_err) {
+    // Non-fatal.
+  }
+  setTimeout(() => {
+    try {
+      refreshActivePlaceableImageChannels();
+      refreshActiveSceneCaptureChannels();
+    } catch (_err) {
+      // Non-fatal.
+    }
+  }, 160);
+
+  debugLog("refreshed active shaders for client performance setting", {
+    reason,
+    rebuilt,
+  });
+}
+
+function scheduleActiveShaderPerformanceRefresh(reason = "client-performance-setting-change") {
+  if (_clientPerformanceRefreshHandle !== null) {
+    clearTimeout(_clientPerformanceRefreshHandle);
+  }
+  _clientPerformanceRefreshHandle = setTimeout(() => {
+    _clientPerformanceRefreshHandle = null;
+    refreshActiveShadersForClientPerformanceSettings({ reason });
+  }, 120);
+}
+
 function shaderOnRegion(regionId, opts = {}) {
   const macroOpts = normalizeShaderMacroOpts(opts);
   const fromBehavior = macroOpts._fromBehavior === true;
@@ -5376,6 +5802,7 @@ function shaderOnRegion(regionId, opts = {}) {
   const treeComponents = getRegionSolidComponents(region);
   const useTreeComponents = treeComponents.length > 0;
   const clusterCount = useTreeComponents ? treeComponents.length : contiguousGroups.length;
+  const captureResolutionScale = getClientShaderCaptureResolutionScale();
   if (!clusterCount) {
     rootContainer.destroy({ children: true });
     return ui.notifications.warn("Region has no contiguous shape groups to render.");
@@ -5453,7 +5880,10 @@ function shaderOnRegion(regionId, opts = {}) {
       });
     }
 
-    const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, { captureSourceContainer: worldLayer });
+    const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, {
+      captureSourceContainer: worldLayer,
+      captureResolutionScale
+    });
 
     const mesh = new PIXI.Mesh(geom, shader);
     mesh.alpha = 1.0;
@@ -5488,6 +5918,8 @@ function shaderOnRegion(regionId, opts = {}) {
   const effectKey = createRegionEffectKey(resolvedRegionId, fromBehavior ? behaviorId : null);
   let t = 0;
   let elapsedMs = 0;
+  const captureThrottleState = {};
+  const drawThrottleState = {};
   let regionShapeSignature = getRegionShapeSignature(region);
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
   for (const cluster of clusterStates) {
@@ -5516,6 +5948,20 @@ function shaderOnRegion(regionId, opts = {}) {
     }
 
     const dt = Number.isFinite(canvas.app.ticker.deltaMS) ? (canvas.app.ticker.deltaMS / 1000) : (delta / 60);
+    const speedScale = Math.max(0, Number(cfg.speed ?? 1) || 0);
+    const captureUpdateDt = consumeThrottledUpdateDt(
+      captureThrottleState,
+      dt,
+      getClientShaderCaptureMaxFps(),
+      "_indyFxCaptureAccumMs",
+    );
+    const drawUpdateDt = consumeThrottledUpdateDt(
+      drawThrottleState,
+      dt,
+      getClientShaderDrawMaxFps(),
+      "_indyFxDrawAccumMs",
+    );
+    const nextTime = t + dt;
     elapsedMs += dt * 1000;
     if (displayTimeMs > 0 && elapsedMs >= displayTimeMs) {
       return shaderOffRegion(resolvedRegionId, { skipPersist: true, fromBehavior, effectKey });
@@ -5578,11 +6024,13 @@ function shaderOnRegion(regionId, opts = {}) {
         );
       }
 
-      for (const runtimeBuffer of cluster.runtimeBufferChannels) {
-        runtimeBuffer.update(dt);
+      if (captureUpdateDt > 0) {
+        for (const runtimeBuffer of cluster.runtimeBufferChannels) {
+          runtimeBuffer.update(captureUpdateDt * speedScale);
+        }
       }
 
-      if (cluster.sceneAreaChannels.length) {
+      if (cluster.sceneAreaChannels.length && captureUpdateDt > 0) {
         const captureScale = Math.max(0.01, Number(cfg.captureScale ?? 1.0));
         const captureRadiusX = cluster.halfW * captureScale;
         const captureRadiusY = cluster.halfH * captureScale;
@@ -5605,10 +6053,12 @@ function shaderOnRegion(regionId, opts = {}) {
         }
       }
 
-      updateShaderTimeUniforms(cluster.shader, dt, cfg.speed, t);
+      if (drawUpdateDt > 0) {
+        updateShaderTimeUniforms(cluster.shader, drawUpdateDt, speedScale, nextTime);
+      }
     }
 
-    t += delta;
+    t = nextTime;
   };
 
   canvas.app.ticker.add(tickerFn);
@@ -5918,11 +6368,17 @@ Hooks.on("canvasReady", () => {
   syncImportedShaderLightAnimations({ reason: "canvas-ready" });
   restoreRegionShaderBehaviors();
   restorePersistentTokenTemplateTileShaders();
+  schedulePersistentTemplateEnsure("canvas-ready");
   schedulePostRestoreImageChannelRefreshes();
   scheduleDeferredPersistentShaderRestore();
 });
 
 Hooks.on("canvasTearDown", () => {
+  if (_clientPerformanceRefreshHandle !== null) {
+    clearTimeout(_clientPerformanceRefreshHandle);
+    _clientPerformanceRefreshHandle = null;
+  }
+  clearAllActiveShaderEntries({ reason: "canvas-teardown" });
   unbindShaderLibraryDragDropHandlers();
 });
 
@@ -5936,6 +6392,47 @@ Hooks.once("ready", async () => {
   console.log(`${MODULE_ID} | ready hook fired`, { user: game.user?.name, isGM: game.user?.isGM });
 
   registerSocketReceiver();
+  Hooks.on(`${MODULE_ID}.clientPerformanceSettingsChanged`, (payload = {}) => {
+    const key = String(payload?.key ?? "").trim();
+    if (
+      key !== "shaderCaptureResolutionScale" &&
+      key !== "shaderCaptureMaxFps" &&
+      key !== "shaderDrawMaxFps"
+    ) {
+      return;
+    }
+    scheduleActiveShaderPerformanceRefresh(`setting:${key}`);
+  });
+  Hooks.on("drawMeasuredTemplate", (template) => {
+    const doc = template?.document ?? null;
+    const currentSceneId = String(canvas?.scene?.id ?? "");
+    const docSceneId = String(doc?.parent?.id ?? doc?.parentCollection?.parent?.id ?? "");
+    if (currentSceneId && docSceneId && currentSceneId !== docSceneId) return;
+    setTimeout(() => {
+      try {
+        ensureTemplateShaderFromPersist(template, { reason: "drawMeasuredTemplate" });
+      } catch (_err) {
+        // Non-fatal.
+      }
+    }, 0);
+  });
+  Hooks.on("refreshMeasuredTemplate", (template) => {
+    const doc = template?.document ?? null;
+    const currentSceneId = String(canvas?.scene?.id ?? "");
+    const docSceneId = String(doc?.parent?.id ?? doc?.parentCollection?.parent?.id ?? "");
+    if (currentSceneId && docSceneId && currentSceneId !== docSceneId) return;
+    const templateId = String(template?.document?.id ?? template?.id ?? "").trim();
+    if (!templateId) return;
+    const active = _activeTemplateShader.get(templateId);
+    if (_isActiveEntryUsable(active)) return;
+    setTimeout(() => {
+      try {
+        ensureTemplateShaderFromPersist(template, { reason: "refreshMeasuredTemplate" });
+      } catch (_err) {
+        // Non-fatal.
+      }
+    }, 0);
+  });
   Hooks.on("updateMeasuredTemplate", (doc, changed) => {
     if (!_activeTemplateShader.has(doc.id)) return;
     const shapeKeys = ["t", "distance", "width", "angle", "direction"];
@@ -6118,6 +6615,7 @@ Hooks.once("ready", async () => {
     }
   };
 });
+
 
 
 
