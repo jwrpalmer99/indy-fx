@@ -2319,6 +2319,8 @@ function getDocumentShaderEditableOptions(target) {
       shapeDistanceUnits: defaults.shapeDistanceUnits ?? game.settings.get(MODULE_ID, "shaderRadiusUnits"),
       scaleToToken: defaults.scaleToToken ?? false,
       tokenScaleMultiplier: defaults.tokenScaleMultiplier ?? 1,
+      scaleWithTokenTexture: defaults.scaleWithTokenTexture ?? false,
+      rotateWithToken: defaults.rotateWithToken ?? false,
       captureScale: defaults.captureScale ?? game.settings.get(MODULE_ID, "shaderCaptureScale"),
       captureRotationDeg: defaults.captureRotationDeg ?? 0,
       captureFlipHorizontal: defaults.captureFlipHorizontal ?? false,
@@ -2371,6 +2373,11 @@ function parseDocumentShaderForm(root, currentOpts) {
   next.shapeDistanceUnits = numVal("shapeDistanceUnits", Number(next.shapeDistanceUnits ?? game.settings.get(MODULE_ID, "shaderRadiusUnits") ?? 20));
   next.scaleToToken = boolVal("scaleToToken", next.scaleToToken === true);
   next.tokenScaleMultiplier = numVal("tokenScaleMultiplier", Number(next.tokenScaleMultiplier ?? 1));
+  next.scaleWithTokenTexture = boolVal(
+    "scaleWithTokenTexture",
+    next.scaleWithTokenTexture === true,
+  );
+  next.rotateWithToken = boolVal("rotateWithToken", next.rotateWithToken === true);
   next.captureScale = numVal("captureScale", Number(next.captureScale ?? 1));
   next.captureRotationDeg = numVal("captureRotationDeg", Number(next.captureRotationDeg ?? 0));
   next.captureFlipHorizontal = boolVal("captureFlipHorizontal", next.captureFlipHorizontal === true);
@@ -2501,6 +2508,8 @@ async function openDocumentShaderConfigDialog(app) {
   <div class="form-group"><label>Distance (units)</label><div class="form-fields">${number("shapeDistanceUnits", current.shapeDistanceUnits ?? game.settings.get(MODULE_ID, "shaderRadiusUnits") ?? 20, 'step="0.1" min="0"')}</div></div>
   <div class="form-group"><label>Scale To Token</label><div class="form-fields">${checkbox("scaleToToken", current.scaleToToken === true)}</div></div>
   <div class="form-group"><label>Token Scale Multiplier</label><div class="form-fields">${number("tokenScaleMultiplier", current.tokenScaleMultiplier ?? 1, 'step="0.01" min="0.01" max="10"')}</div></div>
+  <div class="form-group"><label>Scale With Token Texture</label><div class="form-fields">${checkbox("scaleWithTokenTexture", current.scaleWithTokenTexture === true)}</div></div>
+  <div class="form-group"><label>Rotate With Token</label><div class="form-fields">${checkbox("rotateWithToken", current.rotateWithToken === true)}</div></div>
   <div class="form-group"><label>Capture Scale</label><div class="form-fields">${number("captureScale", current.captureScale ?? 1, 'step="0.1" min="0.01"')}</div></div>
   <details>
     <summary style="cursor:pointer;user-select:none;">Capture options</summary>
@@ -4420,6 +4429,7 @@ function normalizeShaderMacroOpts(opts = {}) {
     if (typeof next.shaderDebugMode === "number") next.debugMode = next.shaderDebugMode;
     else if (next.shaderDebugMode === "uv") next.debugMode = 1;
     else if (next.shaderDebugMode === "mask") next.debugMode = 2;
+    else if (next.shaderDebugMode === "tokenRotation") next.debugMode = 6;
     else next.debugMode = 0;
   }
 
@@ -4699,6 +4709,7 @@ function shaderOn(tokenId, opts = {}) {
       const mode = game.settings.get(MODULE_ID, "shaderDebugMode");
       if (mode === "uv") return 1;
       if (mode === "mask") return 2;
+      if (mode === "tokenRotation") return 6;
       return 0;
     })(),
     speed: game.settings.get(MODULE_ID, "shaderSpeed"),
@@ -4795,8 +4806,14 @@ function shaderOn(tokenId, opts = {}) {
     effectExtent,
   });
 
+  const getTokenRotationRaw = (tokenLike) =>
+    getTokenRotationRad(tokenLike);
+  const getTokenRotationForUniform = (tokenLike) =>
+    -getTokenRotationRaw(tokenLike);
+  const getTokenRotationForContainer = (tokenLike) =>
+    cfg.rotateWithToken === true ? getTokenRotationRaw(tokenLike) : 0;
   setCenter(container, tok, worldLayer);
-  container.rotation = cfg.rotateWithToken === true ? getTokenRotationRad(tok) : 0;
+  container.rotation = getTokenRotationForContainer(tok);
 
   const geom = createQuadGeometry(effectExtent, effectExtent);
   shaderManager.queueBackgroundCompile?.(selectedShaderId, { reason: "canvas-apply" });
@@ -4822,6 +4839,20 @@ function shaderOn(tokenId, opts = {}) {
     resolution: [effectExtent * 2, effectExtent * 2]
   });
   const shader = shaderResult.shader;
+  if ("cpfxTokenRotation" in shader.uniforms) {
+    shader.uniforms.cpfxTokenRotation = getTokenRotationForUniform(tok);
+  }
+  debugLog("token rotation uniform init", {
+    tokenId,
+    shaderId: selectedShaderId,
+    rotateWithToken: cfg.rotateWithToken === true,
+    tokenRotationRadRaw: getTokenRotationRad(tok),
+    tokenRotationRadUniform:
+      "cpfxTokenRotation" in shader.uniforms
+        ? Number(shader.uniforms.cpfxTokenRotation ?? 0)
+        : null,
+    containerRotationRad: Number(container.rotation ?? 0),
+  });
 
   const captureSourceContainer = worldLayer === tok
     ? (tok.parent ?? canvas.tokens)
@@ -4836,6 +4867,28 @@ function shaderOn(tokenId, opts = {}) {
       shaderId: selectedShaderId,
     },
   });
+  const syncTokenRuntimeImageRotationMode = (liveTok) => {
+    if (!Array.isArray(runtimeImageChannels) || !runtimeImageChannels.length) return;
+    const desiredIncludePlaceableRotation = !(cfg.rotateWithToken === true);
+    for (const runtimeImage of runtimeImageChannels) {
+      if (!runtimeImage || typeof runtimeImage !== "object") continue;
+      const targetType = String(runtimeImage.targetType ?? "").trim().toLowerCase();
+      const targetId = String(runtimeImage.targetId ?? "").trim();
+      if (targetType !== "token" || targetId !== String(tokenId)) continue;
+      const current = runtimeImage.includePlaceableRotation !== false;
+      if (current === desiredIncludePlaceableRotation) continue;
+      runtimeImage.includePlaceableRotation = desiredIncludePlaceableRotation;
+      runtimeImage.refresh?.({ force: true });
+      debugLog("token runtime image rotation mode sync", {
+        tokenId,
+        shaderId: selectedShaderId,
+        rotateWithToken: cfg.rotateWithToken === true,
+        includePlaceableRotation: desiredIncludePlaceableRotation,
+        tokenRotationDeg: Number(liveTok?.document?.rotation ?? liveTok?.rotation ?? 0),
+      });
+    }
+  };
+  syncTokenRuntimeImageRotationMode(tok);
   const mesh = new PIXI.Mesh(geom, shader);
   mesh.alpha = 1.0;
   mesh.blendMode = PIXI.BLEND_MODES.NORMAL;
@@ -4859,6 +4912,8 @@ function shaderOn(tokenId, opts = {}) {
   }
   let t = 0;
   let elapsedMs = 0;
+  let tokenRotationDebugLastUniform = Number.NaN;
+  let tokenRotationDebugLastLogMs = -1;
   const captureThrottleState = {};
   const drawThrottleState = {};
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
@@ -4891,7 +4946,39 @@ function shaderOn(tokenId, opts = {}) {
     }
 
     setCenter(container, liveTok, worldLayer);
-    container.rotation = cfg.rotateWithToken === true ? getTokenRotationRad(liveTok) : 0;
+    syncTokenRuntimeImageRotationMode(liveTok);
+    const tokenRotationRad = getTokenRotationForUniform(liveTok);
+    container.rotation = getTokenRotationForContainer(liveTok);
+    if ("cpfxTokenRotation" in shader.uniforms) {
+      shader.uniforms.cpfxTokenRotation = tokenRotationRad;
+    }
+    if (isDebugLoggingEnabled()) {
+      const uniformRotation = "cpfxTokenRotation" in shader.uniforms
+        ? Number(shader.uniforms.cpfxTokenRotation ?? 0)
+        : Number.NaN;
+      const shouldLogByDelta =
+        !Number.isFinite(tokenRotationDebugLastUniform) ||
+        !Number.isFinite(uniformRotation) ||
+        Math.abs(uniformRotation - tokenRotationDebugLastUniform) >= 0.01;
+      const shouldLogByTime =
+        tokenRotationDebugLastLogMs < 0 ||
+        (elapsedMs - tokenRotationDebugLastLogMs) >= 1000;
+      if (shouldLogByDelta || shouldLogByTime) {
+        debugLog("token rotation uniform update", {
+          tokenId,
+          shaderId: selectedShaderId,
+          rotateWithToken: cfg.rotateWithToken === true,
+          tokenRotationRadRaw: getTokenRotationRad(liveTok),
+          tokenRotationRadUniform: Number.isFinite(uniformRotation)
+            ? uniformRotation
+            : null,
+          containerRotationRad: Number(container.rotation ?? 0),
+          elapsedMs: Number(elapsedMs.toFixed(1)),
+        });
+        tokenRotationDebugLastUniform = uniformRotation;
+        tokenRotationDebugLastLogMs = elapsedMs;
+      }
+    }
     if (mesh.filters?.length) {
       // filterArea is world-space; recompute after movement to avoid clipping/offset.
       const pad = effectExtent * 0.8 + cfg.bloomBlur * 30;
@@ -5028,6 +5115,7 @@ function shaderOnTemplate(templateId, opts = {}) {
       const mode = game.settings.get(MODULE_ID, "shaderDebugMode");
       if (mode === "uv") return 1;
       if (mode === "mask") return 2;
+      if (mode === "tokenRotation") return 6;
       return 0;
     })(),
     speed: game.settings.get(MODULE_ID, "shaderSpeed"),
@@ -5333,6 +5421,7 @@ function shaderOnTile(tileId, opts = {}) {
       const mode = game.settings.get(MODULE_ID, "shaderDebugMode");
       if (mode === "uv") return 1;
       if (mode === "mask") return 2;
+      if (mode === "tokenRotation") return 6;
       return 0;
     })(),
     speed: game.settings.get(MODULE_ID, "shaderSpeed"),
@@ -5895,6 +5984,7 @@ function shaderOnRegion(regionId, opts = {}) {
       const mode = game.settings.get(MODULE_ID, "shaderDebugMode");
       if (mode === "uv") return 1;
       if (mode === "mask") return 2;
+      if (mode === "tokenRotation") return 6;
       return 0;
     })(),
     speed: game.settings.get(MODULE_ID, "shaderSpeed"),

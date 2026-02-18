@@ -180,14 +180,15 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
 
   game.settings.register(moduleId, "shaderDebugMode", {
     name: "Shader preset debug",
-    hint: "Visualize shader UVs or base mask for alignment debugging.",
+    hint: "Visualize shader UVs, base mask, or token rotation uniform for debugging.",
     scope: "client",
     config: false,
     type: String,
     choices: {
       off: "off",
       uv: "UV gradient",
-      mask: "radial mask alpha"
+      mask: "radial mask alpha",
+      tokenRotation: "token rotation (cpfxTokenRotation)"
     },
     default: "off"
   });

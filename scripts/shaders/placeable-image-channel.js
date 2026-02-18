@@ -358,6 +358,7 @@ export class PlaceableImageChannel {
     captureRotationDeg = 0,
     captureFlipHorizontal = false,
     captureFlipVertical = false,
+    includePlaceableRotation = true,
   } = {}) {
     this.moduleId = String(moduleId ?? "indy-fx");
     this.targetType = String(targetType ?? "").trim().toLowerCase();
@@ -382,6 +383,7 @@ export class PlaceableImageChannel {
       captureFlipVertical === "1" ||
       captureFlipVertical === "true" ||
       captureFlipVertical === "on";
+    this.includePlaceableRotation = includePlaceableRotation !== false;
 
     this.renderTexture = PIXI.RenderTexture.create({
       width: this.width,
@@ -418,6 +420,7 @@ export class PlaceableImageChannel {
       captureRotationDeg: this.captureRotationDeg,
       captureFlipHorizontal: this.captureFlipHorizontal,
       captureFlipVertical: this.captureFlipVertical,
+      includePlaceableRotation: this.includePlaceableRotation,
     });
 
     this.refresh({ force: true });
@@ -643,6 +646,8 @@ export class PlaceableImageChannel {
       placeableRotationDeg: Number((draw.rotationRad * 180) / Math.PI),
     });
 
+    const appliedPlaceableRotationRad =
+      this.includePlaceableRotation === true ? draw.rotationRad : 0;
     const captureFlipX = effectiveCaptureFlipHorizontal ? -1 : 1;
     const captureFlipY = effectiveCaptureFlipVertical ? -1 : 1;
     const captureRotationRad = (effectiveCaptureRotationDeg * Math.PI) / 180;
@@ -650,7 +655,7 @@ export class PlaceableImageChannel {
       fit * (draw.width / sourceW) * draw.scaleX * captureFlipX,
       fit * (draw.height / sourceH) * draw.scaleY * captureFlipY,
     );
-    sprite.rotation = draw.rotationRad + captureRotationRad;
+    sprite.rotation = appliedPlaceableRotationRad + captureRotationRad;
 
     const stage = new PIXI.Container();
     stage.addChild(sprite);

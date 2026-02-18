@@ -3746,6 +3746,9 @@ export class ShaderManager {
         );
         const captureFlipVerticalUser = parseBooleanLike(options?.captureFlipVertical);
         const captureFlipVertical = !captureFlipVerticalUser;
+        const includePlaceableRotation = !(
+          targetType === "token" && options?.rotateWithToken === true
+        );
         debugLog(this.moduleId, "create placeable image channel", {
           targetType,
           targetId,
@@ -3755,6 +3758,7 @@ export class ShaderManager {
           captureRotationDeg,
           captureFlipHorizontal,
           captureFlipVertical,
+          includePlaceableRotation,
         });
         const runtimeImageChannel = new PlaceableImageChannel({
           moduleId: this.moduleId,
@@ -3768,6 +3772,7 @@ export class ShaderManager {
           captureRotationDeg,
           captureFlipHorizontal,
           captureFlipVertical,
+          includePlaceableRotation,
         });
         const texture = runtimeImageChannel.texture;
         const resolution = [captureWidth, captureHeight];
@@ -3778,6 +3783,7 @@ export class ShaderManager {
           captureRotationDeg,
           captureFlipHorizontal,
           captureFlipVertical,
+          includePlaceableRotation,
           texture: getTextureDebugInfo(texture, captureSize),
           resolution,
           alphaSample: this._debugSampleTextureAlpha(texture, 16),

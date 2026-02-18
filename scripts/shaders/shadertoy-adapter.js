@@ -1915,6 +1915,7 @@ uniform float intensity;
 uniform float shaderScale;
 uniform vec2 shaderScaleXY;
 uniform float shaderRotation;
+uniform float cpfxTokenRotation;
 uniform float shaderFlipX;
 uniform float shaderFlipY;
 uniform float cpfxPreserveTransparent;
@@ -2485,6 +2486,15 @@ void main() {
     gl_FragColor = vec4(vec3(a), a);
     return;
   }
+  if (debugMode > 5.5 && debugMode < 6.5) {
+    // Visualize cpfxTokenRotation:
+    // R = positive, B = negative, G = wrapped turns [0..1).
+    float signedNorm = clamp(cpfxTokenRotation / cpfx_PI, -1.0, 1.0);
+    float wrappedTurns = fract(cpfxTokenRotation / (2.0 * cpfx_PI));
+    vec3 rotDbg = vec3(max(signedNorm, 0.0), wrappedTurns, max(-signedNorm, 0.0));
+    gl_FragColor = vec4(rotDbg, 1.0);
+    return;
+  }
   gl_FragColor = vec4(shaderColor.rgb * a * intensity, a);
 }`;
 }
@@ -2531,6 +2541,7 @@ uniform float intensity;
 uniform float shaderScale;
 uniform vec2 shaderScaleXY;
 uniform float shaderRotation;
+uniform float cpfxTokenRotation;
 uniform float shaderFlipX;
 uniform float shaderFlipY;
 uniform float cpfxPreserveTransparent;
