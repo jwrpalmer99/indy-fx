@@ -171,6 +171,45 @@ function rewriteFloatStepLoopsToCountedLoops(source) {
     return Math.max(0, iters);
   };
 
+  const computeDoublingLoopIterations = (init, bound, cmpOp) => {
+    if (!Number.isFinite(init) || !Number.isFinite(bound)) return NaN;
+    if (init <= 0 || bound <= 0) return NaN;
+    if (cmpOp !== "<" && cmpOp !== "<=") return NaN;
+    let value = init;
+    let iters = 0;
+    const maxIters = 8192;
+    while ((cmpOp === "<" ? (value < bound) : (value <= bound)) && iters < maxIters) {
+      iters += 1;
+      value += value;
+    }
+    if (iters >= maxIters) return NaN;
+    return iters;
+  };
+
+  // GLSL ES 1.00 rejects loop updates like `j += j` in for-loop headers.
+  // Rewrite geometric progression loops into counted loops.
+  const floatDoublingForBlockRe =
+    /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<)\s*([^;]+)\s*;\s*\1\s*\+=\s*\1\s*\)\s*\{/g;
+  next = next.replace(floatDoublingForBlockRe, (full, loopVar, initExpr, cmpOp, boundExpr) => {
+    const init = evalNumericExpression(initExpr, constants);
+    const bound = evalNumericExpression(boundExpr, constants);
+    const iters = computeDoublingLoopIterations(init, bound, cmpOp);
+    if (!Number.isFinite(iters) || iters <= 0) return full;
+    const iterVar = `cpfxForStep${rewriteIndex++}`;
+    return `for(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){\n  float ${loopVar} = (${String(initExpr).trim()}) * exp2(float(${iterVar}));`;
+  });
+
+  const floatDoublingForStmtRe =
+    /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<)\s*([^;]+)\s*;\s*\1\s*\+=\s*\1\s*\)\s*([^{};][^;]*;)/g;
+  next = next.replace(floatDoublingForStmtRe, (full, loopVar, initExpr, cmpOp, boundExpr, statement) => {
+    const init = evalNumericExpression(initExpr, constants);
+    const bound = evalNumericExpression(boundExpr, constants);
+    const iters = computeDoublingLoopIterations(init, bound, cmpOp);
+    if (!Number.isFinite(iters) || iters <= 0) return full;
+    const iterVar = `cpfxForStep${rewriteIndex++}`;
+    return `for(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){\n  float ${loopVar} = (${String(initExpr).trim()}) * exp2(float(${iterVar}));\n  ${String(statement).trim()}\n}`;
+  });
+
   const floatForRe = /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<)\s*([^;]+)\s*;\s*\1\s*\+=\s*([^)]+)\)\s*\{/g;
   next = next.replace(floatForRe, (full, loopVar, initExpr, cmpOp, boundExpr, stepExpr) => {
     const init = evalNumericExpression(initExpr, constants);
