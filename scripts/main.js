@@ -3767,6 +3767,28 @@ function getCurrentSceneTemplateDocs() {
   return Array.from(byId.values());
 }
 
+function getCurrentSceneTokenDocs() {
+  const fromPlaceables = Array.isArray(canvas?.tokens?.placeables)
+    ? canvas.tokens.placeables
+      .map((token) => token?.document ?? null)
+      .filter((doc) => !!doc?.id)
+    : [];
+  const fromScene = Array.isArray(canvas.scene?.tokens?.contents)
+    ? canvas.scene.tokens.contents
+    : [];
+  const byId = new Map();
+  for (const doc of fromScene) {
+    if (!doc?.id) continue;
+    byId.set(String(doc.id), doc);
+  }
+  for (const doc of fromPlaceables) {
+    if (!doc?.id) continue;
+    const key = String(doc.id);
+    if (!byId.has(key)) byId.set(key, doc);
+  }
+  return Array.from(byId.values());
+}
+
 function getCurrentSceneTileDocs() {
   const fromPlaceables = Array.isArray(canvas?.tiles?.placeables)
     ? canvas.tiles.placeables
@@ -3787,6 +3809,57 @@ function getCurrentSceneTileDocs() {
     if (!byId.has(key)) byId.set(key, doc);
   }
   return Array.from(byId.values());
+}
+
+function ensureTokenShaderFromPersist(tokenOrDoc, { reason = "unknown", forceRebuild = false } = {}) {
+  const doc = tokenOrDoc?.document ?? tokenOrDoc ?? null;
+  const tokenId = String(doc?.id ?? "").trim();
+  if (!tokenId) return false;
+  const currentSceneId = String(canvas?.scene?.id ?? "");
+  const docSceneId = String(doc?.parent?.id ?? doc?.parentCollection?.parent?.id ?? "");
+  if (currentSceneId && docSceneId && currentSceneId !== docSceneId) {
+    debugLog("skip token persist ensure for non-current scene doc", {
+      reason,
+      tokenId,
+      currentSceneId,
+      docSceneId,
+    });
+    return false;
+  }
+
+  const opts = readShaderFlag(doc, TOKEN_SHADER_FLAG);
+  if (!opts || parsePersistDisabled(opts?._disabled)) {
+    if (forceRebuild && _activeShader.has(tokenId)) {
+      shaderOff(tokenId, { skipPersist: true });
+    }
+    return false;
+  }
+
+  const persistedShaderId = getPersistedShaderId(opts);
+  if (!persistedShaderId) return false;
+
+  const existing = _activeShader.get(tokenId);
+  if (!forceRebuild && _isActiveEntryUsable(existing)) return true;
+  if (existing) shaderOff(tokenId, { skipPersist: true });
+
+  if (!canvas.tokens?.get?.(tokenId)) return false;
+  const sourceOpts = sanitizeShaderPersistOpts({
+    ...opts,
+    shaderId: persistedShaderId,
+    _skipPersist: true,
+    _fromPersist: true,
+  });
+  shaderOn(tokenId, sourceOpts);
+  const applied = _isActiveEntryUsable(_activeShader.get(tokenId));
+  if (!applied && _activeShader.has(tokenId)) {
+    shaderOff(tokenId, { skipPersist: true });
+  }
+  debugLog("ensure token shader from persist", {
+    reason,
+    tokenId,
+    applied,
+  });
+  return applied;
 }
 
 function ensureTemplateShaderFromPersist(templateOrDoc, { reason = "unknown", forceRebuild = false } = {}) {
@@ -3891,6 +3964,31 @@ function ensureTileShaderFromPersist(tileOrDoc, { reason = "unknown", forceRebui
   return applied;
 }
 
+function ensurePersistentTokenShadersReady({ reason = "unknown" } = {}) {
+  const tokenDocs = getCurrentSceneTokenDocs();
+  let applied = 0;
+  let pending = 0;
+  let eligible = 0;
+  for (const doc of tokenDocs) {
+    const tokenId = String(doc?.id ?? "").trim();
+    if (!tokenId) continue;
+    const opts = readShaderFlag(doc, TOKEN_SHADER_FLAG);
+    const isEligible = !!opts && !parsePersistDisabled(opts?._disabled) && !!getPersistedShaderId(opts);
+    if (isEligible) eligible += 1;
+    const ok = ensureTokenShaderFromPersist(doc, { reason });
+    if (ok) applied += 1;
+    else if (isEligible) pending += 1;
+  }
+  debugLog("ensure persistent token shaders summary", {
+    reason,
+    docs: tokenDocs.length,
+    eligible,
+    applied,
+    pending,
+  });
+  return { applied, pending };
+}
+
 function ensurePersistentTemplateShadersReady({ reason = "unknown" } = {}) {
   const templateDocs = getCurrentSceneTemplateDocs();
   let applied = 0;
@@ -3939,6 +4037,25 @@ function ensurePersistentTileShadersReady({ reason = "unknown" } = {}) {
     pending,
   });
   return { applied, pending };
+}
+
+function schedulePersistentTokenEnsure(reason = "unknown") {
+  const delays = [0, 80, 200, 450, 900, 1700];
+  let resolved = false;
+  for (const delay of delays) {
+    setTimeout(() => {
+      try {
+        if (resolved) return;
+        if (!canvas?.ready) return;
+        const summary = ensurePersistentTokenShadersReady({ reason: `${reason}:${delay}` });
+        if (Number(summary?.pending ?? 0) <= 0 && Number(summary?.applied ?? 0) > 0) {
+          resolved = true;
+        }
+      } catch (_err) {
+        // Non-fatal.
+      }
+    }, delay);
+  }
 }
 
 function schedulePersistentTemplateEnsure(reason = "unknown") {
@@ -4064,9 +4181,7 @@ function restorePersistentTokenTemplateTileShaders() {
   const hasPersistedFlags = hasAnyPersistedDocumentShaderFlags();
   const hasActiveEntries = hasAnyActivePersistentShaderEntries();
 
-  const tokenDocs = Array.isArray(canvas.scene?.tokens?.contents)
-    ? canvas.scene.tokens.contents
-    : [];
+  const tokenDocs = getCurrentSceneTokenDocs();
   for (const tokenDoc of tokenDocs) {
     const tokenId = tokenDoc?.id;
     if (!tokenId) continue;
@@ -6662,6 +6777,7 @@ Hooks.on("canvasReady", () => {
   syncImportedShaderLightAnimations({ reason: "canvas-ready" });
   restoreRegionShaderBehaviors();
   restorePersistentTokenTemplateTileShaders();
+  schedulePersistentTokenEnsure("canvas-ready");
   schedulePersistentTemplateEnsure("canvas-ready");
   schedulePersistentTileEnsure("canvas-ready");
   schedulePostRestoreImageChannelRefreshes();
@@ -6771,6 +6887,37 @@ Hooks.once("ready", async () => {
 
   Hooks.on("deleteMeasuredTemplate", (doc) => {
     shaderOffTemplate(doc.id, { skipPersist: true });
+  });
+
+  Hooks.on("drawToken", (token) => {
+    const doc = token?.document ?? null;
+    const currentSceneId = String(canvas?.scene?.id ?? "");
+    const docSceneId = String(doc?.parent?.id ?? doc?.parentCollection?.parent?.id ?? "");
+    if (currentSceneId && docSceneId && currentSceneId !== docSceneId) return;
+    setTimeout(() => {
+      try {
+        ensureTokenShaderFromPersist(token, { reason: "drawToken" });
+      } catch (_err) {
+        // Non-fatal.
+      }
+    }, 0);
+  });
+  Hooks.on("refreshToken", (token) => {
+    const doc = token?.document ?? null;
+    const currentSceneId = String(canvas?.scene?.id ?? "");
+    const docSceneId = String(doc?.parent?.id ?? doc?.parentCollection?.parent?.id ?? "");
+    if (currentSceneId && docSceneId && currentSceneId !== docSceneId) return;
+    const tokenId = String(token?.document?.id ?? token?.id ?? "").trim();
+    if (!tokenId) return;
+    const active = _activeShader.get(tokenId);
+    if (_isActiveEntryUsable(active)) return;
+    setTimeout(() => {
+      try {
+        ensureTokenShaderFromPersist(token, { reason: "refreshToken" });
+      } catch (_err) {
+        // Non-fatal.
+      }
+    }, 0);
   });
 
   Hooks.on("updateToken", (doc, changed) => {
