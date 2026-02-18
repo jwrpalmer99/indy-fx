@@ -3758,6 +3758,28 @@ function getCurrentSceneTemplateDocs() {
   return Array.from(byId.values());
 }
 
+function getCurrentSceneTileDocs() {
+  const fromPlaceables = Array.isArray(canvas?.tiles?.placeables)
+    ? canvas.tiles.placeables
+      .map((tile) => tile?.document ?? null)
+      .filter((doc) => !!doc?.id)
+    : [];
+  const fromScene = Array.isArray(canvas.scene?.tiles?.contents)
+    ? canvas.scene.tiles.contents
+    : [];
+  const byId = new Map();
+  for (const doc of fromScene) {
+    if (!doc?.id) continue;
+    byId.set(String(doc.id), doc);
+  }
+  for (const doc of fromPlaceables) {
+    if (!doc?.id) continue;
+    const key = String(doc.id);
+    if (!byId.has(key)) byId.set(key, doc);
+  }
+  return Array.from(byId.values());
+}
+
 function ensureTemplateShaderFromPersist(templateOrDoc, { reason = "unknown", forceRebuild = false } = {}) {
   const doc = templateOrDoc?.document ?? templateOrDoc ?? null;
   const templateId = String(doc?.id ?? "").trim();
@@ -3809,6 +3831,57 @@ function ensureTemplateShaderFromPersist(templateOrDoc, { reason = "unknown", fo
   return applied;
 }
 
+function ensureTileShaderFromPersist(tileOrDoc, { reason = "unknown", forceRebuild = false } = {}) {
+  const doc = tileOrDoc?.document ?? tileOrDoc ?? null;
+  const tileId = String(doc?.id ?? "").trim();
+  if (!tileId) return false;
+  const currentSceneId = String(canvas?.scene?.id ?? "");
+  const docSceneId = String(doc?.parent?.id ?? doc?.parentCollection?.parent?.id ?? "");
+  if (currentSceneId && docSceneId && currentSceneId !== docSceneId) {
+    debugLog("skip tile persist ensure for non-current scene doc", {
+      reason,
+      tileId,
+      currentSceneId,
+      docSceneId,
+    });
+    return false;
+  }
+
+  const opts = readShaderFlag(doc, TILE_SHADER_FLAG);
+  if (!opts || parsePersistDisabled(opts?._disabled)) {
+    if (forceRebuild && _activeTileShader.has(tileId)) {
+      shaderOffTile(tileId, { skipPersist: true });
+    }
+    return false;
+  }
+
+  const persistedShaderId = getPersistedShaderId(opts);
+  if (!persistedShaderId) return false;
+
+  const existing = _activeTileShader.get(tileId);
+  if (!forceRebuild && _isActiveEntryUsable(existing)) return true;
+  if (existing) shaderOffTile(tileId, { skipPersist: true });
+
+  if (!getTilePlaceable(tileId)) return false;
+  const sourceOpts = sanitizeShaderPersistOpts({
+    ...opts,
+    shaderId: persistedShaderId,
+    _skipPersist: true,
+    _fromPersist: true,
+  });
+  shaderOnTile(tileId, sourceOpts);
+  const applied = _isActiveEntryUsable(_activeTileShader.get(tileId));
+  if (!applied && _activeTileShader.has(tileId)) {
+    shaderOffTile(tileId, { skipPersist: true });
+  }
+  debugLog("ensure tile shader from persist", {
+    reason,
+    tileId,
+    applied,
+  });
+  return applied;
+}
+
 function ensurePersistentTemplateShadersReady({ reason = "unknown" } = {}) {
   const templateDocs = getCurrentSceneTemplateDocs();
   let applied = 0;
@@ -3834,6 +3907,31 @@ function ensurePersistentTemplateShadersReady({ reason = "unknown" } = {}) {
   return { applied, pending };
 }
 
+function ensurePersistentTileShadersReady({ reason = "unknown" } = {}) {
+  const tileDocs = getCurrentSceneTileDocs();
+  let applied = 0;
+  let pending = 0;
+  let eligible = 0;
+  for (const doc of tileDocs) {
+    const tileId = String(doc?.id ?? "").trim();
+    if (!tileId) continue;
+    const opts = readShaderFlag(doc, TILE_SHADER_FLAG);
+    const isEligible = !!opts && !parsePersistDisabled(opts?._disabled) && !!getPersistedShaderId(opts);
+    if (isEligible) eligible += 1;
+    const ok = ensureTileShaderFromPersist(doc, { reason });
+    if (ok) applied += 1;
+    else if (isEligible) pending += 1;
+  }
+  debugLog("ensure persistent tile shaders summary", {
+    reason,
+    docs: tileDocs.length,
+    eligible,
+    applied,
+    pending,
+  });
+  return { applied, pending };
+}
+
 function schedulePersistentTemplateEnsure(reason = "unknown") {
   const delays = [0, 80, 200, 450, 900, 1700];
   let resolved = false;
@@ -3843,6 +3941,25 @@ function schedulePersistentTemplateEnsure(reason = "unknown") {
         if (resolved) return;
         if (!canvas?.ready) return;
         const summary = ensurePersistentTemplateShadersReady({ reason: `${reason}:${delay}` });
+        if (Number(summary?.pending ?? 0) <= 0 && Number(summary?.applied ?? 0) > 0) {
+          resolved = true;
+        }
+      } catch (_err) {
+        // Non-fatal.
+      }
+    }, delay);
+  }
+}
+
+function schedulePersistentTileEnsure(reason = "unknown") {
+  const delays = [0, 80, 200, 450, 900, 1700];
+  let resolved = false;
+  for (const delay of delays) {
+    setTimeout(() => {
+      try {
+        if (resolved) return;
+        if (!canvas?.ready) return;
+        const summary = ensurePersistentTileShadersReady({ reason: `${reason}:${delay}` });
         if (Number(summary?.pending ?? 0) <= 0 && Number(summary?.applied ?? 0) > 0) {
           resolved = true;
         }
@@ -6412,6 +6529,7 @@ Hooks.on("canvasReady", () => {
   restoreRegionShaderBehaviors();
   restorePersistentTokenTemplateTileShaders();
   schedulePersistentTemplateEnsure("canvas-ready");
+  schedulePersistentTileEnsure("canvas-ready");
   schedulePostRestoreImageChannelRefreshes();
   scheduleDeferredPersistentShaderRestore();
 });
@@ -6471,6 +6589,36 @@ Hooks.once("ready", async () => {
     setTimeout(() => {
       try {
         ensureTemplateShaderFromPersist(template, { reason: "refreshMeasuredTemplate" });
+      } catch (_err) {
+        // Non-fatal.
+      }
+    }, 0);
+  });
+  Hooks.on("drawTile", (tile) => {
+    const doc = tile?.document ?? null;
+    const currentSceneId = String(canvas?.scene?.id ?? "");
+    const docSceneId = String(doc?.parent?.id ?? doc?.parentCollection?.parent?.id ?? "");
+    if (currentSceneId && docSceneId && currentSceneId !== docSceneId) return;
+    setTimeout(() => {
+      try {
+        ensureTileShaderFromPersist(tile, { reason: "drawTile" });
+      } catch (_err) {
+        // Non-fatal.
+      }
+    }, 0);
+  });
+  Hooks.on("refreshTile", (tile) => {
+    const doc = tile?.document ?? null;
+    const currentSceneId = String(canvas?.scene?.id ?? "");
+    const docSceneId = String(doc?.parent?.id ?? doc?.parentCollection?.parent?.id ?? "");
+    if (currentSceneId && docSceneId && currentSceneId !== docSceneId) return;
+    const tileId = String(tile?.document?.id ?? tile?.id ?? "").trim();
+    if (!tileId) return;
+    const active = _activeTileShader.get(tileId);
+    if (_isActiveEntryUsable(active)) return;
+    setTimeout(() => {
+      try {
+        ensureTileShaderFromPersist(tile, { reason: "refreshTile" });
       } catch (_err) {
         // Non-fatal.
       }
