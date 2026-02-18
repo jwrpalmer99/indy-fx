@@ -825,6 +825,10 @@ function applyCompatibilityRewrites(source) {
 
   // GLSL ES 1.00 accepts mat2/mat3/mat4 but not mat2x2/mat3x3/mat4x4 aliases.
   next = next.replace(/\bmat([234])x\1\b/g, "mat$1");
+  // GLSL ES 1.00/WebGL1 has no sampler3D or sampler array types.
+  // Normalize declarations/signatures to sampler2D so adapter wrappers can compile.
+  next = next.replace(/\bsampler(?:2D|Cube)?Array\b/g, "sampler2D");
+  next = next.replace(/\bsampler3D\b/g, "sampler2D");
   // Track non-square matrix variables so we can lower unsupported ops.
   const mat4x3Vars = new Set();
   const mat3x4Vars = new Set();
@@ -1973,6 +1977,55 @@ function applyCompatibilityRewrites(source) {
   );
 
   next = unmaskPreprocessorBlocks(next);
+  // Re-apply unsigned/type rewrites after macro unmasking so defines like
+  // `#define ZEROU min(uint(iFrame),0u)` don't leak ES3-only syntax.
+  next = next.replace(/\buvec([234])\b/g, "ivec$1");
+  next = next.replace(/\buint\b/g, "int");
+  next = next.replace(
+    /(\b(?:0x[0-9A-Fa-f]+|\d+))[uU]\b/g,
+    "$1",
+  );
+  next = next.replace(/\bfloatBitsToUint\s*\(/g, "cpfx_floatBitsToUint(");
+  next = next.replace(/\buintBitsToFloat\s*\(/g, "cpfx_uintBitsToFloat(");
+  next = next.replace(/\bfloat\s*\(\s*0x[fF]{8}\s*\)/g, "16777215.0");
+  next = next.replace(/\b0x[fF]{8}\b/g, "16777215");
+  // Re-run macro-based int loop init normalization after unmasking.
+  // Some shaders define runtime init symbols (for example ZEROU) in preprocessor
+  // sections and use them in `for(int i=MACRO; ...)`, which GLSL ES 1.00 rejects.
+  const postLoopInitMacroNames = new Set();
+  next.replace(
+    /for\s*\(\s*int\s+[A-Za-z_]\w*\s*=\s*\(?\s*([A-Za-z_]\w*)\s*\)?\s*;/g,
+    (_full, macroName) => {
+      if (macroName) postLoopInitMacroNames.add(String(macroName));
+      return _full;
+    },
+  );
+  for (const macroName of postLoopInitMacroNames) {
+    const defineRe = new RegExp(
+      `^\\s*#\\s*define\\s+${macroName}\\s+([^\\n]+)$`,
+      "gm",
+    );
+    next = next.replace(defineRe, (full, expr) => {
+      const rhs = String(expr ?? "").trim();
+      if (/^[-+]?\d+(?:\.\d+)?$/.test(rhs)) return full;
+      if (
+        /\biFrame\b|\biTime\b|\biMouse\b|\bmin\s*\(|\bmax\s*\(|\bcpfx_min\s*\(|\bcpfx_max\s*\(/.test(
+          rhs,
+        )
+      ) {
+        return `#define ${macroName} 0`;
+      }
+      return full;
+    });
+    const loopStartRe = new RegExp(
+      `for\\s*\\(\\s*int\\s+([A-Za-z_]\\w*)\\s*=\\s*\\(?\\s*${macroName}\\s*\\)?\\s*;`,
+      "g",
+    );
+    next = next.replace(loopStartRe, "for(int $1=0;");
+  }
+  // Re-apply sampler normalization for preprocessor-masked macro bodies.
+  next = next.replace(/\bsampler(?:2D|Cube)?Array\b/g, "sampler2D");
+  next = next.replace(/\bsampler3D\b/g, "sampler2D");
   // Re-run ES3 texture builtin rewrites on unmasked macro bodies.
   next = rewriteTextureBuiltins(next);
   // Final post-preprocessor pass for macro-expanded bodies that may still
