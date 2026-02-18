@@ -62,9 +62,9 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
   });
 
   game.settings.registerMenu(moduleId, "shaderMenu", {
-    name: "Shader Settings",
+    name: "Default Shader Settings",
     label: "Configure",
-    hint: "Shader-specific settings.",
+    hint: "Settings applied to new shaders by default.",
     icon: "fas fa-atom",
     type: ShaderSettingsMenu,
     restricted: true
@@ -183,6 +183,29 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
       mask: "radial mask alpha"
     },
     default: "off"
+  });
+
+  game.settings.register(moduleId, "shaderLibraryViewMode", {
+    name: "Shader library view mode",
+    hint: "Preferred shader library card layout.",
+    scope: "client",
+    config: false,
+    type: String,
+    choices: {
+      standard: "standard",
+      compact: "compact"
+    },
+    default: "standard"
+  });
+
+  game.settings.register(moduleId, "shaderLibraryCompactTooltipDelayMs", {
+    name: "Compact tooltip delay (ms)",
+    hint: "Delay before showing compact-view shader tooltip preview.",
+    scope: "client",
+    config: true,
+    type: Number,
+    default: 300,
+    range: { min: 0, max: 2000, step: 25 }
   });
 
 game.settings.register(moduleId, "shaderRadiusUnits", {

@@ -492,6 +492,7 @@ export function createMenus({ moduleId, shaderManager }) {
   let _sharedLibraryPreviewCanvas = null;
   let _sharedLibraryPreviewSize = 0;
   let _activeShaderEditorDialog = null;
+  let _shaderLibraryViewMode = "standard";
 
   function _ensureSharedEditorPreviewRenderer(size = 320) {
     const nextSize = Math.max(64, Math.round(Number(size) || 320));
@@ -702,16 +703,72 @@ export function createMenus({ moduleId, shaderManager }) {
     };
     constructor(...args) {
       super(...args);
+      const persistedMode = String(
+        game?.settings?.get?.(MODULE_ID, "shaderLibraryViewMode") ??
+          _shaderLibraryViewMode ??
+          "standard",
+      )
+        .trim()
+        .toLowerCase();
+      this._shaderLibraryViewMode =
+        persistedMode === "compact" ? "compact" : "standard";
+      _shaderLibraryViewMode = this._shaderLibraryViewMode;
       this._shaderLibraryChangedHookId = Hooks.on(
         `${MODULE_ID}.shaderLibraryChanged`,
         (payload = {}) => this._onShaderLibraryChanged(payload),
       );
+    }
+    _getShaderLibraryViewMode() {
+      return this._shaderLibraryViewMode === "compact" ? "compact" : "standard";
+    }
+    _setShaderLibraryViewMode(mode, { rerender = true } = {}) {
+      const nextMode = String(mode ?? "").trim().toLowerCase() === "compact"
+        ? "compact"
+        : "standard";
+      if (this._getShaderLibraryViewMode() === nextMode) return;
+      this._shaderLibraryViewMode = nextMode;
+      _shaderLibraryViewMode = nextMode;
+      try {
+        const savedMode = String(
+          game?.settings?.get?.(MODULE_ID, "shaderLibraryViewMode") ?? "standard",
+        )
+          .trim()
+          .toLowerCase();
+        if (savedMode !== nextMode) {
+          void game?.settings
+            ?.set?.(MODULE_ID, "shaderLibraryViewMode", nextMode)
+            ?.catch?.((err) => {
+              console.warn(
+                `${MODULE_ID} | Failed to persist shader library view mode`,
+                err,
+              );
+            });
+        }
+      } catch (_err) {
+        // Ignore persistence errors and keep in-memory behavior.
+      }
+      this._hideCompactCardTooltip();
+      this._stopHoverPreview({ destroy: true });
+      this._destroyHoverPreviewCache();
+      if (!rerender) return;
+      const root = resolveElementRoot(this.element);
+      if (root instanceof Element) this._rememberLibraryScrollTop(root);
+      this.render();
     }
     async close(options) {
       if (this._shaderLibraryChangedHookId !== null) {
         Hooks.off(`${MODULE_ID}.shaderLibraryChanged`, this._shaderLibraryChangedHookId);
         this._shaderLibraryChangedHookId = null;
       }
+      this._hideCompactCardTooltip();
+      if (this._compactCardTooltipEl instanceof HTMLElement) {
+        try {
+          this._compactCardTooltipEl.remove();
+        } catch (_err) {
+          /* ignore */
+        }
+      }
+      this._compactCardTooltipEl = null;
       this._stopHoverPreview({ destroy: true });
       this._destroyHoverPreviewCache();
       this._hideShaderContextMenu();
@@ -766,10 +823,16 @@ export function createMenus({ moduleId, shaderManager }) {
       });
       return {
         searchTerm: String(this._shaderLibrarySearchTerm ?? ""),
+        shaderLibraryViewMode: this._getShaderLibraryViewMode(),
+        isCompactView: this._getShaderLibraryViewMode() === "compact",
+        isStandardView: this._getShaderLibraryViewMode() !== "compact",
         imported: importedEntries.map((entry) => ({
           ...entry,
           selected: entry.id === selectedShaderId,
           thumbnail: typeof entry.thumbnail === "string" ? entry.thumbnail : "",
+          captureSummary: this._getCaptureSummaryLabel(
+            shaderManager.getImportedRecord(entry.id),
+          ),
         })),
         channelFields: [0, 1, 2, 3].map((index) => ({
           index,
@@ -783,6 +846,35 @@ export function createMenus({ moduleId, shaderManager }) {
           })),
         })),
       };
+    }
+    _collectCaptureUsage(channelConfig, depth = 0) {
+      if (!channelConfig || typeof channelConfig !== "object") {
+        return { hasSceneCapture: false, hasTokenTileCapture: false };
+      }
+      if (depth > 8) {
+        return { hasSceneCapture: false, hasTokenTileCapture: false };
+      }
+      let hasSceneCapture = false;
+      let hasTokenTileCapture = false;
+      for (const value of Object.values(channelConfig)) {
+        const mode = String(value?.mode ?? "").trim();
+        if (mode === "sceneCapture") hasSceneCapture = true;
+        else if (mode === "tokenTileImage") hasTokenTileCapture = true;
+        if (mode === "buffer" && value?.channels && typeof value.channels === "object") {
+          const nested = this._collectCaptureUsage(value.channels, depth + 1);
+          if (nested.hasSceneCapture) hasSceneCapture = true;
+          if (nested.hasTokenTileCapture) hasTokenTileCapture = true;
+        }
+        if (hasSceneCapture && hasTokenTileCapture) break;
+      }
+      return { hasSceneCapture, hasTokenTileCapture };
+    }
+    _getCaptureSummaryLabel(record) {
+      const usage = this._collectCaptureUsage(record?.channels, 0);
+      if (usage.hasTokenTileCapture && usage.hasSceneCapture) return "Token/Tile + Scene";
+      if (usage.hasTokenTileCapture) return "Token/Tile";
+      if (usage.hasSceneCapture) return "Scene";
+      return "";
     }
     _inferAutoAssignCapture(channelConfig) {
       if (!channelConfig || typeof channelConfig !== "object") return true;
@@ -2843,6 +2935,7 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
       this._boundContextMenuDismiss = null;
     }
     _showShaderContextMenu(event, shaderId) {
+      this._hideCompactCardTooltip();
       this._hideShaderContextMenu();
       const menu = document.createElement("div");
       menu.className = "indy-fx-shader-context";
@@ -2954,7 +3047,128 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
         0,
       );
     }
+    _ensureCompactCardTooltipElement() {
+      if (
+        this._compactCardTooltipEl instanceof HTMLElement &&
+        this._compactCardTooltipEl.isConnected
+      ) {
+        return this._compactCardTooltipEl;
+      }
+      const el = document.createElement("div");
+      el.className = "indy-fx-compact-card-tooltip";
+      el.style.position = "fixed";
+      el.style.zIndex = "10001";
+      el.style.pointerEvents = "none";
+      el.style.width = "142px";
+      el.style.padding = "6px";
+      el.style.borderRadius = "6px";
+      el.style.background = "rgba(12,12,12,0.96)";
+      el.style.border = "1px solid rgba(255,255,255,0.2)";
+      el.style.boxShadow = "0 8px 20px rgba(0,0,0,0.45)";
+      el.style.color = "#efefef";
+      el.style.fontSize = "0.72rem";
+      el.style.lineHeight = "1.2";
+      el.style.display = "none";
+      el.innerHTML = `
+        <div style="width:128px;height:128px;border-radius:4px;overflow:hidden;background:#111;">
+          <img data-tooltip-thumb src="" alt="" style="width:128px;height:128px;object-fit:cover;display:block;" />
+        </div>
+        <div data-tooltip-label style="margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+      `;
+      document.body.appendChild(el);
+      this._compactCardTooltipEl = el;
+      return el;
+    }
+    _positionCompactCardTooltip(el, card) {
+      if (!(el instanceof HTMLElement) || !(card instanceof HTMLElement)) return;
+      const rect = card.getBoundingClientRect();
+      const pointer = this._compactTooltipPointer;
+      const margin = 8;
+      const vw = window.innerWidth || document.documentElement.clientWidth || 1024;
+      const vh = window.innerHeight || document.documentElement.clientHeight || 768;
+      let left;
+      let top;
+      if (Number.isFinite(pointer?.x) && Number.isFinite(pointer?.y)) {
+        left = Math.round(Number(pointer.x) + 14);
+        top = Math.round(Number(pointer.y) + 20);
+      } else {
+        left = Math.round(rect.left + 14);
+        top = Math.round(rect.bottom + 10);
+      }
+      if (left + el.offsetWidth + margin > vw) {
+        left = Math.max(margin, vw - el.offsetWidth - margin);
+      }
+      if (top + el.offsetHeight + margin > vh) {
+        const fallbackTop = Number.isFinite(pointer?.y)
+          ? Math.round(Number(pointer.y) - el.offsetHeight - 12)
+          : Math.round(rect.top - el.offsetHeight - 10);
+        top = Math.max(margin, fallbackTop);
+      }
+      if (left < margin) left = margin;
+      if (top < margin) top = margin;
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+    }
+    _showCompactCardTooltip(card) {
+      if (!(card instanceof HTMLElement)) return;
+      const label = String(card.dataset.shaderLabel ?? "").trim();
+      if (!label) return;
+      const el = this._ensureCompactCardTooltipElement();
+      const imgEl = el.querySelector("[data-tooltip-thumb]");
+      const labelEl = el.querySelector("[data-tooltip-label]");
+      if (!(imgEl instanceof HTMLImageElement) || !(labelEl instanceof HTMLElement)) return;
+      const cardThumb = card.querySelector("[data-thumb-image]");
+      const thumbSrc =
+        String(
+          (cardThumb instanceof HTMLImageElement ? cardThumb.getAttribute("src") : "") ??
+            "",
+        ).trim() || "modules/indy-fx/images/indyFX_solid.webp";
+      imgEl.src = thumbSrc;
+      imgEl.alt = label;
+      labelEl.textContent = label;
+      el.style.display = "block";
+      el.style.visibility = "hidden";
+      this._positionCompactCardTooltip(el, card);
+      el.style.visibility = "visible";
+    }
+    _hideCompactCardTooltip() {
+      if (this._compactCardTooltipTimer) {
+        clearTimeout(this._compactCardTooltipTimer);
+        this._compactCardTooltipTimer = null;
+      }
+      this._compactTooltipCard = null;
+      this._compactTooltipPointer = null;
+      if (this._compactCardTooltipEl instanceof HTMLElement) {
+        this._compactCardTooltipEl.style.display = "none";
+      }
+    }
+    _getCompactTooltipDelayMs() {
+      try {
+        const raw = Number(
+          game?.settings?.get?.(MODULE_ID, "shaderLibraryCompactTooltipDelayMs"),
+        );
+        if (!Number.isFinite(raw)) return 100;
+        return Math.max(0, Math.min(2000, Math.round(raw)));
+      } catch (_err) {
+        return 100;
+      }
+    }
+    _scheduleCompactCardTooltip(card) {
+      this._hideCompactCardTooltip();
+      if (!(card instanceof HTMLElement)) return;
+      this._compactTooltipCard = card;
+      const delayMs = this._getCompactTooltipDelayMs();
+      if (delayMs <= 0) {
+        this._showCompactCardTooltip(card);
+        return;
+      }
+      this._compactCardTooltipTimer = setTimeout(() => {
+        if (this._compactTooltipCard !== card) return;
+        this._showCompactCardTooltip(card);
+      }, delayMs);
+    }
     _bindShaderGrid(root) {
+      const hoverPreviewEnabled = this._getShaderLibraryViewMode() !== "compact";
       for (const card of root.querySelectorAll(
         ".indy-fx-shader-card[data-shader-id]",
       )) {
@@ -3017,10 +3231,34 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
           event.preventDefault();
           this._showShaderContextMenu(event, shaderId);
         });
-        card.addEventListener("mouseenter", () =>
-          this._startHoverPreview(shaderId, card),
-        );
-        card.addEventListener("mouseleave", () => this._stopHoverPreview());
+        if (hoverPreviewEnabled) {
+          card.addEventListener("mouseenter", () =>
+            this._startHoverPreview(shaderId, card),
+          );
+          card.addEventListener("mouseleave", () => this._stopHoverPreview());
+        } else {
+          card.addEventListener("mouseenter", (event) => {
+            this._scheduleCompactCardTooltip(card);
+            this._compactTooltipPointer = {
+              x: Number(event?.clientX ?? 0),
+              y: Number(event?.clientY ?? 0),
+            };
+          });
+          card.addEventListener("mousemove", (event) => {
+            this._compactTooltipPointer = {
+              x: Number(event?.clientX ?? 0),
+              y: Number(event?.clientY ?? 0),
+            };
+            if (
+              this._compactTooltipCard === card &&
+              this._compactCardTooltipEl instanceof HTMLElement &&
+              this._compactCardTooltipEl.style.display !== "none"
+            ) {
+              this._positionCompactCardTooltip(this._compactCardTooltipEl, card);
+            }
+          });
+          card.addEventListener("mouseleave", () => this._hideCompactCardTooltip());
+        }
       }
     }
 
@@ -3056,8 +3294,22 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
         });
       }
     }
+    _bindShaderViewToggle(root) {
+      for (const button of root.querySelectorAll(
+        "[data-action='shader-view-toggle'][data-view-mode]",
+      )) {
+        if (!(button instanceof HTMLElement)) continue;
+        if (button.dataset.indyFxViewToggleBound === "1") continue;
+        button.dataset.indyFxViewToggleBound = "1";
+        button.addEventListener("click", () => {
+          const mode = String(button.dataset.viewMode ?? "standard");
+          this._setShaderLibraryViewMode(mode, { rerender: true });
+        });
+      }
+    }
     _onRender(context, options) {
       super._onRender?.(context, options);
+      this._hideCompactCardTooltip();
       this._stopHoverPreview({ destroy: true });
       this._destroyHoverPreviewCache();
       this._hideShaderContextMenu();
@@ -3086,6 +3338,7 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
       this._bindPickImageButtons(root);
       this._bindShaderGrid(root);
       this._bindShaderSearch(root);
+      this._bindShaderViewToggle(root);
       this._applyShaderSearchFilter(root);
       this._queueMissingShaderThumbnails(root);
       this._maybePromptExampleImportOnEmpty();
