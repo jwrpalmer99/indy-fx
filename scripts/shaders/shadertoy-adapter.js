@@ -667,6 +667,8 @@ function applyCompatibilityRewrites(source) {
   // GLSL ES 1.00 has no floatBitsToUint/uint families.
   // Route floatBitsToUint to a deterministic compatibility helper.
   next = next.replace(/\bfloatBitsToUint\s*\(/g, "cpfx_floatBitsToUint(");
+  // Route uintBitsToFloat to compatibility helper.
+  next = next.replace(/\buintBitsToFloat\s*\(/g, "cpfx_uintBitsToFloat(");
   // Common hash normalization literal in ES3 shaders.
   next = next.replace(/\bfloat\s*\(\s*0x[fF]{8}\s*\)/g, "4294967295.0");
 
@@ -1606,6 +1608,16 @@ function applyCompatibilityRewrites(source) {
   );
 
   // GLSL ES 1.00 has no bitwise operators. Rewrite common patterns.
+  // Rewrite compound bitwise assignments (unsupported in GLSL ES 1.00).
+  // Examples: a ^= b; a |= b; a &= b; a <<= b; a >>= b; a %= b;
+  const lvalue = String.raw`([A-Za-z_]\w*(?:\s*\[[^\]]+\s*\])?(?:\s*\.\s*[A-Za-z_]\w+)*)`;
+  next = next.replace(new RegExp(`${lvalue}\\s*\\^=\\s*([^;]+);`, "g"), "$1 = cpfx_bitxor($1, $2);");
+  next = next.replace(new RegExp(`${lvalue}\\s*\\|=\\s*([^;]+);`, "g"), "$1 = cpfx_bitor($1, $2);");
+  next = next.replace(new RegExp(`${lvalue}\\s*&=\\s*([^;]+);`, "g"), "$1 = cpfx_bitand($1, $2);");
+  next = next.replace(new RegExp(`${lvalue}\\s*<<=\\s*([^;]+);`, "g"), "$1 = cpfx_shl($1, $2);");
+  next = next.replace(new RegExp(`${lvalue}\\s*>>=\\s*([^;]+);`, "g"), "$1 = cpfx_shr($1, $2);");
+  next = next.replace(new RegExp(`${lvalue}\\s*%=\\s*([^;]+);`, "g"), "$1 = cpfx_mod($1, $2);");
+
   const foldBinaryOps = (input, regex, replacement) => {
     let out = String(input ?? "");
     while (true) {
@@ -1666,10 +1678,20 @@ function applyCompatibilityRewrites(source) {
     /\btexelFetch\s*\(\s*iChannel([0-3])\s*,/g,
     "cpfx_texelFetch(iChannel$1, $1,"
   );
+  // Generic texelFetch(sampler2D, ivec2, lod) fallback (non-iChannel sampler aliases).
+  next = next.replace(
+    /\btexelFetch\s*\(\s*([A-Za-z_]\w*)\s*,/g,
+    "cpfx_texelFetchAny($1,"
+  );
   // textureSize is GLSL ES 3.00; remap channel lookups.
   next = next.replace(
     /\btextureSize\s*\(\s*iChannel([0-3])\s*,/g,
     "cpfx_textureSize(iChannel$1, $1,"
+  );
+  // Generic textureSize(sampler2D, lod) fallback.
+  next = next.replace(
+    /\btextureSize\s*\(\s*([A-Za-z_]\w*)\s*,/g,
+    "cpfx_textureSizeAny($1,"
   );
 
   // GLSL ES 1.00 has no mat4x3; rewrite common multiplication form.
@@ -1683,6 +1705,14 @@ function applyCompatibilityRewrites(source) {
   );
 
   next = unmaskPreprocessorBlocks(next);
+  // Final post-preprocessor pass for macro-expanded bodies that may still
+  // contain ES3-only compound bitwise operators.
+  next = next.replace(new RegExp(`${lvalue}\\s*\\^=\\s*([^;]+);`, "g"), "$1 = cpfx_bitxor($1, $2);");
+  next = next.replace(new RegExp(`${lvalue}\\s*\\|=\\s*([^;]+);`, "g"), "$1 = cpfx_bitor($1, $2);");
+  next = next.replace(new RegExp(`${lvalue}\\s*&=\\s*([^;]+);`, "g"), "$1 = cpfx_bitand($1, $2);");
+  next = next.replace(new RegExp(`${lvalue}\\s*<<=\\s*([^;]+);`, "g"), "$1 = cpfx_shl($1, $2);");
+  next = next.replace(new RegExp(`${lvalue}\\s*>>=\\s*([^;]+);`, "g"), "$1 = cpfx_shr($1, $2);");
+  next = next.replace(new RegExp(`${lvalue}\\s*%=\\s*([^;]+);`, "g"), "$1 = cpfx_mod($1, $2);");
   next = unmaskComments(next);
   return next;
 }
@@ -1982,6 +2012,14 @@ ivec2 cpfx_textureSize(sampler2D s, int channelIndex, int lod) {
   res = max(res, vec2(1.0));
   return ivec2(res);
 }
+vec4 cpfx_texelFetchAny(sampler2D s, ivec2 p, int lod) {
+  vec2 res = max(iResolution.xy, vec2(1.0));
+  vec2 uv = (vec2(p) + 0.5) / res;
+  return textureCompat(s, uv);
+}
+ivec2 cpfx_textureSizeAny(sampler2D s, int lod) {
+  return ivec2(max(iResolution.xy, vec2(1.0)));
+}
 
 vec3 cpfx_mul_mat4x3_vec4(vec3 c0, vec3 c1, vec3 c2, vec3 c3, vec4 v) {
   return c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w;
@@ -2292,6 +2330,22 @@ int cpfx_floatBitsToUint(float v) {
 ivec2 cpfx_floatBitsToUint(vec2 v) { return ivec2(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y)); }
 ivec3 cpfx_floatBitsToUint(vec3 v) { return ivec3(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y), cpfx_floatBitsToUint(v.z)); }
 ivec4 cpfx_floatBitsToUint(vec4 v) { return ivec4(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y), cpfx_floatBitsToUint(v.z), cpfx_floatBitsToUint(v.w)); }
+float cpfx_uintBitsToFloat(int v) {
+  int exponent = cpfx_bitand(cpfx_shr(v, 23), 255);
+  int mantissa = cpfx_bitand(v, 0x007fffff);
+  float m = 1.0 + float(mantissa) / 8388608.0;
+  if (exponent == 127) return m;
+  if (exponent > 0 && exponent < 255) return m * exp2(float(exponent - 127));
+  if (exponent == 0) return float(mantissa) / 8388608.0 * exp2(-126.0);
+  return 0.0;
+}
+vec2 cpfx_uintBitsToFloat(ivec2 v) { return vec2(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y)); }
+vec3 cpfx_uintBitsToFloat(ivec3 v) { return vec3(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y), cpfx_uintBitsToFloat(v.z)); }
+vec4 cpfx_uintBitsToFloat(ivec4 v) { return vec4(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y), cpfx_uintBitsToFloat(v.z), cpfx_uintBitsToFloat(v.w)); }
+float cpfx_uintBitsToFloat(float v) { return cpfx_uintBitsToFloat(int(floor(v))); }
+vec2 cpfx_uintBitsToFloat(vec2 v) { return vec2(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y)); }
+vec3 cpfx_uintBitsToFloat(vec3 v) { return vec3(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y), cpfx_uintBitsToFloat(v.z)); }
+vec4 cpfx_uintBitsToFloat(vec4 v) { return vec4(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y), cpfx_uintBitsToFloat(v.z), cpfx_uintBitsToFloat(v.w)); }
 
 float cpfx_mod(float a, float b) { return mod(a, b); }
 float cpfx_mod(float a, int b) { return mod(a, float(b)); }
@@ -2574,6 +2628,14 @@ ivec2 cpfx_textureSize(sampler2D s, int channelIndex, int lod) {
   res = max(res, vec2(1.0));
   return ivec2(res);
 }
+vec4 cpfx_texelFetchAny(sampler2D s, ivec2 p, int lod) {
+  vec2 res = max(iResolution.xy, vec2(1.0));
+  vec2 uv = (vec2(p) + 0.5) / res;
+  return textureCompat(s, uv);
+}
+ivec2 cpfx_textureSizeAny(sampler2D s, int lod) {
+  return ivec2(max(iResolution.xy, vec2(1.0)));
+}
 
 vec3 cpfx_mul_mat4x3_vec4(vec3 c0, vec3 c1, vec3 c2, vec3 c3, vec4 v) {
   return c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w;
@@ -2884,6 +2946,22 @@ int cpfx_floatBitsToUint(float v) {
 ivec2 cpfx_floatBitsToUint(vec2 v) { return ivec2(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y)); }
 ivec3 cpfx_floatBitsToUint(vec3 v) { return ivec3(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y), cpfx_floatBitsToUint(v.z)); }
 ivec4 cpfx_floatBitsToUint(vec4 v) { return ivec4(cpfx_floatBitsToUint(v.x), cpfx_floatBitsToUint(v.y), cpfx_floatBitsToUint(v.z), cpfx_floatBitsToUint(v.w)); }
+float cpfx_uintBitsToFloat(int v) {
+  int exponent = cpfx_bitand(cpfx_shr(v, 23), 255);
+  int mantissa = cpfx_bitand(v, 0x007fffff);
+  float m = 1.0 + float(mantissa) / 8388608.0;
+  if (exponent == 127) return m;
+  if (exponent > 0 && exponent < 255) return m * exp2(float(exponent - 127));
+  if (exponent == 0) return float(mantissa) / 8388608.0 * exp2(-126.0);
+  return 0.0;
+}
+vec2 cpfx_uintBitsToFloat(ivec2 v) { return vec2(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y)); }
+vec3 cpfx_uintBitsToFloat(ivec3 v) { return vec3(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y), cpfx_uintBitsToFloat(v.z)); }
+vec4 cpfx_uintBitsToFloat(ivec4 v) { return vec4(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y), cpfx_uintBitsToFloat(v.z), cpfx_uintBitsToFloat(v.w)); }
+float cpfx_uintBitsToFloat(float v) { return cpfx_uintBitsToFloat(int(floor(v))); }
+vec2 cpfx_uintBitsToFloat(vec2 v) { return vec2(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y)); }
+vec3 cpfx_uintBitsToFloat(vec3 v) { return vec3(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y), cpfx_uintBitsToFloat(v.z)); }
+vec4 cpfx_uintBitsToFloat(vec4 v) { return vec4(cpfx_uintBitsToFloat(v.x), cpfx_uintBitsToFloat(v.y), cpfx_uintBitsToFloat(v.z), cpfx_uintBitsToFloat(v.w)); }
 
 float cpfx_mod(float a, float b) { return mod(a, b); }
 float cpfx_mod(float a, int b) { return mod(a, float(b)); }

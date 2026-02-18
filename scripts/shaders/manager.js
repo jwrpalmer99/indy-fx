@@ -89,6 +89,10 @@ const SHADERTOY_MEDIA_REPLACEMENTS = new Map([
   [
     "https://www.shadertoy.com/media/a/3083c722c0c738cad0f468383167a0d246f91af2bfa373e9c5c094fb8c8413e0.png",
     "modules/indy-fx/images/rgbsmall.png",
+  ],
+  [
+    "https://www.shadertoy.com/media/a/0681c014f6c88c356cf9c0394ffe015acc94ec1474924855f45d22c3e70b5785.png",
+    "modules/indy-fx/images/0681c015.png",
   ]
 ]);
 const THUMBNAIL_SIZE = 256;
