@@ -4712,7 +4712,12 @@ function shaderOn(tokenId, opts = {}) {
   const captureResolutionScale = getClientShaderCaptureResolutionScale();
   const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, {
     captureSourceContainer,
-    captureResolutionScale
+    captureResolutionScale,
+    debugContext: {
+      targetType: "token",
+      targetId: tokenId,
+      shaderId: selectedShaderId,
+    },
   });
   const mesh = new PIXI.Mesh(geom, shader);
   mesh.alpha = 1.0;
@@ -4993,7 +4998,12 @@ function shaderOnTemplate(templateId, opts = {}) {
   const captureResolutionScale = getClientShaderCaptureResolutionScale();
   const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, {
     captureSourceContainer: worldLayer,
-    captureResolutionScale
+    captureResolutionScale,
+    debugContext: {
+      targetType: "template",
+      targetId: resolvedTemplateId,
+      shaderId: selectedShaderId,
+    },
   });
   const mesh = new PIXI.Mesh(geom, shader);
   mesh.alpha = 1.0;
@@ -5270,7 +5280,12 @@ function shaderOnTile(tileId, opts = {}) {
   const captureResolutionScale = getClientShaderCaptureResolutionScale();
   const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, {
     captureSourceContainer: worldLayer,
-    captureResolutionScale
+    captureResolutionScale,
+    debugContext: {
+      targetType: "tile",
+      targetId: resolvedTileId,
+      shaderId: selectedShaderId,
+    },
   });
 
   const mesh = new PIXI.Mesh(geom, shader);
@@ -5300,6 +5315,7 @@ function shaderOnTile(tileId, opts = {}) {
   let elapsedMs = 0;
   const captureThrottleState = {};
   const drawThrottleState = {};
+  let captureDebugLastMs = 0;
   let tileShapeSignature = getTileShapeSignature(tile);
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
   if ("globalAlpha" in shader.uniforms) {
@@ -5377,6 +5393,28 @@ function shaderOnTile(tileId, opts = {}) {
       const captureFlipHorizontal = parseBooleanLike(cfg.captureFlipHorizontal, false);
       const captureFlipVerticalUser = parseBooleanLike(cfg.captureFlipVertical, false);
       const captureFlipVertical = !captureFlipVerticalUser;
+      if (isDebugLoggingEnabled()) {
+        const nowMs = Date.now();
+        if (nowMs - captureDebugLastMs > 1000) {
+          captureDebugLastMs = nowMs;
+          debugLog("tile scene capture intent", {
+            tileId: resolvedTileId,
+            shaderId: selectedShaderId,
+            shaderResolution: [liveShaderSize.width, liveShaderSize.height],
+            shaderAspect: liveShaderSize.height > 0 ? (liveShaderSize.width / liveShaderSize.height) : 0,
+            captureScale,
+            captureRadiusWorld: [captureRadiusX, captureRadiusY],
+            captureAspect: captureRadiusY > 0 ? (captureRadiusX / captureRadiusY) : 0,
+            sceneCaptureTextures: sceneAreaChannels.map((capture) => [
+              Number(capture?.width ?? capture?.size ?? 0),
+              Number(capture?.height ?? capture?.size ?? 0),
+            ]),
+            captureRotationDeg,
+            captureFlipHorizontal,
+            captureFlipVertical,
+          });
+        }
+      }
       for (const capture of sceneAreaChannels) {
         capture.update({
           centerWorld: liveMetrics.center,
@@ -5882,7 +5920,12 @@ function shaderOnRegion(regionId, opts = {}) {
 
     const { sceneAreaChannels, runtimeBufferChannels, runtimeImageChannels } = setupShaderRuntimeChannels(shaderResult, shader, {
       captureSourceContainer: worldLayer,
-      captureResolutionScale
+      captureResolutionScale,
+      debugContext: {
+        targetType: "region",
+        targetId: resolvedRegionId,
+        shaderId: selectedShaderId,
+      },
     });
 
     const mesh = new PIXI.Mesh(geom, shader);

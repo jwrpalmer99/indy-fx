@@ -1,13 +1,25 @@
 export class SceneAreaChannel {
-  constructor(size = 512, { sourceContainer = null } = {}) {
-    this.size = size;
+  constructor(sizeOrWidth = 512, heightOrOptions = null, maybeOptions = null) {
+    let options = maybeOptions ?? {};
+    let width = sizeOrWidth;
+    let height = heightOrOptions;
+    if (heightOrOptions && typeof heightOrOptions === "object" && !Array.isArray(heightOrOptions)) {
+      options = heightOrOptions;
+      height = sizeOrWidth;
+    }
+    const safeWidth = Math.max(1, Math.round(Number(width) || 512));
+    const safeHeight = Math.max(1, Math.round(Number(height) || safeWidth));
+    this.width = safeWidth;
+    this.height = safeHeight;
+    this.size = Math.max(safeWidth, safeHeight);
     this._matrix = new PIXI.Matrix();
     this._tmpLocal = new PIXI.Point();
     this._tmpGlobal = new PIXI.Point();
-    this.sourceContainer = sourceContainer;
+    this._lastDebugLogAt = 0;
+    this.sourceContainer = options?.sourceContainer ?? null;
     this.texture = PIXI.RenderTexture.create({
-      width: size,
-      height: size,
+      width: safeWidth,
+      height: safeHeight,
       resolution: 1,
       scaleMode: PIXI.SCALE_MODES.LINEAR
     });
@@ -39,8 +51,8 @@ export class SceneAreaChannel {
     const zoom = Math.max(0.0001, Math.abs(stage.worldTransform?.a ?? 1));
     const radiusScreenX = Math.max(2, radiusX * zoom);
     const radiusScreenY = Math.max(2, radiusY * zoom);
-    const scaleXAbs = this.size / (radiusScreenX * 2);
-    const scaleYAbs = this.size / (radiusScreenY * 2);
+    const scaleXAbs = this.width / (radiusScreenX * 2);
+    const scaleYAbs = this.height / (radiusScreenY * 2);
     const scaleX = (flipX ? -1 : 1) * scaleXAbs;
     const scaleY = (flipY ? -1 : 1) * scaleYAbs;
     const rotation = Number.isFinite(Number(rotationDeg))
@@ -52,9 +64,10 @@ export class SceneAreaChannel {
     const b = sinR * scaleX;
     const c = -sinR * scaleY;
     const d = cosR * scaleY;
-    const half = this.size * 0.5;
-    const tx = half - (a * center.x + c * center.y);
-    const ty = half - (b * center.x + d * center.y);
+    const halfW = this.width * 0.5;
+    const halfH = this.height * 0.5;
+    const tx = halfW - (a * center.x + c * center.y);
+    const ty = halfH - (b * center.x + d * center.y);
 
     this._matrix.set(
       a, b,
@@ -62,6 +75,20 @@ export class SceneAreaChannel {
       tx,
       ty
     );
+
+    this._logCaptureDebug({
+      centerWorld,
+      radiusX,
+      radiusY,
+      zoom,
+      radiusScreenX,
+      radiusScreenY,
+      scaleX,
+      scaleY,
+      rotationDeg,
+      flipX,
+      flipY,
+    });
 
     let prevVisible = null;
     if (excludeDisplayObject) {
@@ -83,6 +110,38 @@ export class SceneAreaChannel {
   destroy() {
     this.texture?.destroy(true);
     this.texture = null;
+  }
+
+  _isDebugEnabled() {
+    try {
+      return game?.settings?.get?.("indy-fx", "shaderDebug") === true;
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  _logCaptureDebug(payload = {}) {
+    if (!this._isDebugEnabled()) return;
+    const now = Date.now();
+    if (now - this._lastDebugLogAt < 1000) return;
+    this._lastDebugLogAt = now;
+    const worldAspect = payload.radiusY > 0 ? (payload.radiusX / payload.radiusY) : 0;
+    const textureAspect = this.height > 0 ? (this.width / this.height) : 0;
+    console.debug("indy-fx | scene capture update", {
+      textureResolution: [this.width, this.height],
+      textureAspect,
+      worldRadius: [payload.radiusX, payload.radiusY],
+      worldAspect,
+      centerWorld: payload.centerWorld ?? null,
+      zoom: payload.zoom,
+      screenRadius: [payload.radiusScreenX, payload.radiusScreenY],
+      scale: [payload.scaleX, payload.scaleY],
+      flipX: payload.flipX === true,
+      flipY: payload.flipY === true,
+      rotationDeg: Number.isFinite(Number(payload.rotationDeg))
+        ? Number(payload.rotationDeg)
+        : 0,
+    });
   }
 }
 

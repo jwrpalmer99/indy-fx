@@ -351,6 +351,8 @@ export class PlaceableImageChannel {
     targetType,
     targetId,
     size = 1024,
+    width = null,
+    height = null,
     liveUpdates = true,
     previewTexturePath = "",
     captureRotationDeg = 0,
@@ -361,6 +363,8 @@ export class PlaceableImageChannel {
     this.targetType = String(targetType ?? "").trim().toLowerCase();
     this.targetId = String(targetId ?? "").trim();
     this.size = isFinitePositive(size, 1024);
+    this.width = isFinitePositive(width, this.size);
+    this.height = isFinitePositive(height, this.size);
     this.liveUpdates = liveUpdates === true;
     this.previewTexturePath = String(previewTexturePath ?? "").trim();
     this.captureRotationDeg = Number.isFinite(Number(captureRotationDeg))
@@ -380,11 +384,11 @@ export class PlaceableImageChannel {
       captureFlipVertical === "on";
 
     this.renderTexture = PIXI.RenderTexture.create({
-      width: this.size,
-      height: this.size,
+      width: this.width,
+      height: this.height,
     });
     this.texture = this.renderTexture;
-    this.resolution = [this.size, this.size];
+    this.resolution = [this.width, this.height];
 
     this._currentSrc = "";
     this._destroyed = false;
@@ -407,6 +411,8 @@ export class PlaceableImageChannel {
     this._setPendingInitialCapture(true);
     this._debugLog("init", {
       size: this.size,
+      width: this.width,
+      height: this.height,
       liveUpdates: this.liveUpdates,
       previewTexturePath: this.previewTexturePath || null,
       captureRotationDeg: this.captureRotationDeg,
@@ -519,8 +525,8 @@ export class PlaceableImageChannel {
       if (typeof renderer?.extract?.pixels === "function") {
         const pixels = renderer.extract.pixels(this.renderTexture);
         if (!pixels || !pixels.length) return false;
-        const width = Math.max(1, Number(this.size) || 1);
-        const height = Math.max(1, Number(this.size) || 1);
+        const width = Math.max(1, Number(this.width) || 1);
+        const height = Math.max(1, Number(this.height) || 1);
         const sampleCols = 7;
         const sampleRows = 7;
         for (let ry = 0; ry < sampleRows; ry += 1) {
@@ -590,8 +596,8 @@ export class PlaceableImageChannel {
     // Tiles can extend with rotation, so keep rotated-bounds fitting for tiles.
     const fit = this.targetType === "token"
       ? Math.min(
-          this.size / Math.max(1, baseW),
-          this.size / Math.max(1, baseH),
+          this.width / Math.max(1, baseW),
+          this.height / Math.max(1, baseH),
         )
       : (() => {
           const rotatedW =
@@ -601,15 +607,15 @@ export class PlaceableImageChannel {
             Math.abs(Math.sin(draw.rotationRad)) * baseW +
             Math.abs(Math.cos(draw.rotationRad)) * baseH;
           return Math.min(
-            this.size / Math.max(1, rotatedW),
-            this.size / Math.max(1, rotatedH),
+            this.width / Math.max(1, rotatedW),
+            this.height / Math.max(1, rotatedH),
           );
         })();
 
     const sprite = new PIXI.Sprite(texture);
     sprite.anchor.set(0.5, 0.5);
-    sprite.x = this.size * 0.5;
-    sprite.y = this.size * 0.5;
+    sprite.x = this.width * 0.5;
+    sprite.y = this.height * 0.5;
 
     const applyIndyFallbackTransform = usesIndyPlaceableFallbackTexture(sourcePath);
     const effectiveCaptureRotationDeg =
@@ -624,12 +630,16 @@ export class PlaceableImageChannel {
     this._debugLog("render-effective-transform", {
       sourcePath: sourcePath || null,
       applyIndyFallbackTransform,
+      captureTextureResolution: [this.width, this.height],
       configuredCaptureRotationDeg: this.captureRotationDeg,
       configuredCaptureFlipHorizontal: this.captureFlipHorizontal === true,
       configuredCaptureFlipVertical: this.captureFlipVertical === true,
       effectiveCaptureRotationDeg,
       effectiveCaptureFlipHorizontal,
       effectiveCaptureFlipVertical,
+      drawBaseSize: [baseW, baseH],
+      drawAspect: baseH > 0 ? (baseW / baseH) : 0,
+      fitScale: fit,
       placeableRotationDeg: Number((draw.rotationRad * 180) / Math.PI),
     });
 
@@ -788,4 +798,3 @@ export class PlaceableImageChannel {
     }
   }
 }
-

@@ -1,6 +1,8 @@
 import { SceneAreaChannel } from "./shaders/scene-channel.js";
 import { createShapeMaskTexture } from "./shaders/mask-shapes.js";
 
+const RUNTIME_DEBUG_MODULE_ID = "indy-fx";
+
 function clamp01(value) {
   return Math.max(0, Math.min(1, Number(value ?? 0)));
 }
@@ -9,6 +11,20 @@ function normalizeCaptureResolutionScale(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 1.0;
   return Math.max(0.25, Math.min(1.0, n));
+}
+
+function isRuntimeDebugEnabled() {
+  try {
+    return game?.settings?.get?.(RUNTIME_DEBUG_MODULE_ID, "shaderDebug") === true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function runtimeDebugLog(message, payload = undefined) {
+  if (!isRuntimeDebugEnabled()) return;
+  if (payload === undefined) console.debug(`${RUNTIME_DEBUG_MODULE_ID} | ${message}`);
+  else console.debug(`${RUNTIME_DEBUG_MODULE_ID} | ${message}`, payload);
 }
 
 export function resolveShaderWorldLayer(moduleId, cfg, { allowTokenLayer = false, tokenTarget = null } = {}) {
@@ -106,39 +122,81 @@ export function createQuadGeometry(halfWidth, halfHeight) {
 export function setupShaderRuntimeChannels(
   shaderResult,
   shader,
-  { captureSourceContainer = null, captureResolutionScale = 1.0 } = {},
+  {
+    captureSourceContainer = null,
+    captureResolutionScale = 1.0,
+    debugContext = null,
+  } = {},
 ) {
   const sceneAreaChannels = [];
   const runtimeBufferChannels = [];
   const runtimeImageChannels = [];
-  const sceneCaptureBySize = new Map();
+  const sceneCaptureByResolution = new Map();
   const resolvedCaptureResolutionScale =
     normalizeCaptureResolutionScale(captureResolutionScale);
 
-  for (const runtimeChannel of shaderResult.runtimeChannels ?? []) {
-    const rawCaptureSize = Number(runtimeChannel?.size ?? 512);
-    const baseCaptureSize =
-      Number.isFinite(rawCaptureSize) && rawCaptureSize > 0
-        ? rawCaptureSize
-        : 512;
-    const captureSize = Math.max(
+  const getBaseCaptureResolution = (runtimeChannel, channelIndex) => {
+    const fallbackSize = Math.max(
       16,
-      Math.round(baseCaptureSize * resolvedCaptureResolutionScale),
+      Math.round(Number(runtimeChannel?.size ?? 512) || 512),
     );
+    const explicitResolution = Array.isArray(runtimeChannel?.resolution)
+      ? runtimeChannel.resolution
+      : null;
+    const explicitWidth = Number(explicitResolution?.[0]);
+    const explicitHeight = Number(explicitResolution?.[1]);
+    if (
+      Number.isFinite(explicitWidth) &&
+      explicitWidth > 0 &&
+      Number.isFinite(explicitHeight) &&
+      explicitHeight > 0
+    ) {
+      return [explicitWidth, explicitHeight];
+    }
+
+    const uniforms = shader?.uniforms;
+    const channelRes = Array.isArray(uniforms?.iChannelResolution)
+      ? uniforms.iChannelResolution
+      : null;
+    if (channelRes && Number.isInteger(channelIndex)) {
+      const offset = channelIndex * 3;
+      const w = Number(channelRes[offset]);
+      const h = Number(channelRes[offset + 1]);
+      if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) {
+        return [w, h];
+      }
+    }
+
+    return [fallbackSize, fallbackSize];
+  };
+
+  for (const runtimeChannel of shaderResult.runtimeChannels ?? []) {
     const channelIndex = runtimeChannel?.channel;
     if (!Number.isInteger(channelIndex) || channelIndex < 0 || channelIndex > 3) continue;
+    const [baseWidth, baseHeight] = getBaseCaptureResolution(runtimeChannel, channelIndex);
+    const captureWidth = Math.max(
+      16,
+      Math.round(baseWidth * resolvedCaptureResolutionScale),
+    );
+    const captureHeight = Math.max(
+      16,
+      Math.round(baseHeight * resolvedCaptureResolutionScale),
+    );
+    const captureKey = `${captureWidth}x${captureHeight}`;
 
-    let capture = sceneCaptureBySize.get(captureSize);
+    let wasCreated = false;
+    let capture = sceneCaptureByResolution.get(captureKey);
     if (!capture) {
-      capture = new SceneAreaChannel(captureSize, {
+      capture = new SceneAreaChannel(captureWidth, captureHeight, {
         sourceContainer: captureSourceContainer
       });
-      sceneCaptureBySize.set(captureSize, capture);
+      sceneCaptureByResolution.set(captureKey, capture);
       sceneAreaChannels.push(capture);
+      wasCreated = true;
     }
 
     if (runtimeChannel?.runtimeBuffer && typeof runtimeChannel.runtimeBuffer.setChannel === "function") {
-      runtimeChannel.runtimeBuffer.setChannel(channelIndex, capture.texture, [captureSize, captureSize]);
+      runtimeChannel.runtimeBuffer.setChannel(channelIndex, capture.texture, [captureWidth, captureHeight]);
     } else {
       const uniformName = `iChannel${channelIndex}`;
       if (!(uniformName in shader.uniforms)) continue;
@@ -147,12 +205,27 @@ export function setupShaderRuntimeChannels(
       if ("iChannelResolution" in shader.uniforms) {
         const channelRes = Array.from(shader.uniforms.iChannelResolution ?? []);
         while (channelRes.length < 12) channelRes.push(1);
-        channelRes[channelIndex * 3] = captureSize;
-        channelRes[channelIndex * 3 + 1] = captureSize;
+        channelRes[channelIndex * 3] = captureWidth;
+        channelRes[channelIndex * 3 + 1] = captureHeight;
         channelRes[channelIndex * 3 + 2] = 1;
         shader.uniforms.iChannelResolution = channelRes;
       }
     }
+
+    runtimeDebugLog("runtime scene capture channel configured", {
+      targetType: debugContext?.targetType ?? null,
+      targetId: debugContext?.targetId ?? null,
+      shaderId: debugContext?.shaderId ?? shaderResult?.shaderId ?? null,
+      channel: channelIndex,
+      captureResolutionScale: resolvedCaptureResolutionScale,
+      baseResolution: [baseWidth, baseHeight],
+      captureResolution: [captureWidth, captureHeight],
+      reusedCapture: !wasCreated,
+      sharedCaptureKey: captureKey,
+      captureCount: sceneAreaChannels.length,
+      boundToRuntimeBuffer:
+        !!(runtimeChannel?.runtimeBuffer && typeof runtimeChannel.runtimeBuffer.setChannel === "function"),
+    });
   }
 
   for (const runtimeBufferChannel of shaderResult.runtimeBufferChannels ?? []) {

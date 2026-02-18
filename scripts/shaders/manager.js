@@ -3687,18 +3687,22 @@ export class ShaderManager {
           runtimeImageChannels: [],
         };
       }
+      const captureWidth = Math.max(16, hintedWidth);
+      const captureHeight = Math.max(16, hintedHeight);
       const texture = getNoiseTexture(IMPORTED_NOISE_TEXTURE_SIZE, "rgb");
       debugLog(this.moduleId, "resolve sceneCapture channel: runtime fallback", {
         mode,
         previewMode: options?.previewMode === true,
+        captureResolution: [captureWidth, captureHeight],
         texture: getTextureDebugInfo(texture, IMPORTED_NOISE_TEXTURE_SIZE),
         alphaSample: this._debugSampleTextureAlpha(texture, 16),
       });
       return {
         texture,
-        resolution: [512, 512],
+        resolution: [captureWidth, captureHeight],
         runtimeCapture: true,
-        runtimeCaptureSize: 512,
+        runtimeCaptureSize: Math.max(captureWidth, captureHeight),
+        runtimeCaptureResolution: [captureWidth, captureHeight],
         runtimeCaptureChannels: [],
         runtimeBuffers: [],
         runtimeImageChannels: [],
@@ -3729,9 +3733,9 @@ export class ShaderManager {
       });
 
       if ((targetType === "token" || targetType === "tile") && targetId && !isPreview) {
-        const captureSize = isPreview
-          ? PLACEABLE_IMAGE_PREVIEW_SIZE
-          : PLACEABLE_IMAGE_CAPTURE_SIZE;
+        const captureWidth = Math.max(16, hintedWidth);
+        const captureHeight = Math.max(16, hintedHeight);
+        const captureSize = Math.max(captureWidth, captureHeight);
         const captureRotationDeg = toFiniteNumber(options?.captureRotationDeg, 0);
         const captureFlipHorizontal = parseBooleanLike(
           options?.captureFlipHorizontal,
@@ -3742,6 +3746,7 @@ export class ShaderManager {
           targetType,
           targetId,
           captureSize,
+          captureResolution: [captureWidth, captureHeight],
           isPreview,
           captureRotationDeg,
           captureFlipHorizontal,
@@ -3752,6 +3757,8 @@ export class ShaderManager {
           targetType,
           targetId,
           size: captureSize,
+          width: captureWidth,
+          height: captureHeight,
           liveUpdates: !isPreview,
           previewTexturePath: "",
           captureRotationDeg,
@@ -3759,7 +3766,7 @@ export class ShaderManager {
           captureFlipVertical,
         });
         const texture = runtimeImageChannel.texture;
-        const resolution = [captureSize, captureSize];
+        const resolution = [captureWidth, captureHeight];
         debugLog(this.moduleId, "resolve tokenTileImage channel: placeable runtime channel", {
           targetType,
           targetId,
@@ -3924,6 +3931,7 @@ export class ShaderManager {
           if (resolved.runtimeCapture) {
             runtimeCaptureChannels.push({
               size: resolved.runtimeCaptureSize ?? 512,
+              resolution: resolved.runtimeCaptureResolution ?? resolved.resolution ?? null,
               runtimeBuffer,
               channel: index,
             });
@@ -4226,6 +4234,8 @@ export class ShaderManager {
             resolution: [resolvedWidth, resolvedHeight],
             runtimeCapture: resolved.runtimeCapture === true,
             runtimeCaptureSize: resolved.runtimeCaptureSize ?? 0,
+            runtimeCaptureResolution:
+              resolved.runtimeCaptureResolution ?? resolved.resolution ?? [0, 0],
             runtimeCaptureChannelCount: (resolved.runtimeCaptureChannels ?? []).length,
             runtimeBufferCount: (resolved.runtimeBuffers ?? []).length,
             runtimeImageChannelCount: (resolved.runtimeImageChannels ?? []).length,
@@ -4237,6 +4247,7 @@ export class ShaderManager {
           runtimeChannels.push({
             channel: index,
             size: resolved.runtimeCaptureSize ?? 512,
+            resolution: resolved.runtimeCaptureResolution ?? resolved.resolution ?? null,
           });
         }
         for (const captureChannel of resolved.runtimeCaptureChannels ?? []) {
