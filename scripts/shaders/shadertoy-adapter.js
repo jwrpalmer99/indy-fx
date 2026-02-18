@@ -480,6 +480,52 @@ function rewriteTopLevelRedeclaredLocals(source) {
   return next;
 }
 function applyCompatibilityRewrites(source) {
+  const injectMainImageParameterAliases = (value) => {
+    const text = String(value ?? "");
+    const mainImageHeadRe =
+      /void\s+mainImage\s*\(\s*out\s+vec4\s+([A-Za-z_]\w*)\s*,\s*(?:in\s+)?vec2\s+([A-Za-z_]\w*)\s*\)\s*\{/m;
+    const m = mainImageHeadRe.exec(text);
+    if (!m) return text;
+
+    const colorParam = String(m[1] ?? "").trim();
+    const coordParam = String(m[2] ?? "").trim();
+    if (!colorParam || !coordParam) return text;
+    if (colorParam === "fragColor" && coordParam === "fragCoord") return text;
+
+    const braceIdx = text.indexOf("{", m.index);
+    if (braceIdx < 0) return text;
+    let depth = 0;
+    let endIdx = -1;
+    for (let i = braceIdx; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          endIdx = i;
+          break;
+        }
+      }
+    }
+    if (endIdx < 0) return text;
+
+    const prefix = [];
+    const suffix = [];
+    if (colorParam !== "fragColor") {
+      prefix.push(`#define fragColor ${colorParam}`);
+      suffix.push("#undef fragColor");
+    }
+    if (coordParam !== "fragCoord") {
+      prefix.push(`#define fragCoord ${coordParam}`);
+      suffix.push("#undef fragCoord");
+    }
+    if (!prefix.length) return text;
+
+    const injection = `\n${prefix.join("\n")}\n`;
+    const uninjection = `\n${suffix.reverse().join("\n")}\n`;
+    return `${text.slice(0, braceIdx + 1)}${injection}${text.slice(braceIdx + 1, endIdx)}${uninjection}${text.slice(endIdx)}`;
+  };
+
   const commentBlocks = [];
   const maskComments = (value) => {
     const text = String(value ?? "");
@@ -680,7 +726,8 @@ function applyCompatibilityRewrites(source) {
     return out;
   };
 
-  let next = maskComments(String(source ?? ""));
+  let next = injectMainImageParameterAliases(String(source ?? ""));
+  next = maskComments(next);
   next = rewriteFloatStepLoopsToCountedLoops(next);
   next = rewriteTopLevelRedeclaredLocals(next);
 
