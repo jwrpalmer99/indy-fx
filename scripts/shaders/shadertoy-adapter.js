@@ -517,6 +517,40 @@ function applyCompatibilityRewrites(source) {
     String(value ?? "").replace(/\/\*__CPFX_COMMENT_(\d+)__\*\//g, (_full, idx) =>
       commentBlocks[Number(idx)] ?? "",
     );
+  const rewriteTextureBuiltins = (value) => {
+    let out = String(value ?? "");
+    // texelFetch is GLSL ES 3.00; remap common ShaderToy channel fetches.
+    out = out.replace(
+      /\btexelFetch\s*\(\s*iChannel([0-3])\s*,/g,
+      "cpfx_texelFetch(iChannel$1, $1,",
+    );
+    // Generic texelFetch(sampler2D, ivec2, lod) fallback (non-iChannel sampler aliases).
+    out = out.replace(
+      /\btexelFetch\s*\(\s*([A-Za-z_]\w*)\s*,/g,
+      "cpfx_texelFetchAny($1,",
+    );
+    // textureSize is GLSL ES 3.00; remap channel lookups.
+    out = out.replace(
+      /\btextureSize\s*\(\s*iChannel([0-3])\s*,/g,
+      "cpfx_textureSize(iChannel$1, $1,",
+    );
+    // Accept one-argument form as lod=0.
+    out = out.replace(
+      /\btextureSize\s*\(\s*iChannel([0-3])\s*\)/g,
+      "cpfx_textureSize(iChannel$1, $1, 0)",
+    );
+    // Generic textureSize(sampler2D, lod) fallback.
+    out = out.replace(
+      /\btextureSize\s*\(\s*([A-Za-z_]\w*)\s*,/g,
+      "cpfx_textureSizeAny($1,",
+    );
+    // Generic one-argument textureSize(sampler2D) fallback as lod=0.
+    out = out.replace(
+      /\btextureSize\s*\(\s*([A-Za-z_]\w*)\s*\)/g,
+      "cpfx_textureSizeAny($1, 0)",
+    );
+    return out;
+  };
 
   let next = maskComments(String(source ?? ""));
   next = rewriteFloatStepLoopsToCountedLoops(next);
@@ -1690,26 +1724,7 @@ function applyCompatibilityRewrites(source) {
     "cpfx_bitxor($1, $2)",
   );
 
-  // texelFetch is GLSL ES 3.00; remap common ShaderToy channel fetches.
-  next = next.replace(
-    /\btexelFetch\s*\(\s*iChannel([0-3])\s*,/g,
-    "cpfx_texelFetch(iChannel$1, $1,"
-  );
-  // Generic texelFetch(sampler2D, ivec2, lod) fallback (non-iChannel sampler aliases).
-  next = next.replace(
-    /\btexelFetch\s*\(\s*([A-Za-z_]\w*)\s*,/g,
-    "cpfx_texelFetchAny($1,"
-  );
-  // textureSize is GLSL ES 3.00; remap channel lookups.
-  next = next.replace(
-    /\btextureSize\s*\(\s*iChannel([0-3])\s*,/g,
-    "cpfx_textureSize(iChannel$1, $1,"
-  );
-  // Generic textureSize(sampler2D, lod) fallback.
-  next = next.replace(
-    /\btextureSize\s*\(\s*([A-Za-z_]\w*)\s*,/g,
-    "cpfx_textureSizeAny($1,"
-  );
+  next = rewriteTextureBuiltins(next);
 
   // GLSL ES 1.00 has no mat4x3; rewrite common multiplication form.
   const mat4x3MulRe = /mat4x3\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)\s*\*\s*(\([^;\n]+\)|[A-Za-z_]\w*)/g;
@@ -1722,6 +1737,8 @@ function applyCompatibilityRewrites(source) {
   );
 
   next = unmaskPreprocessorBlocks(next);
+  // Re-run ES3 texture builtin rewrites on unmasked macro bodies.
+  next = rewriteTextureBuiltins(next);
   // Final post-preprocessor pass for macro-expanded bodies that may still
   // contain ES3-only compound bitwise operators.
   next = next.replace(new RegExp(`${lvalue}\\s*\\^=\\s*([^;]+);`, "g"), "$1 = cpfx_bitxor($1, $2);");
