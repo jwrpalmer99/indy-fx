@@ -952,7 +952,9 @@ function applyCompatibilityRewrites(source) {
   // Route uintBitsToFloat to compatibility helper.
   next = next.replace(/\buintBitsToFloat\s*\(/g, "cpfx_uintBitsToFloat(");
   // Common hash normalization literal in ES3 shaders.
-  next = next.replace(/\bfloat\s*\(\s*0x[fF]{8}\s*\)/g, "4294967295.0");
+  // Compatibility bitwise helpers operate on 24-bit wrapped integers.
+  next = next.replace(/\bfloat\s*\(\s*0x[fF]{8}\s*\)/g, "16777215.0");
+  next = next.replace(/\b0x[fF]{8}\b/g, "16777215");
 
   // Common Twigl shorthand in some ShaderToy ports.
   // Rewritten to ANGLE/WebGL-friendly canonical loop form.
@@ -2598,16 +2600,24 @@ int cpfx_max(float a, int b) {
   return (ai > b) ? ai : b;
 }
 
+int cpfx_wrap_u24(int a) {
+  float v = mod(float(a), 16777216.0);
+  if (v < 0.0) v += 16777216.0;
+  return int(floor(v + 0.5));
+}
+
 int cpfx_shr(int a, int b) {
-  int aa = (a < 0) ? 0 : a;
+  int aa = cpfx_wrap_u24(a);
   int bb = (b < 0) ? 0 : b;
+  if (bb >= 24) return 0;
   return int(floor(float(aa) / exp2(float(bb))));
 }
 
 int cpfx_shl(int a, int b) {
-  int aa = (a < 0) ? 0 : a;
+  int aa = cpfx_wrap_u24(a);
   int bb = (b < 0) ? 0 : b;
-  return int(floor(float(aa) * exp2(float(bb))));
+  if (bb >= 24) return 0;
+  return cpfx_wrap_u24(int(floor(float(aa) * exp2(float(bb)))));
 }
 
 float cpfx_shl(float a, float b) { return float(cpfx_shl(int(floor(a)), int(floor(b)))); }
@@ -2631,8 +2641,8 @@ ivec3 cpfx_shr(ivec3 a, ivec3 b) { return ivec3(cpfx_shr(a.x, b.x), cpfx_shr(a.y
 ivec4 cpfx_shr(ivec4 a, ivec4 b) { return ivec4(cpfx_shr(a.x, b.x), cpfx_shr(a.y, b.y), cpfx_shr(a.z, b.z), cpfx_shr(a.w, b.w)); }
 
 int cpfx_bitand(int a, int b) {
-  int aa = (a < 0) ? 0 : a;
-  int bb = (b < 0) ? 0 : b;
+  int aa = cpfx_wrap_u24(a);
+  int bb = cpfx_wrap_u24(b);
   int result = 0;
   int bit = 1;
   for (int k = 0; k < 24; ++k) {
@@ -2657,7 +2667,7 @@ ivec3 cpfx_bitand(ivec3 a, int b) { return cpfx_bitand(a, ivec3(b)); }
 ivec4 cpfx_bitand(ivec4 a, int b) { return cpfx_bitand(a, ivec4(b)); }
 
 int cpfx_bitor(int a, int b) {
-  return a + b - cpfx_bitand(a, b);
+  return cpfx_wrap_u24(a + b - cpfx_bitand(a, b));
 }
 float cpfx_bitor(float a, float b) { return float(cpfx_bitor(int(floor(a)), int(floor(b)))); }
 float cpfx_bitor(float a, int b) { return float(cpfx_bitor(int(floor(a)), b)); }
@@ -2670,7 +2680,7 @@ ivec3 cpfx_bitor(ivec3 a, int b) { return cpfx_bitor(a, ivec3(b)); }
 ivec4 cpfx_bitor(ivec4 a, int b) { return cpfx_bitor(a, ivec4(b)); }
 
 int cpfx_bitxor(int a, int b) {
-  return a + b - 2 * cpfx_bitand(a, b);
+  return cpfx_wrap_u24(a + b - 2 * cpfx_bitand(a, b));
 }
 float cpfx_bitxor(float a, float b) { return float(cpfx_bitxor(int(floor(a)), int(floor(b)))); }
 float cpfx_bitxor(float a, int b) { return float(cpfx_bitxor(int(floor(a)), b)); }
@@ -3313,16 +3323,24 @@ int cpfx_max(float a, int b) {
   return (ai > b) ? ai : b;
 }
 
+int cpfx_wrap_u24(int a) {
+  float v = mod(float(a), 16777216.0);
+  if (v < 0.0) v += 16777216.0;
+  return int(floor(v + 0.5));
+}
+
 int cpfx_shr(int a, int b) {
-  int aa = (a < 0) ? 0 : a;
+  int aa = cpfx_wrap_u24(a);
   int bb = (b < 0) ? 0 : b;
+  if (bb >= 24) return 0;
   return int(floor(float(aa) / exp2(float(bb))));
 }
 
 int cpfx_shl(int a, int b) {
-  int aa = (a < 0) ? 0 : a;
+  int aa = cpfx_wrap_u24(a);
   int bb = (b < 0) ? 0 : b;
-  return int(floor(float(aa) * exp2(float(bb))));
+  if (bb >= 24) return 0;
+  return cpfx_wrap_u24(int(floor(float(aa) * exp2(float(bb)))));
 }
 
 float cpfx_shl(float a, float b) { return float(cpfx_shl(int(floor(a)), int(floor(b)))); }
@@ -3346,8 +3364,8 @@ ivec3 cpfx_shr(ivec3 a, ivec3 b) { return ivec3(cpfx_shr(a.x, b.x), cpfx_shr(a.y
 ivec4 cpfx_shr(ivec4 a, ivec4 b) { return ivec4(cpfx_shr(a.x, b.x), cpfx_shr(a.y, b.y), cpfx_shr(a.z, b.z), cpfx_shr(a.w, b.w)); }
 
 int cpfx_bitand(int a, int b) {
-  int aa = (a < 0) ? 0 : a;
-  int bb = (b < 0) ? 0 : b;
+  int aa = cpfx_wrap_u24(a);
+  int bb = cpfx_wrap_u24(b);
   int result = 0;
   int bit = 1;
   for (int k = 0; k < 24; ++k) {
@@ -3372,7 +3390,7 @@ ivec3 cpfx_bitand(ivec3 a, int b) { return cpfx_bitand(a, ivec3(b)); }
 ivec4 cpfx_bitand(ivec4 a, int b) { return cpfx_bitand(a, ivec4(b)); }
 
 int cpfx_bitor(int a, int b) {
-  return a + b - cpfx_bitand(a, b);
+  return cpfx_wrap_u24(a + b - cpfx_bitand(a, b));
 }
 float cpfx_bitor(float a, float b) { return float(cpfx_bitor(int(floor(a)), int(floor(b)))); }
 float cpfx_bitor(float a, int b) { return float(cpfx_bitor(int(floor(a)), b)); }
@@ -3385,7 +3403,7 @@ ivec3 cpfx_bitor(ivec3 a, int b) { return cpfx_bitor(a, ivec3(b)); }
 ivec4 cpfx_bitor(ivec4 a, int b) { return cpfx_bitor(a, ivec4(b)); }
 
 int cpfx_bitxor(int a, int b) {
-  return a + b - 2 * cpfx_bitand(a, b);
+  return cpfx_wrap_u24(a + b - 2 * cpfx_bitand(a, b));
 }
 float cpfx_bitxor(float a, float b) { return float(cpfx_bitxor(int(floor(a)), int(floor(b)))); }
 float cpfx_bitxor(float a, int b) { return float(cpfx_bitxor(int(floor(a)), b)); }
