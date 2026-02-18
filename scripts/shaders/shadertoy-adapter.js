@@ -554,13 +554,73 @@ function applyCompatibilityRewrites(source) {
   const rewriteDynamicArrayReadIndexing = (value) => {
     let out = String(value ?? "");
     const arrays = [];
+    const scalarConsts = new Map();
+    const evalConstExpr = (expr) => {
+      const raw = String(expr ?? "").trim();
+      if (!raw) return NaN;
+      if (/[^0-9eE+\-*/().,\sA-Za-z_]/.test(raw)) return NaN;
+      const substituted = raw.replace(/\b([A-Za-z_]\w*)\b/g, (_full, name) => {
+        if (scalarConsts.has(name)) return `(${scalarConsts.get(name)})`;
+        if (name === "float" || name === "int") return "";
+        return "NaN";
+      });
+      try {
+        const v = Function(`"use strict"; return (${substituted});`)();
+        return Number(v);
+      } catch (_err) {
+        return NaN;
+      }
+    };
+
+    const defineRe = /^\s*#\s*define\s+([A-Za-z_]\w*)\s+([^\n]+)$/gm;
+    for (let pass = 0; pass < 4; pass += 1) {
+      let learned = false;
+      defineRe.lastIndex = 0;
+      let m;
+      while ((m = defineRe.exec(out)) !== null) {
+        const name = String(m[1] ?? "");
+        if (!name || scalarConsts.has(name)) continue;
+        const valueNum = evalConstExpr(m[2]);
+        if (!Number.isFinite(valueNum)) continue;
+        scalarConsts.set(name, valueNum);
+        learned = true;
+      }
+      if (!learned) break;
+    }
+
+    const constDeclRe =
+      /\bconst\s+(?:int|float)\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;/g;
+    for (let pass = 0; pass < 4; pass += 1) {
+      let learned = false;
+      constDeclRe.lastIndex = 0;
+      let m;
+      while ((m = constDeclRe.exec(out)) !== null) {
+        const name = String(m[1] ?? "");
+        if (!name || scalarConsts.has(name)) continue;
+        const valueNum = evalConstExpr(m[2]);
+        if (!Number.isFinite(valueNum)) continue;
+        scalarConsts.set(name, valueNum);
+        learned = true;
+      }
+      if (!learned) break;
+    }
+
     const arrayDeclRe =
-      /\b(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(?:float|int|bool|vec[234]|mat[234])\s+([A-Za-z_]\w*)\s*\[\s*(\d+)\s*\]/g;
+      /\b(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(?:float|int|bool|vec[234]|mat[234])\s+([A-Za-z_]\w*)\s*\[\s*([^\]]+)\s*\]/g;
     let declMatch;
     while ((declMatch = arrayDeclRe.exec(out)) !== null) {
       const name = String(declMatch[1] ?? "");
-      const size = Number(declMatch[2]);
-      if (!name || !Number.isFinite(size) || size < 1 || size > 8) continue;
+      const sizeRaw = String(declMatch[2] ?? "").trim();
+      const size = /^\d+$/.test(sizeRaw)
+        ? Number(sizeRaw)
+        : evalConstExpr(sizeRaw);
+      if (
+        !name ||
+        !Number.isFinite(size) ||
+        Math.floor(size) !== size ||
+        size < 1 ||
+        size > 8
+      ) continue;
       arrays.push({ name, size: Math.floor(size) });
     }
 
@@ -584,6 +644,39 @@ function applyCompatibilityRewrites(source) {
         return selectExpr;
       });
     }
+    return out;
+  };
+  const rewriteDynamicMatrixReadIndexing = (value) => {
+    let out = String(value ?? "");
+    const matrixVars = [];
+    const matrixDeclRe =
+      /\b(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(mat[234])\s+([A-Za-z_]\w*)(?!\s*\()/g;
+    let m;
+    while ((m = matrixDeclRe.exec(out)) !== null) {
+      const type = String(m[1] ?? "");
+      const name = String(m[2] ?? "");
+      if (!type || !name) continue;
+      matrixVars.push({ type, name });
+    }
+
+    for (const { type, name } of matrixVars) {
+      const accessRe = new RegExp(`\\b${name}\\s*\\[\\s*([^\\]]+)\\s*\\]`, "g");
+      out = out.replace(accessRe, (full, idxRaw, offset, whole) => {
+        const idxExpr = String(idxRaw ?? "").trim();
+        if (!idxExpr) return full;
+        if (/^\d+$/.test(idxExpr)) return full;
+
+        // Keep write targets intact; only rewrite read indexing.
+        const tail = String(whole ?? "").slice(Number(offset ?? 0) + full.length);
+        if (/^\s*(?:=|\+=|-=|\*=|\/=|%=|<<=|>>=|&=|\^=|\|=)/.test(tail)) return full;
+
+        if (type === "mat2") return `cpfx_mat2_col(${name}, int(${idxExpr}))`;
+        if (type === "mat3") return `cpfx_mat3_col(${name}, int(${idxExpr}))`;
+        if (type === "mat4") return `cpfx_mat4_col(${name}, int(${idxExpr}))`;
+        return full;
+      });
+    }
+
     return out;
   };
 
@@ -1842,6 +1935,7 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(new RegExp(`${lvalue}\\s*>>=\\s*([^;]+);`, "g"), "$1 = cpfx_shr($1, $2);");
   next = next.replace(new RegExp(`${lvalue}\\s*%=\\s*([^;]+);`, "g"), "$1 = cpfx_mod($1, $2);");
   next = rewriteDynamicArrayReadIndexing(next);
+  next = rewriteDynamicMatrixReadIndexing(next);
   next = unmaskComments(next);
   return next;
 }
@@ -2288,6 +2382,15 @@ vec3 cpfx_set_vec3_component(vec3 v, int idx, float value) {
   else if (idx == 1) v.y = value;
   else v.z = value;
   return v;
+}
+vec2 cpfx_mat2_col(mat2 m, int idx) {
+  return idx <= 0 ? m[0] : m[1];
+}
+vec3 cpfx_mat3_col(mat3 m, int idx) {
+  return idx <= 0 ? m[0] : (idx == 1 ? m[1] : m[2]);
+}
+vec4 cpfx_mat4_col(mat4 m, int idx) {
+  return idx <= 0 ? m[0] : (idx == 1 ? m[1] : (idx == 2 ? m[2] : m[3]));
 }
 
 mat2 cpfx_transpose(mat2 m) {
@@ -2994,6 +3097,15 @@ vec3 cpfx_set_vec3_component(vec3 v, int idx, float value) {
   else if (idx == 1) v.y = value;
   else v.z = value;
   return v;
+}
+vec2 cpfx_mat2_col(mat2 m, int idx) {
+  return idx <= 0 ? m[0] : m[1];
+}
+vec3 cpfx_mat3_col(mat3 m, int idx) {
+  return idx <= 0 ? m[0] : (idx == 1 ? m[1] : m[2]);
+}
+vec4 cpfx_mat4_col(mat4 m, int idx) {
+  return idx <= 0 ? m[0] : (idx == 1 ? m[1] : (idx == 2 ? m[2] : m[3]));
 }
 
 mat2 cpfx_transpose(mat2 m) {
