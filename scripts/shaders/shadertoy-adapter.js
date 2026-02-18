@@ -234,6 +234,23 @@ function rewriteFloatStepLoopsToCountedLoops(source) {
     return `for(int ${iterVar}=0; ${iterVar}<${iters}; ++${iterVar}){\n  float ${loopVar} = (${String(initExpr).trim()}) + float(${iterVar})*(${step}.0);`;
   });
 
+  // Fallback for dynamic-init float loops rejected by GLSL ES 1.00
+  // (for example: for(float n = fract(t); n < 31.; n++)).
+  const floatDynStepForRe =
+    /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<|>=|>)\s*([^;]+)\s*;\s*\1\s*\+=\s*([^)]+)\)\s*\{/g;
+  next = next.replace(floatDynStepForRe, (_full, loopVar, initExpr, cmpOp, boundExpr, stepExpr) => {
+    const iterVar = `cpfxDynLoopF${rewriteIndex++}`;
+    return `for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  float ${loopVar} = (${String(initExpr).trim()}) + float(${iterVar})*(${String(stepExpr).trim()});\n  if (!(${loopVar} ${cmpOp} ${String(boundExpr).trim()})) break;`;
+  });
+
+  const floatDynIncForRe =
+    /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<|>=|>)\s*([^;]+)\s*;\s*(\+\+\s*\1|\1\s*\+\+|--\s*\1|\1\s*--)\s*\)\s*\{/g;
+  next = next.replace(floatDynIncForRe, (_full, loopVar, initExpr, cmpOp, boundExpr, incExpr) => {
+    const iterVar = `cpfxDynLoopF${rewriteIndex++}`;
+    const step = String(incExpr).includes("--") ? "-1.0" : "1.0";
+    return `for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  float ${loopVar} = (${String(initExpr).trim()}) + float(${iterVar})*(${step});\n  if (!(${loopVar} ${cmpOp} ${String(boundExpr).trim()})) break;`;
+  });
+
   // Some GLSL ES compilers reject an empty increment expression in a for-loop.
   const floatNoIncForRe = /for\s*\(\s*float\s+([A-Za-z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<|>=|>)\s*([^;]+)\s*;\s*\)\s*\{/g;
   next = next.replace(
