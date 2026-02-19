@@ -939,6 +939,35 @@ export function createMenus({ moduleId, shaderManager }) {
       }
       return -1;
     }
+    _findSceneAlphaChannel(element) {
+      const root =
+        element instanceof HTMLElement
+          ? element
+          : document.createElement("div");
+      for (const index of [0, 1, 2, 3]) {
+        const mode = String(
+          root.querySelector(`[name="channel${index}Mode"]`)?.value ?? "",
+        )
+          .trim()
+          .toLowerCase();
+        if (mode === "scenecapture") return index;
+      }
+      return this._findFirstFreeTokenAlphaChannel(root);
+    }
+    _findInjectedAlphaChannelFromSource(sourceText) {
+      const source = String(sourceText ?? "");
+      const patterns = [
+        /vec4\s+fragToken\s*=\s*texture(?:2D)?\s*\(\s*iChannel([0-3])\s*,\s*uvToken\s*\)\s*;/,
+        /vec4\s+fragScene\s*=\s*texture(?:2D)?\s*\(\s*iChannel([0-3])\s*,\s*uvScene\s*\)\s*;/,
+      ];
+      for (const pattern of patterns) {
+        const match = pattern.exec(source);
+        if (!match) continue;
+        const idx = Number(match[1]);
+        if (Number.isInteger(idx) && idx >= 0 && idx <= 3) return idx;
+      }
+      return -1;
+    }
     _collectDefaultsFromElement(root) {
       const defaults = {};
       const booleanKeys = new Set([
@@ -1488,7 +1517,15 @@ export function createMenus({ moduleId, shaderManager }) {
       bindUi(dlg);
       setTimeout(() => bindUi(dlg), 0);
     }
-    _injectTokenAlphaIntoMainImage(sourceText, channelIndex = 0) {
+    _injectChannelAlphaIntoMainImage(
+      sourceText,
+      {
+        channelIndex = 0,
+        uvVarName = "uvToken",
+        sampleVarName = "fragToken",
+        alreadyReason = "Token alpha injection is already present in mainImage.",
+      } = {},
+    ) {
       const source = String(sourceText ?? "");
       const safeChannelIndex = Number.isInteger(Number(channelIndex))
         ? Math.max(0, Math.min(3, Number(channelIndex)))
@@ -1593,21 +1630,45 @@ export function createMenus({ moduleId, shaderManager }) {
 
       const body = source.slice(bodyOpen + 1, bodyClose);
       const hasStart =
-        /vec2\s+uvToken\s*=\s*fragCoord\.xy\s*\/\s*iResolution\.xy\s*;/.test(
-          body,
-        ) &&
         new RegExp(
-          `vec4\\s+fragToken\\s*=\\s*texture(?:2D)?\\s*\\(\\s*${channelUniform}\\s*,\\s*uvToken\\s*\\)\\s*;`,
+          `vec2\\s+${uvVarName}\\s*=\\s*fragCoord\\.xy\\s*\\/\\s*iResolution\\.xy\\s*;`,
+        ).test(body) &&
+        new RegExp(
+          `vec4\\s+${sampleVarName}\\s*=\\s*texture(?:2D)?\\s*\\(\\s*${channelUniform}\\s*,\\s*${uvVarName}\\s*\\)\\s*;`,
         ).test(body);
       const hasGenericStart =
-        /vec2\s+uvToken\s*=\s*fragCoord\.xy\s*\/\s*iResolution\.xy\s*;/.test(
+        new RegExp(
+          `vec2\\s+${uvVarName}\\s*=\\s*fragCoord\\.xy\\s*\\/\\s*iResolution\\.xy\\s*;`,
+        ).test(body) &&
+        new RegExp(
+          `vec4\\s+${sampleVarName}\\s*=\\s*texture(?:2D)?\\s*\\(\\s*iChannel[0-3]\\s*,\\s*${uvVarName}\\s*\\)\\s*;`,
+        ).test(body);
+      const hasEnd =
+        new RegExp(
+          `fragColor\\s*=\\s*vec4\\s*\\(\\s*fragColor\\.rgb\\s*\\*\\s*${sampleVarName}\\.a\\s*,\\s*${sampleVarName}\\.a\\s*\\)\\s*;`,
+        ).test(body) ||
+        new RegExp(
+          `fragColor\\s*=\\s*vec4\\s*\\(\\s*vec3\\s*\\(\\s*fragColor\\s*\\)\\s*,\\s*${sampleVarName}\\.a\\s*\\)\\s*;`,
+        ).test(body);
+      const hasAnyAlphaEnd =
+        /fragColor\s*=\s*vec4\s*\(\s*fragColor\.rgb\s*\*\s*([A-Za-z_]\w*)\.a\s*,\s*\1\.a\s*\)\s*;/.test(
           body,
-        ) &&
-        /vec4\s+fragToken\s*=\s*texture(?:2D)?\s*\(\s*iChannel[0-3]\s*,\s*uvToken\s*\)\s*;/.test(
+        ) ||
+        /fragColor\s*=\s*vec4\s*\(\s*vec3\s*\(\s*fragColor\s*\)\s*,\s*([A-Za-z_]\w*)\.a\s*\)\s*;/.test(
           body,
         );
-      const hasEnd =
+      const hasKnownTokenEnd =
+        /fragColor\s*=\s*vec4\s*\(\s*fragColor\.rgb\s*\*\s*fragToken\.a\s*,\s*fragToken\.a\s*\)\s*;/.test(
+          body,
+        ) ||
         /fragColor\s*=\s*vec4\s*\(\s*vec3\s*\(\s*fragColor\s*\)\s*,\s*fragToken\.a\s*\)\s*;/.test(
+          body,
+        );
+      const hasKnownSceneEnd =
+        /fragColor\s*=\s*vec4\s*\(\s*fragColor\.rgb\s*\*\s*fragScene\.a\s*,\s*fragScene\.a\s*\)\s*;/.test(
+          body,
+        ) ||
+        /fragColor\s*=\s*vec4\s*\(\s*vec3\s*\(\s*fragColor\s*\)\s*,\s*fragScene\.a\s*\)\s*;/.test(
           body,
         );
 
@@ -1615,7 +1676,20 @@ export function createMenus({ moduleId, shaderManager }) {
         return {
           changed: false,
           source,
-          reason: "Token alpha injection is already present in mainImage.",
+          reason: alreadyReason,
+        };
+      }
+      if (
+        !(hasStart || hasGenericStart) &&
+        hasAnyAlphaEnd &&
+        !hasKnownTokenEnd &&
+        !hasKnownSceneEnd
+      ) {
+        return {
+          changed: false,
+          source,
+          reason:
+            "An alpha injection already exists in mainImage. Remove it before injecting a different alpha source.",
         };
       }
 
@@ -1629,18 +1703,54 @@ export function createMenus({ moduleId, shaderManager }) {
       const indent = bodyIndentMatch?.[1] ?? `${functionIndent}  `;
 
       let nextBody = body;
+      if (!(hasStart || hasGenericStart) && (hasKnownTokenEnd || hasKnownSceneEnd)) {
+        // Replace known indy-fx alpha-injection scaffolding so scene/token inject buttons can switch modes.
+        nextBody = nextBody
+          .replace(
+            /\s*vec2\s+uvToken\s*=\s*fragCoord\.xy\s*\/\s*iResolution\.xy\s*;\s*/g,
+            "\n",
+          )
+          .replace(
+            /\s*vec4\s+fragToken\s*=\s*texture(?:2D)?\s*\(\s*iChannel[0-3]\s*,\s*uvToken\s*\)\s*;\s*/g,
+            "\n",
+          )
+          .replace(
+            /\s*vec2\s+uvScene\s*=\s*fragCoord\.xy\s*\/\s*iResolution\.xy\s*;\s*/g,
+            "\n",
+          )
+          .replace(
+            /\s*vec4\s+fragScene\s*=\s*texture(?:2D)?\s*\(\s*iChannel[0-3]\s*,\s*uvScene\s*\)\s*;\s*/g,
+            "\n",
+          )
+          .replace(
+            /\s*fragColor\s*=\s*vec4\s*\(\s*fragColor\.rgb\s*\*\s*fragToken\.a\s*,\s*fragToken\.a\s*\)\s*;\s*/g,
+            "\n",
+          )
+          .replace(
+            /\s*fragColor\s*=\s*vec4\s*\(\s*vec3\s*\(\s*fragColor\s*\)\s*,\s*fragToken\.a\s*\)\s*;\s*/g,
+            "\n",
+          )
+          .replace(
+            /\s*fragColor\s*=\s*vec4\s*\(\s*fragColor\.rgb\s*\*\s*fragScene\.a\s*,\s*fragScene\.a\s*\)\s*;\s*/g,
+            "\n",
+          )
+          .replace(
+            /\s*fragColor\s*=\s*vec4\s*\(\s*vec3\s*\(\s*fragColor\s*\)\s*,\s*fragScene\.a\s*\)\s*;\s*/g,
+            "\n",
+          );
+      }
 
       if (!hasStart) {
         const startLines =
-          `${indent}vec2 uvToken = fragCoord.xy / iResolution.xy;\n\n` +
-          `${indent}vec4 fragToken = texture(${channelUniform}, uvToken);`;
+          `${indent}vec2 ${uvVarName} = fragCoord.xy / iResolution.xy;\n\n` +
+          `${indent}vec4 ${sampleVarName} = texture(${channelUniform}, ${uvVarName});`;
         const leading = nextBody.startsWith("\n") || nextBody.startsWith("\r\n") ? "" : "\n";
         nextBody = `${leading}${startLines}\n${nextBody}`;
       }
 
       if (!hasEnd) {
         const tail = /\r?\n\s*$/.test(nextBody) ? "" : "\n";
-        nextBody = `${nextBody}${tail}${indent}fragColor = vec4(fragColor.rgb*fragToken.a, fragToken.a);\n`;
+        nextBody = `${nextBody}${tail}${indent}fragColor = vec4(fragColor.rgb*${sampleVarName}.a, ${sampleVarName}.a);\n`;
       }
 
       const nextSource =
@@ -1649,6 +1759,22 @@ export function createMenus({ moduleId, shaderManager }) {
         source.slice(bodyClose);
 
       return { changed: nextSource !== source, source: nextSource };
+    }
+    _injectTokenAlphaIntoMainImage(sourceText, channelIndex = 0) {
+      return this._injectChannelAlphaIntoMainImage(sourceText, {
+        channelIndex,
+        uvVarName: "uvToken",
+        sampleVarName: "fragToken",
+        alreadyReason: "Token alpha injection is already present in mainImage.",
+      });
+    }
+    _injectSceneAlphaIntoMainImage(sourceText, channelIndex = 0) {
+      return this._injectChannelAlphaIntoMainImage(sourceText, {
+        channelIndex,
+        uvVarName: "uvScene",
+        sampleVarName: "fragScene",
+        alreadyReason: "Scene alpha injection is already present in mainImage.",
+      });
     }
     async _openShaderVariableEditor(root, refreshPreview) {
       const sourceInputs = [];
@@ -2386,70 +2512,95 @@ export function createMenus({ moduleId, shaderManager }) {
           }
         }
 
-        const injectTokenAlphaBtn = root.querySelector(
-          "[data-action='inject-token-alpha']",
-        );
-        if (injectTokenAlphaBtn instanceof HTMLElement) {
-          if (injectTokenAlphaBtn.dataset.indyFxInjectTokenAlphaBound !== "1") {
-            injectTokenAlphaBtn.dataset.indyFxInjectTokenAlphaBound = "1";
-            injectTokenAlphaBtn.addEventListener("click", () => {
-              const sourceInput = root.querySelector('[name="editSource"]');
-              if (!(sourceInput instanceof HTMLTextAreaElement)) {
-                ui.notifications.warn("Shader source editor not found.");
-                return;
-              }
-              const channelIndex =
-                this._findFirstFreeTokenAlphaChannel(root);
-              if (channelIndex < 0) {
-                ui.notifications.warn(
-                  "No free channel available. Set one channel to None (black), Empty, or Auto first.",
-                );
-                return;
-              }
+        const bindAlphaInjectButton = ({
+          selector,
+          boundKey,
+          pickChannel,
+          injectSource,
+          targetMode,
+          noChannelMessage,
+          noChangeMessage,
+          appliedLabel,
+        }) => {
+          const button = root.querySelector(selector);
+          if (!(button instanceof HTMLElement)) return;
+          if (button.dataset[boundKey] === "1") return;
+          button.dataset[boundKey] = "1";
+          button.addEventListener("click", () => {
+            const sourceInput = root.querySelector('[name="editSource"]');
+            if (!(sourceInput instanceof HTMLTextAreaElement)) {
+              ui.notifications.warn("Shader source editor not found.");
+              return;
+            }
+            const existingChannelIndex = this._findInjectedAlphaChannelFromSource(
+              sourceInput.value,
+            );
+            const channelIndex =
+              existingChannelIndex >= 0
+                ? existingChannelIndex
+                : Number(pickChannel(root));
+            if (!Number.isInteger(channelIndex) || channelIndex < 0 || channelIndex > 3) {
+              ui.notifications.warn(noChannelMessage);
+              return;
+            }
 
-              const injected = this._injectTokenAlphaIntoMainImage(
-                sourceInput.value,
-                channelIndex,
-              );
-              if (!injected.changed) {
-                ui.notifications.info(
-                  injected.reason ?? "Token alpha injection made no changes.",
-                );
-                return;
-              }
+            const injected = injectSource(sourceInput.value, channelIndex);
+            if (!injected?.changed) {
+              ui.notifications.info(injected?.reason ?? noChangeMessage);
+              return;
+            }
 
-              const modeInput = root.querySelector(
-                `[name="channel${channelIndex}Mode"]`,
-              );
-              if (
-                modeInput instanceof HTMLInputElement ||
-                modeInput instanceof HTMLSelectElement
-              ) {
-                modeInput.value = "tokenTileImage";
-              }
-              const pathInput = root.querySelector(
-                `[name="channel${channelIndex}Path"]`,
-              );
-              if (pathInput instanceof HTMLInputElement) {
-                pathInput.value = "";
-              }
-              const channelSourceInput = root.querySelector(
-                `[name="channel${channelIndex}Source"]`,
-              );
-              if (channelSourceInput instanceof HTMLTextAreaElement) {
-                channelSourceInput.value = "";
-              }
+            const modeInput = root.querySelector(`[name="channel${channelIndex}Mode"]`);
+            if (
+              modeInput instanceof HTMLInputElement ||
+              modeInput instanceof HTMLSelectElement
+            ) {
+              modeInput.value = targetMode;
+            }
+            const pathInput = root.querySelector(`[name="channel${channelIndex}Path"]`);
+            if (pathInput instanceof HTMLInputElement) {
+              pathInput.value = "";
+            }
+            const channelSourceInput = root.querySelector(
+              `[name="channel${channelIndex}Source"]`,
+            );
+            if (channelSourceInput instanceof HTMLTextAreaElement) {
+              channelSourceInput.value = "";
+            }
 
-              sourceInput.value = String(injected.source ?? sourceInput.value);
-              sourceInput.dispatchEvent(new Event("change", { bubbles: true }));
-              onChannelChanged();
-              refreshPreview();
-              ui.notifications.info(
-                `Token alpha injection applied using iChannel${channelIndex}.`,
-              );
-            });
-          }
-        }
+            sourceInput.value = String(injected.source ?? sourceInput.value);
+            sourceInput.dispatchEvent(new Event("change", { bubbles: true }));
+            onChannelChanged();
+            refreshPreview();
+            ui.notifications.info(
+              `${appliedLabel} using iChannel${channelIndex}.`,
+            );
+          });
+        };
+        bindAlphaInjectButton({
+          selector: "[data-action='inject-scene-alpha']",
+          boundKey: "indyFxInjectSceneAlphaBound",
+          pickChannel: (node) => this._findSceneAlphaChannel(node),
+          injectSource: (text, index) =>
+            this._injectSceneAlphaIntoMainImage(text, index),
+          targetMode: "sceneCapture",
+          noChannelMessage:
+            "No scene channel available. Configure a channel as Scene Capture, or free one by setting it to None (black), Empty, or Auto.",
+          noChangeMessage: "Scene alpha injection made no changes.",
+          appliedLabel: "Scene alpha injection applied",
+        });
+        bindAlphaInjectButton({
+          selector: "[data-action='inject-token-alpha']",
+          boundKey: "indyFxInjectTokenAlphaBound",
+          pickChannel: (node) => this._findFirstFreeTokenAlphaChannel(node),
+          injectSource: (text, index) =>
+            this._injectTokenAlphaIntoMainImage(text, index),
+          targetMode: "tokenTileImage",
+          noChannelMessage:
+            "No free channel available. Set one channel to None (black), Empty, or Auto first.",
+          noChangeMessage: "Token alpha injection made no changes.",
+          appliedLabel: "Token alpha injection applied",
+        });
         const captureThumbnailBtn = root.querySelector(
           "[data-action='capture-editor-thumbnail']",
         );
