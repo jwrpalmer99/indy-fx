@@ -51,20 +51,25 @@ function isSanitizeColorEnabled() {
   }
 }
 
-function getAdapterVariantKey() {
+function resolveSanitizeColorEnabled(override) {
+  if (typeof override === "boolean") return override;
+  return isSanitizeColorEnabled();
+}
+
+function getAdapterVariantKey({ sanitizeColor } = {}) {
   const ns = isNumericStabilityRewriteEnabled() ? "ns1" : "ns0";
-  const sc = isSanitizeColorEnabled() ? "sc1" : "sc0";
-  return `v4|${ns}|${sc}`;
+  const sc = resolveSanitizeColorEnabled(sanitizeColor) ? "sc1" : "sc0";
+  return `v5|${ns}|${sc}`;
 }
 
 function buildSanitizeColorHelpers(enabled) {
   if (!enabled) return "";
   return `
 float cpfx_isFinite(float v) {
-  return (v == v && abs(v) < 1e30) ? 1.0 : 0.0;
+  return ((v == v) && ((v - v) == 0.0)) ? 1.0 : 0.0;
 }
 float cpfx_sanitizeScalar(float v, float fallback) {
-  return (v == v && abs(v) < 1e30) ? v : fallback;
+  return cpfx_isFinite(v) > 0.5 ? v : fallback;
 }
 vec4 cpfx_sanitizeColor(vec4 c) {
   float vr = cpfx_isFinite(c.r);
@@ -132,8 +137,8 @@ function getValidatedShaderSourceCached(source) {
   );
 }
 
-function getCompatibilityRewrittenSourceCached(validatedSource) {
-  const key = `${getAdapterVariantKey()}|${String(validatedSource ?? "")}`;
+function getCompatibilityRewrittenSourceCached(validatedSource, { sanitizeColor } = {}) {
+  const key = `${getAdapterVariantKey({ sanitizeColor })}|${String(validatedSource ?? "")}`;
   const cached = getCachedLru(_rewrittenSourceCache, key);
   if (typeof cached === "string") return cached;
   const rewritten = applyCompatibilityRewrites(String(validatedSource ?? ""));
@@ -2597,14 +2602,14 @@ export function extractReferencedChannels(source) {
   return result.slice();
 }
 
-export function adaptShaderToyFragment(source) {
+export function adaptShaderToyFragment(source, { sanitizeColor } = {}) {
   const validated = getValidatedShaderSourceCached(source);
-  const cacheKey = `${getAdapterVariantKey()}|${validated}`;
+  const cacheKey = `${getAdapterVariantKey({ sanitizeColor })}|${validated}`;
   const cached = getCachedLru(_fragmentCache, cacheKey);
   if (typeof cached === "string") return cached;
-  const body = getCompatibilityRewrittenSourceCached(validated);
+  const body = getCompatibilityRewrittenSourceCached(validated, { sanitizeColor });
   const compatMacros = buildCompatMacroPreamble(body);
-  const sanitizeColorEnabled = isSanitizeColorEnabled();
+  const sanitizeColorEnabled = resolveSanitizeColorEnabled(sanitizeColor);
   const sanitizeColorHelpers = buildSanitizeColorHelpers(sanitizeColorEnabled);
   const sanitizeColorStage = sanitizeColorEnabled
     ? "  shaderColor = cpfx_sanitizeColor(shaderColor);"
@@ -3372,18 +3377,17 @@ ${sanitizeColorStage}
   );
 }
 
-export function adaptShaderToyBufferFragment(source) {
+export function adaptShaderToyBufferFragment(source, { sanitizeColor } = {}) {
   const validated = getValidatedShaderSourceCached(source);
-  const cacheKey = `${getAdapterVariantKey()}|${validated}`;
+  const cacheKey = `${getAdapterVariantKey({ sanitizeColor })}|${validated}`;
   const cached = getCachedLru(_bufferFragmentCache, cacheKey);
   if (typeof cached === "string") return cached;
-  const body = getCompatibilityRewrittenSourceCached(validated);
+  const body = getCompatibilityRewrittenSourceCached(validated, { sanitizeColor });
   const compatMacros = buildCompatMacroPreamble(body);
-  const sanitizeColorEnabled = isSanitizeColorEnabled();
-  const sanitizeColorHelpers = buildSanitizeColorHelpers(sanitizeColorEnabled);
-  const sanitizeColorStage = sanitizeColorEnabled
-    ? "  shaderColor = cpfx_sanitizeColor(shaderColor);"
-    : "";
+  // Do not sanitize buffer-pass outputs: many shaders intentionally store
+  // non-color data in buffers and sanitization can alter semantics.
+  const sanitizeColorHelpers = "";
+  const sanitizeColorStage = "";
   const fragment = `
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable

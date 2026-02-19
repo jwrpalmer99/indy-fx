@@ -2071,17 +2071,23 @@ export class ShaderManager {
     });
 
     const tDefinition0 = perfNow();
+    const previewChannelConfig = this.getRecordChannelConfig(previewRecord);
+    const previewHasBufferPass =
+      channelConfigHasMode(previewChannelConfig, "buffer") ||
+      channelConfigHasMode(previewChannelConfig, "bufferSelf");
     const previewDefinition = {
       id: previewRecord.id,
       label: sanitizeName(previewRecord.label ?? previewRecord.name),
       type: "imported",
       requiresResolution: true,
       usesNoiseTexture: true,
-      channelConfig: this.getRecordChannelConfig(previewRecord),
+      channelConfig: previewChannelConfig,
       referencedChannels: toArray(previewRecord.referencedChannels)
         .map((v) => Number(v))
         .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
-      fragment: adaptShaderToyFragment(previewRecord.source),
+      fragment: adaptShaderToyFragment(previewRecord.source, {
+        sanitizeColor: previewHasBufferPass ? false : undefined,
+      }),
     };
     phaseMs.definitionBuild = perfNow() - tDefinition0;
 
@@ -3637,17 +3643,24 @@ export class ShaderManager {
       referencedChannels = toArray(record.referencedChannels);
     }
 
+    const channelConfig = this.getRecordChannelConfig(record);
+    const hasBufferPass =
+      channelConfigHasMode(channelConfig, "buffer") ||
+      channelConfigHasMode(channelConfig, "bufferSelf");
+
     return {
       id: record.id,
       label: sanitizeName(record.label ?? record.name),
       type: "imported",
       requiresResolution: true,
       usesNoiseTexture: true,
-      channelConfig: this.getRecordChannelConfig(record),
+      channelConfig,
       referencedChannels: toArray(referencedChannels)
         .map((v) => Number(v))
         .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
-      fragment: adaptShaderToyFragment(record.source),
+      fragment: adaptShaderToyFragment(record.source, {
+        sanitizeColor: hasBufferPass ? false : undefined,
+      }),
     };
   }
 
@@ -3666,17 +3679,24 @@ export class ShaderManager {
       ? referencedChannels
       : extractReferencedChannels(validatedSource);
 
+    const channelConfig = this.getRecordChannelConfig(record);
+    const hasBufferPass =
+      channelConfigHasMode(channelConfig, "buffer") ||
+      channelConfigHasMode(channelConfig, "bufferSelf");
+
     return {
       id: record.id,
       label: sanitizeName(record.label ?? record.name),
       type: "imported",
       requiresResolution: true,
       usesNoiseTexture: true,
-      channelConfig: this.getRecordChannelConfig(record),
+      channelConfig,
       referencedChannels: toArray(refs)
         .map((v) => Number(v))
         .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
-      fragment: adaptShaderToyFragment(validatedSource),
+      fragment: adaptShaderToyFragment(validatedSource, {
+        sanitizeColor: hasBufferPass ? false : undefined,
+      }),
     };
   }
 

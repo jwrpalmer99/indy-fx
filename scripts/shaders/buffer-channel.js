@@ -7,6 +7,7 @@ const MODULE_ID = "indy-fx";
 const PIXI_TEXTURE_TYPES = typeof PIXI !== "undefined" ? PIXI?.TYPES ?? {} : {};
 const PIXI_FLOAT_TYPE = PIXI_TEXTURE_TYPES?.FLOAT ?? null;
 const PIXI_HALF_FLOAT_TYPE = PIXI_TEXTURE_TYPES?.HALF_FLOAT ?? null;
+let _didWarnBufferPrecisionFallback = false;
 
 function isBufferDebugEnabled() {
   try {
@@ -95,6 +96,22 @@ function chooseBufferRenderTextureType() {
   return null;
 }
 
+function warnBufferPrecisionFallbackOnce({ gl, renderTextureType } = {}) {
+  if (_didWarnBufferPrecisionFallback) return;
+  if (!gl) return;
+  if (renderTextureType === PIXI_FLOAT_TYPE || renderTextureType === PIXI_HALF_FLOAT_TYPE) return;
+
+  _didWarnBufferPrecisionFallback = true;
+  const message =
+    "Indy FX: ShaderToy buffer render textures are using 8-bit fallback (no float/half-float color buffer support). Some multi-pass shaders may render incorrectly.";
+  try {
+    ui?.notifications?.warn?.(message, { permanent: false });
+  } catch (_err) {
+    // Non-fatal.
+  }
+  console.warn(`${MODULE_ID} | ${message}`);
+}
+
 export class ShaderToyBufferChannel {
   constructor({ source, size = 512, width = null, height = null } = {}) {
     const fallbackSize = Math.max(2, Math.round(Number(size) || 512));
@@ -115,6 +132,10 @@ export class ShaderToyBufferChannel {
     this.size = Math.max(this.width, this.height);
     this.time = 0;
     this._renderTextureType = chooseBufferRenderTextureType();
+    warnBufferPrecisionFallbackOnce({
+      gl: getRendererGlContext().gl,
+      renderTextureType: this._renderTextureType,
+    });
     this.texture = makeRenderTexture(
       this.width,
       this.height,
