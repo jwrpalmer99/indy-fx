@@ -294,7 +294,16 @@ export function updateShaderTimeUniforms(shader, dt, speed, timeTicks) {
   if ("uTime" in shader.uniforms) shader.uniforms.uTime = shader.uniforms.time;
   if ("iTime" in shader.uniforms) shader.uniforms.iTime = shader.uniforms.time;
   if ("iTimeDelta" in shader.uniforms) shader.uniforms.iTimeDelta = shaderDt;
-  if ("iFrame" in shader.uniforms) shader.uniforms.iFrame = (shader.uniforms.iFrame ?? 0) + 1;
+  if ("iFrame" in shader.uniforms) {
+    // Match ShaderToy-style semantics: current frame number is visible during this
+    // draw, then the counter advances for the next draw.
+    let frame = Number(shader._indyFxFrameCounter);
+    if (!Number.isFinite(frame) || frame < 0) {
+      frame = Math.max(0, Number(shader.uniforms.iFrame) || 0);
+    }
+    shader.uniforms.iFrame = frame;
+    shader._indyFxFrameCounter = frame + 1;
+  }
   if ("iFrameRate" in shader.uniforms) shader.uniforms.iFrameRate = shaderDt > 0 ? (1 / shaderDt) : 60;
   if ("iDate" in shader.uniforms) {
     const now = new Date();

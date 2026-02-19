@@ -47,7 +47,7 @@ function resolveSanitizeColorEnabled(override) {
 function getAdapterVariantKey({ sanitizeColor } = {}) {
   const sc = resolveSanitizeColorEnabled(sanitizeColor) ? "sc1" : "sc0";
   // Bump when adapter code generation changes to avoid stale in-session cache.
-  return `v7|${sc}`;
+  return `v10|${sc}`;
 }
 
 function buildSanitizeColorHelpers(enabled) {
@@ -2789,7 +2789,7 @@ vec4 cpfx_texelFetch(sampler2D s, int channelIndex, ivec2 p, int lod) {
   res = max(res, vec2(1.0));
   vec2 uv = (vec2(p) + 0.5) / res;
   if (cpfx_channelVflip(idx) > 0.5) uv.y = 1.0 - uv.y;
-  return textureCompat(s, uv);
+  return cpfx_textureLod(s, uv, float((lod < 0) ? 0 : lod));
 }
 ivec2 cpfx_textureSize(sampler2D s, int channelIndex, int lod) {
   int idx = channelIndex;
@@ -2805,7 +2805,7 @@ ivec2 cpfx_textureSize(sampler2D s, int channelIndex, int lod) {
 vec4 cpfx_texelFetchAny(sampler2D s, ivec2 p, int lod) {
   vec2 res = max(iResolution.xy, vec2(1.0));
   vec2 uv = (vec2(p) + 0.5) / res;
-  return textureCompat(s, uv);
+  return cpfx_textureLod(s, uv, float((lod < 0) ? 0 : lod));
 }
 ivec2 cpfx_textureSizeAny(sampler2D s, int lod) {
   return ivec2(max(iResolution.xy, vec2(1.0)));
@@ -3160,6 +3160,18 @@ ivec4 cpfx_shr(ivec4 a, ivec4 b) { return ivec4(cpfx_shr(a.x, b.x), cpfx_shr(a.y
 int cpfx_bitand(int a, int b) {
   int aa = cpfx_wrap_u24(a);
   int bb = cpfx_wrap_u24(b);
+  if (bb == 0) return 0;
+  if (bb == 255) return int(mod(float(aa), 256.0));
+  if (bb == 511) return int(mod(float(aa), 512.0));
+  if (bb == 1023) return int(mod(float(aa), 1024.0));
+  if (bb == 2047) return int(mod(float(aa), 2048.0));
+  if (bb == 4095) return int(mod(float(aa), 4096.0));
+  if (bb == 8191) return int(mod(float(aa), 8192.0));
+  if (bb == 16383) return int(mod(float(aa), 16384.0));
+  if (bb == 32767) return int(mod(float(aa), 32768.0));
+  if (bb == 65535) return int(mod(float(aa), 65536.0));
+  if (bb == 8388607) return int(mod(float(aa), 8388608.0));
+  if (bb == 16777215) return aa;
   int result = 0;
   int bit = 1;
   for (int k = 0; k < 24; ++k) {
@@ -3378,6 +3390,24 @@ export function adaptShaderToyBufferFragment(source, { sanitizeColor } = {}) {
   // non-color data in buffers and sanitization can alter semantics.
   const sanitizeColorHelpers = "";
   const sanitizeColorStage = "";
+  const bufferOutputSafetyHelpers = `
+float cpfx_buf_isFinite(float v) {
+  return ((v == v) && ((v - v) == 0.0)) ? 1.0 : 0.0;
+}
+float cpfx_buf_sanitizeScalar(float v, float clampAbs) {
+  float outV = cpfx_buf_isFinite(v) > 0.5 ? v : 0.0;
+  if (clampAbs > 0.0) outV = clamp(outV, -clampAbs, clampAbs);
+  return outV;
+}
+vec4 cpfx_sanitizeBufferOut(vec4 c, float clampAbs) {
+  return vec4(
+    cpfx_buf_sanitizeScalar(c.r, clampAbs),
+    cpfx_buf_sanitizeScalar(c.g, clampAbs),
+    cpfx_buf_sanitizeScalar(c.b, clampAbs),
+    cpfx_buf_sanitizeScalar(c.a, clampAbs)
+  );
+}
+`;
   const fragment = `
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable
@@ -3437,6 +3467,7 @@ uniform float shaderFlipX;
 uniform float shaderFlipY;
 uniform float cpfxPreserveTransparent;
 uniform float cpfxForceOpaqueCaptureAlpha;
+uniform float cpfxBufferValueClamp;
 uniform vec2 resolution;
 ${compatMacros}
 
@@ -3451,6 +3482,7 @@ vec2 cpfx_rotate(vec2 p, float a) {
   return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
 }
 ${sanitizeColorHelpers}
+${bufferOutputSafetyHelpers}
 
 float cpfx_sinh(float x) {
   return 0.5 * (exp(x) - exp(-x));
@@ -3561,7 +3593,7 @@ vec4 cpfx_texelFetch(sampler2D s, int channelIndex, ivec2 p, int lod) {
   res = max(res, vec2(1.0));
   vec2 uv = (vec2(p) + 0.5) / res;
   if (cpfx_channelVflip(idx) > 0.5) uv.y = 1.0 - uv.y;
-  return textureCompat(s, uv);
+  return cpfx_textureLod(s, uv, float((lod < 0) ? 0 : lod));
 }
 ivec2 cpfx_textureSize(sampler2D s, int channelIndex, int lod) {
   int idx = channelIndex;
@@ -3577,7 +3609,7 @@ ivec2 cpfx_textureSize(sampler2D s, int channelIndex, int lod) {
 vec4 cpfx_texelFetchAny(sampler2D s, ivec2 p, int lod) {
   vec2 res = max(iResolution.xy, vec2(1.0));
   vec2 uv = (vec2(p) + 0.5) / res;
-  return textureCompat(s, uv);
+  return cpfx_textureLod(s, uv, float((lod < 0) ? 0 : lod));
 }
 ivec2 cpfx_textureSizeAny(sampler2D s, int lod) {
   return ivec2(max(iResolution.xy, vec2(1.0)));
@@ -3932,6 +3964,18 @@ ivec4 cpfx_shr(ivec4 a, ivec4 b) { return ivec4(cpfx_shr(a.x, b.x), cpfx_shr(a.y
 int cpfx_bitand(int a, int b) {
   int aa = cpfx_wrap_u24(a);
   int bb = cpfx_wrap_u24(b);
+  if (bb == 0) return 0;
+  if (bb == 255) return int(mod(float(aa), 256.0));
+  if (bb == 511) return int(mod(float(aa), 512.0));
+  if (bb == 1023) return int(mod(float(aa), 1024.0));
+  if (bb == 2047) return int(mod(float(aa), 2048.0));
+  if (bb == 4095) return int(mod(float(aa), 4096.0));
+  if (bb == 8191) return int(mod(float(aa), 8192.0));
+  if (bb == 16383) return int(mod(float(aa), 16384.0));
+  if (bb == 32767) return int(mod(float(aa), 32768.0));
+  if (bb == 65535) return int(mod(float(aa), 65536.0));
+  if (bb == 8388607) return int(mod(float(aa), 8388608.0));
+  if (bb == 16777215) return aa;
   int result = 0;
   int bit = 1;
   for (int k = 0; k < 24; ++k) {
@@ -4092,6 +4136,7 @@ void main() {
   vec4 shaderColor = vec4(0.0, 0.0, 0.0, 1.0);
   mainImage(shaderColor, fragCoord);
 ${sanitizeColorStage}
+  shaderColor = cpfx_sanitizeBufferOut(shaderColor, cpfxBufferValueClamp);
   gl_FragColor = shaderColor;
 }`;
   return setCachedLru(

@@ -487,6 +487,37 @@ function normalizeSamplerWrap(value, fallback = "") {
   return fallback;
 }
 
+function normalizeSamplerInternal(value, fallback = "") {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (
+    raw === "byte" ||
+    raw === "ubyte" ||
+    raw === "uint8" ||
+    raw === "u8" ||
+    raw === "unsigned_byte"
+  ) {
+    return "byte";
+  }
+  if (
+    raw === "half" ||
+    raw === "half_float" ||
+    raw === "half-float" ||
+    raw === "float16" ||
+    raw === "f16"
+  ) {
+    return "half";
+  }
+  if (
+    raw === "float" ||
+    raw === "float32" ||
+    raw === "f32"
+  ) {
+    return "float";
+  }
+  return fallback;
+}
+
 function getChannelSamplerDefaults(mode) {
   const normalized = normalizeChannelMode(mode);
   if (normalized === "cubemap") return { filter: "linear", wrap: "clamp" };
@@ -672,9 +703,12 @@ function normalizeChannelInput(raw, depth = 0) {
       source: "",
       channels: {},
       size: DEFAULT_BUFFER_SIZE,
+      samplerInternal: "",
     };
   const nested = {};
   const nestedRaw = raw.channels;
+  const normalizedMode = normalizeChannelMode(raw.mode);
+  const samplerInternal = normalizeSamplerInternal(raw.samplerInternal, "");
   if (
     depth < MAX_BUFFER_CHAIN_DEPTH &&
     nestedRaw &&
@@ -690,7 +724,7 @@ function normalizeChannelInput(raw, depth = 0) {
     }
   }
   return {
-    mode: normalizeChannelMode(raw.mode),
+    mode: normalizedMode,
     path: applyKnownShaderToyMediaReplacement(String(raw.path ?? "").trim()),
     source: String(raw.source ?? "").trim(),
     channels: nested,
@@ -707,6 +741,7 @@ function normalizeChannelInput(raw, depth = 0) {
       raw.samplerVflip === undefined || raw.samplerVflip === null
         ? null
         : parseBooleanLike(raw.samplerVflip),
+    samplerInternal,
   };
 }
 
@@ -3541,6 +3576,7 @@ export class ShaderManager {
         samplerFilter: "",
         samplerWrap: "",
         samplerVflip: null,
+        samplerInternal: "",
       };
     }
 
@@ -3590,6 +3626,7 @@ export class ShaderManager {
           samplerFilter: candidate.samplerFilter,
           samplerWrap: candidate.samplerWrap,
           samplerVflip: candidate.samplerVflip,
+          samplerInternal: candidate.samplerInternal,
         };
       }
     }
@@ -3646,6 +3683,7 @@ export class ShaderManager {
           samplerFilter: candidate.samplerFilter,
           samplerWrap: candidate.samplerWrap,
           samplerVflip: candidate.samplerVflip,
+          samplerInternal: candidate.samplerInternal,
         };
       }
     }
@@ -4445,6 +4483,7 @@ export class ShaderManager {
             volumeUvParams: volumeUvParams[index],
             samplerFilter: normalizeSamplerFilter(effectiveChannelCfg?.samplerFilter, ""),
             samplerWrap: normalizeSamplerWrap(effectiveChannelCfg?.samplerWrap, ""),
+            samplerInternal: normalizeSamplerInternal(effectiveChannelCfg?.samplerInternal, ""),
             samplerWrapResolved: resolvedSamplerWrap,
             samplerWrapUniform: channelWraps[index],
             samplerVflip: channelVflips[index] === 1,
@@ -4631,11 +4670,13 @@ export class ShaderManager {
     if (!value || typeof value !== "object") return {};
     const samplerFilter = normalizeSamplerFilter(value.filter, "");
     const samplerWrap = normalizeSamplerWrap(value.wrap, "");
+    const samplerInternal = normalizeSamplerInternal(value.internal, "");
     const hasVflip = Object.prototype.hasOwnProperty.call(value, "vflip");
     const samplerVflip = hasVflip ? parseBooleanLike(value.vflip) : null;
     const next = {};
     if (samplerFilter) next.samplerFilter = samplerFilter;
     if (samplerWrap) next.samplerWrap = samplerWrap;
+    if (samplerInternal) next.samplerInternal = samplerInternal;
     if (hasVflip) next.samplerVflip = samplerVflip;
     return next;
   }

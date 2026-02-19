@@ -43,6 +43,37 @@ function normalizeSamplerWrap(value, fallback = "") {
   return fallback;
 }
 
+function normalizeSamplerInternal(value, fallback = "") {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (
+    raw === "byte" ||
+    raw === "ubyte" ||
+    raw === "uint8" ||
+    raw === "u8" ||
+    raw === "unsigned_byte"
+  ) {
+    return "byte";
+  }
+  if (
+    raw === "half" ||
+    raw === "half_float" ||
+    raw === "half-float" ||
+    raw === "float16" ||
+    raw === "f16"
+  ) {
+    return "half";
+  }
+  if (
+    raw === "float" ||
+    raw === "float32" ||
+    raw === "f32"
+  ) {
+    return "float";
+  }
+  return fallback;
+}
+
 function applySamplerToBaseTexture(
   base,
   { samplerFilter = "", samplerWrap = "", fallbackFilter = "nearest", fallbackWrap = "clamp" } = {},
@@ -184,9 +215,52 @@ function makeRenderTexture(width, height, type = null) {
   return PIXI.RenderTexture.create(options);
 }
 
-function chooseBufferRenderTextureType() {
+function getBufferValueClampForRenderType(renderTextureType) {
+  // Half-float targets overflow to +/-Inf above ~65504. Clamp writes so
+  // packed-data buffers (for example velocity encodings) don't poison samples.
+  if (renderTextureType === PIXI_HALF_FLOAT_TYPE) return 60000;
+  return 0;
+}
+
+function chooseBufferRenderTextureType(preferredInternal = "") {
   const { renderer, gl } = getRendererGlContext();
   if (!renderer || !gl) return null;
+  const preferred = normalizeSamplerInternal(preferredInternal, "auto");
+  if (preferred === "byte") return null;
+  if (preferred === "half") {
+    if (
+      PIXI_HALF_FLOAT_TYPE &&
+      (canRenderType(gl, PIXI_HALF_FLOAT_TYPE) ||
+        probeRenderTextureType(renderer, gl, PIXI_HALF_FLOAT_TYPE))
+    ) {
+      return PIXI_HALF_FLOAT_TYPE;
+    }
+    if (
+      PIXI_FLOAT_TYPE &&
+      (canRenderType(gl, PIXI_FLOAT_TYPE) ||
+        probeRenderTextureType(renderer, gl, PIXI_FLOAT_TYPE))
+    ) {
+      return PIXI_FLOAT_TYPE;
+    }
+    return null;
+  }
+  if (preferred === "float") {
+    if (
+      PIXI_FLOAT_TYPE &&
+      (canRenderType(gl, PIXI_FLOAT_TYPE) ||
+        probeRenderTextureType(renderer, gl, PIXI_FLOAT_TYPE))
+    ) {
+      return PIXI_FLOAT_TYPE;
+    }
+    if (
+      PIXI_HALF_FLOAT_TYPE &&
+      (canRenderType(gl, PIXI_HALF_FLOAT_TYPE) ||
+        probeRenderTextureType(renderer, gl, PIXI_HALF_FLOAT_TYPE))
+    ) {
+      return PIXI_HALF_FLOAT_TYPE;
+    }
+    return null;
+  }
   if (
     PIXI_FLOAT_TYPE &&
     (canRenderType(gl, PIXI_FLOAT_TYPE) ||
@@ -258,8 +332,14 @@ function probeRenderTextureType(renderer, gl, type) {
   return ok;
 }
 
-function warnBufferPrecisionFallbackOnce({ gl, renderTextureType } = {}) {
+function warnBufferPrecisionFallbackOnce({
+  gl,
+  renderTextureType,
+  preferredInternal = "",
+} = {}) {
   if (_didWarnBufferPrecisionFallback) return;
+  const preferred = normalizeSamplerInternal(preferredInternal, "auto");
+  if (preferred === "byte") return;
   if (!gl) return;
   if (renderTextureType === PIXI_FLOAT_TYPE || renderTextureType === PIXI_HALF_FLOAT_TYPE) return;
 
@@ -275,7 +355,13 @@ function warnBufferPrecisionFallbackOnce({ gl, renderTextureType } = {}) {
 }
 
 export class ShaderToyBufferChannel {
-  constructor({ source, size = 512, width = null, height = null } = {}) {
+  constructor({
+    source,
+    size = 512,
+    width = null,
+    height = null,
+    samplerInternal = "",
+  } = {}) {
     const fallbackSize = Math.max(2, Math.round(Number(size) || 512));
     const widthRaw = Number(width);
     const heightRaw = Number(height);
@@ -293,10 +379,13 @@ export class ShaderToyBufferChannel {
     );
     this.size = Math.max(this.width, this.height);
     this.time = 0;
-    this._renderTextureType = chooseBufferRenderTextureType();
+    this._lastUpdateMs = 0;
+    this._samplerInternal = normalizeSamplerInternal(samplerInternal, "auto");
+    this._renderTextureType = chooseBufferRenderTextureType(this._samplerInternal);
     warnBufferPrecisionFallbackOnce({
       gl: getRendererGlContext().gl,
       renderTextureType: this._renderTextureType,
+      preferredInternal: this._samplerInternal,
     });
     this.texture = makeRenderTexture(
       this.width,
@@ -352,6 +441,9 @@ export class ShaderToyBufferChannel {
       cpfxSamplerVflip1: 0,
       cpfxSamplerVflip2: 0,
       cpfxSamplerVflip3: 0,
+      cpfxBufferValueClamp: getBufferValueClampForRenderType(
+        this._renderTextureType,
+      ),
       shaderScale: 1.0,
       shaderScaleXY: [1, 1],
       shaderRotation: 0,
@@ -403,6 +495,7 @@ export class ShaderToyBufferChannel {
       width: this.width,
       height: this.height,
       renderTextureType: this._renderTextureType,
+      samplerInternal: this._samplerInternal,
       selfChannelCount: this._selfChannelIndices.size,
     });
   }
@@ -480,6 +573,10 @@ export class ShaderToyBufferChannel {
 
   update(dtSeconds = 1 / 60, renderer = canvas?.app?.renderer) {
     if (!this.texture || !this.mesh || !renderer) return;
+    const tStart =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : 0;
     const dtValue = Number(dtSeconds);
     // Some ticker paths can report zero dt; keep feedback buffers animated.
     // Only clamp pathological dt spikes to avoid runaway steps while preserving
@@ -530,6 +627,10 @@ export class ShaderToyBufferChannel {
       tryGenerateMipmapsForRenderTexture(renderer, this._historyTexture);
     }
     uniforms.iFrame = currentFrame + 1;
+    if (tStart > 0) {
+      const tEnd = performance.now();
+      this._lastUpdateMs = Math.max(0, tEnd - tStart);
+    }
   }
 
   destroy() {

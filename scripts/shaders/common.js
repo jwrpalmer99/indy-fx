@@ -63,6 +63,7 @@ export function buildBaseUniforms(cfg) {
     cpfxTokenRotation: toFiniteNumber(cfg.cpfxTokenRotation, 0),
     shaderFlipX: flipHorizontal ? 1.0 : 0.0,
     shaderFlipY: flipVertical ? 1.0 : 0.0,
+    cpfxBufferValueClamp: toFiniteNumber(cfg.cpfxBufferValueClamp, 0),
     colorA: hexToRgb01(cfg.colorA ?? 0xFF4A9A),
     colorB: hexToRgb01(cfg.colorB ?? 0xFFB14A)
   };
