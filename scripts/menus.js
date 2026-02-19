@@ -10,6 +10,7 @@ import {
   hexToVecRgb,
   vecToHex,
 } from "./shader-variable-utils.js";
+import { applyEditorSettingTooltips } from "./editor-tooltips.js";
 export function createMenus({ moduleId, shaderManager }) {
   const MODULE_ID = moduleId;
   const isDebugLoggingEnabled = () => {
@@ -123,6 +124,7 @@ export function createMenus({ moduleId, shaderManager }) {
   function ensureDialogVerticalScroll(candidate, { viewportHeight = "88vh" } = {}) {
     const root = resolveElementRoot(candidate);
     if (!(root instanceof Element)) return;
+    applyEditorSettingTooltips(root);
     const host =
       root.matches?.(".window-app, .application")
         ? root

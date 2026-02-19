@@ -49,6 +49,7 @@ import {
   hexToVecRgb as hexToVecRgbForShaderVariable,
   vecToHex as vecToHexForShaderVariable,
 } from "./shader-variable-utils.js";
+import { applyEditorSettingTooltips } from "./editor-tooltips.js";
 const MODULE_ID = "indy-fx";
 const SOCKET = `module.${MODULE_ID}`;
 const shaderManager = new ShaderManager(MODULE_ID);
@@ -2631,6 +2632,7 @@ async function openDocumentShaderConfigDialog(app) {
   const ensureDialogVerticalScroll = (candidate, { viewportHeight = "88vh" } = {}) => {
     const root = resolveDialogRoot(candidate);
     if (!(root instanceof Element)) return;
+    applyEditorSettingTooltips(root);
     const host =
       root.matches?.(".window-app, .application")
         ? root
