@@ -9,7 +9,7 @@ https://github.com/user-attachments/assets/1e7c158e-9e5c-4d2e-bc8e-319638b709d5
 <img width="1351" height="1024" alt="image" src="https://github.com/user-attachments/assets/e174e564-509f-426e-b4b9-65c5b96a4cd6" />
 
 This file is the GM/player usage guide.
-For macro/API details, see `README_API.md`.
+For macro/API details, see [README_API.md](./README_API.md).
 
 ## Requirements
 - Foundry VTT v13+
@@ -148,6 +148,6 @@ Notes:
 - Region persistence requires the `indyFX` behavior to be present.
 
 ## Related Docs
-- API/macros/options: `README_API.md`
-- Shader editor setting guide: `readme_settings.md`
-- Licensing/attributions: `license.md`
+- API/macros/options: [README_API.md](./README_API.md)
+- Shader editor setting guide: [README_settings.md](./README_settings.md)
+- Licensing/attributions: [license.md](./license.md)
