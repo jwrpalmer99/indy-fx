@@ -640,13 +640,6 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
       dtRaw > 10 ? (dtRaw / 1000) : (dtRaw / 60),
     ) / 1000,
   );
-  const runtimeCaptureMaxFps = getClientShaderCaptureMaxFps();
-  const runtimeBufferDt = consumeThrottledUpdateDt(
-    source,
-    dtSeconds,
-    runtimeCaptureMaxFps,
-    "_indyFxRuntimeBufferAccumMs",
-  );
   const runtimeDrawMaxFps = getClientShaderDrawMaxFps();
   const runtimeDrawDt = consumeThrottledUpdateDt(
     source,
@@ -692,11 +685,11 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     const runtimeBuffers = Array.isArray(layer?._indyFxRuntimeBuffers)
       ? layer._indyFxRuntimeBuffers
       : [];
-    if (runtimeBuffers.length > 0 && runtimeBufferDt > 0) {
+    if (runtimeBuffers.length > 0 && runtimeDrawDt > 0) {
       const renderer = canvas?.app?.renderer;
       for (const runtimeBuffer of runtimeBuffers) {
         try {
-          runtimeBuffer?.update?.(runtimeBufferDt, renderer);
+          runtimeBuffer?.update?.(runtimeDrawDt, renderer);
         } catch (_err) {
           // Non-fatal.
         }
@@ -5109,9 +5102,9 @@ function shaderOn(tokenId, opts = {}) {
     }
     if (debugGfx) updateDebugGfx(debugGfx, liveTok, worldLayer, effectExtent);
     if (spriteDebugGfx) updateSpriteDebugGfx(spriteDebugGfx, effectExtent);
-    if (runtimeBufferChannels.length && captureUpdateDt > 0) {
+    if (runtimeBufferChannels.length && drawUpdateDt > 0) {
       for (const runtimeBuffer of runtimeBufferChannels) {
-        runtimeBuffer.update(captureUpdateDt * speedScale);
+        runtimeBuffer.update(drawUpdateDt * speedScale);
       }
     }
     if (sceneAreaChannels.length && captureUpdateDt > 0) {
@@ -5421,9 +5414,9 @@ function shaderOnTemplate(templateId, opts = {}) {
     }
     if (debugGfx) updateDebugGfxAtWorld(debugGfx, liveCenter, worldLayer, effectExtent);
     if (spriteDebugGfx) updateSpriteDebugGfx(spriteDebugGfx, effectExtent);
-    if (runtimeBufferChannels.length && captureUpdateDt > 0) {
+    if (runtimeBufferChannels.length && drawUpdateDt > 0) {
       for (const runtimeBuffer of runtimeBufferChannels) {
-        runtimeBuffer.update(captureUpdateDt * speedScale);
+        runtimeBuffer.update(drawUpdateDt * speedScale);
       }
     }
     if (sceneAreaChannels.length && captureUpdateDt > 0) {
@@ -5746,9 +5739,9 @@ function shaderOnTile(tileId, opts = {}) {
     if (debugGfx) updateDebugGfxAtWorld(debugGfx, liveMetrics.center, worldLayer, Math.max(liveShaderSize.width, liveShaderSize.height) * 0.5);
     if (spriteDebugGfx) updateSpriteDebugGfx(spriteDebugGfx, Math.max(liveShaderSize.width, liveShaderSize.height) * 0.5);
 
-    if (captureUpdateDt > 0) {
+    if (drawUpdateDt > 0) {
       for (const runtimeBuffer of runtimeBufferChannels) {
-        runtimeBuffer.update(captureUpdateDt * speedScale);
+        runtimeBuffer.update(drawUpdateDt * speedScale);
       }
     }
 
@@ -6438,9 +6431,9 @@ function shaderOnRegion(regionId, opts = {}) {
         );
       }
 
-      if (captureUpdateDt > 0) {
+      if (drawUpdateDt > 0) {
         for (const runtimeBuffer of cluster.runtimeBufferChannels) {
-          runtimeBuffer.update(captureUpdateDt * speedScale);
+          runtimeBuffer.update(drawUpdateDt * speedScale);
         }
       }
 

@@ -361,10 +361,10 @@ export class ShaderToyBufferChannel {
     if (!this.texture || !this.mesh || !renderer) return;
     const dtValue = Number(dtSeconds);
     // Some ticker paths can report zero dt; keep feedback buffers animated.
-    // Clamp very large dt spikes (low FPS/tab throttling) to avoid unstable
-    // jumps in complex multipass shaders that depend on incremental updates.
+    // Only clamp pathological dt spikes to avoid runaway steps while preserving
+    // normal-time sync with the parent shader.
     const dtRaw = Number.isFinite(dtValue) && dtValue > 0 ? dtValue : 1 / 60;
-    const dt = Math.min(dtRaw, 1 / 24);
+    const dt = Math.min(dtRaw, 0.25);
     const uniforms = this.mesh.shader.uniforms;
 
     const currentFrame = Number.isFinite(Number(uniforms.iFrame))
