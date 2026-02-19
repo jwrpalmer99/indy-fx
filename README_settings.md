@@ -126,4 +126,4 @@ Each channel card controls one shader input texture.
 - If an imported shader looks upside down, test `Capture Flip Vertical`.
 - If a capture-based shader looks offset/rotated, verify `Capture Rotation` and token `Rotate With Token`.
 - For performance, reduce capture/update FPS and capture resolution in client performance settings.
-- If edges look too harsh, enable `Gradient Mask` and adjust `Gradient Fade Start`.
+- If edges of circular (token/template shader) look too harsh, enable `Gradient Mask` and adjust `Gradient Fade Start`.

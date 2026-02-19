@@ -9,7 +9,8 @@ https://github.com/user-attachments/assets/1e7c158e-9e5c-4d2e-bc8e-319638b709d5
 <img width="1351" height="1024" alt="image" src="https://github.com/user-attachments/assets/e174e564-509f-426e-b4b9-65c5b96a4cd6" />
 
 This file is the GM/player usage guide.
-For macro/API details, see [README_API.md](./README_API.md).
+- For macro/API details, see [README_API.md](./README_API.md).
+- For settings details, see [README_settings.md](./README_settings.md)
 
 ## Requirements
 - Foundry VTT v13+
@@ -26,16 +27,17 @@ For macro/API details, see [README_API.md](./README_API.md).
 ## Adding a Shader to a Token (or Tile)
 - Shaders can be scaled to fit a token - you can either edit an existing shader or right click one and duplicate then edit the copy.
 
-1. Double click the shader to open the editor.
+1. Double click the shader to open the editor. 
 2. Select "Scale to Token".
 3. Select "Rotate with Token" if you want.
 4. Usually you will want:
     Capture Scale: 1
     Capture Rotation 0
 5. Select a suitable alpha (transparency) value for your effect if it doesn't provide it's own transparency.
+6. (Ensure you set the Layer how you want it - normally Inherit from FX layer, unless you want to draw beneath the token).
 
 If you save that and drag/drop on token it will be the same size..
-You can then right click it in library and create token macro - this will create a macro in IndyFX folder that will add the effect to selected token(s).
+You can then right click it in library and create token macro - this will create a macro in IndyFX folder that will add the effect to selected token(s) with your currently saved settings.
 
 >[!NOTE]  
 >To remove/disable/edit the shader on the token you can access it through token hud or via a macro (there is a macro in IndyFX compendium for this "ShaderOffSelectedTiles")
