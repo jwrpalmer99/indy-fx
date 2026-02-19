@@ -9,6 +9,103 @@ const PIXI_FLOAT_TYPE = PIXI_TEXTURE_TYPES?.FLOAT ?? null;
 const PIXI_HALF_FLOAT_TYPE = PIXI_TEXTURE_TYPES?.HALF_FLOAT ?? null;
 let _didWarnBufferPrecisionFallback = false;
 const _renderTypeProbeCache = new Map();
+function normalizeSamplerFilter(value, fallback = "") {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "nearest" || raw === "point") return "nearest";
+  if (raw === "linear" || raw === "bilinear") return "linear";
+  if (
+    raw === "mipmap" ||
+    raw === "mip" ||
+    raw === "trilinear" ||
+    raw === "linear-mipmap" ||
+    raw === "linear_mipmap"
+  ) {
+    return "mipmap";
+  }
+  return fallback;
+}
+
+function normalizeSamplerWrap(value, fallback = "") {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "clamp" || raw === "clamp_to_edge") return "clamp";
+  if (
+    raw === "mirror" ||
+    raw === "mirrored" ||
+    raw === "mirroredrepeat" ||
+    raw === "mirrorrepeat" ||
+    raw === "mirrored_repeat"
+  ) {
+    return "mirror";
+  }
+  if (raw === "repeat") return "repeat";
+  return fallback;
+}
+
+function applySamplerToBaseTexture(
+  base,
+  { samplerFilter = "", samplerWrap = "", fallbackFilter = "nearest", fallbackWrap = "clamp" } = {},
+) {
+  if (!base) return;
+  const filter = normalizeSamplerFilter(samplerFilter, fallbackFilter);
+  const wrap = normalizeSamplerWrap(samplerWrap, fallbackWrap);
+
+  if (filter === "nearest") {
+    base.scaleMode = PIXI.SCALE_MODES.NEAREST;
+    base.mipmap = PIXI.MIPMAP_MODES.OFF;
+  } else if (filter === "mipmap") {
+    base.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    base.mipmap = PIXI.MIPMAP_MODES.ON;
+  } else {
+    base.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    base.mipmap = PIXI.MIPMAP_MODES.OFF;
+  }
+
+  if (wrap === "clamp") {
+    base.wrapMode = PIXI.WRAP_MODES.CLAMP;
+  } else if (wrap === "mirror") {
+    base.wrapMode = PIXI.WRAP_MODES.MIRRORED_REPEAT ?? PIXI.WRAP_MODES.REPEAT;
+  } else {
+    base.wrapMode = PIXI.WRAP_MODES.REPEAT;
+  }
+
+  base.update?.();
+}
+
+function isPowerOfTwo(value) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  return (n & (n - 1)) === 0;
+}
+
+function tryGenerateMipmapsForRenderTexture(renderer, renderTexture) {
+  const base = renderTexture?.baseTexture ?? null;
+  if (!base) return;
+  if (base.mipmap !== PIXI.MIPMAP_MODES.ON) return;
+  const gl = renderer?.gl ?? renderer?.context?.gl ?? null;
+  if (!gl) return;
+  const isWebGL2 =
+    typeof WebGL2RenderingContext !== "undefined" &&
+    gl instanceof WebGL2RenderingContext;
+  const width = Number(base.realWidth ?? base.width ?? renderTexture?.width ?? 0);
+  const height = Number(base.realHeight ?? base.height ?? renderTexture?.height ?? 0);
+  if (!isWebGL2 && (!isPowerOfTwo(width) || !isPowerOfTwo(height))) return;
+
+  try {
+    const textureSystem = renderer?.texture ?? renderer?.textureSystem ?? null;
+    textureSystem?.bind?.(base, 0);
+    const uid = renderer?.CONTEXT_UID ?? renderer?.context?.uid;
+    const glTexEntry =
+      uid != null ? base?._glTextures?.[uid] : null;
+    const glTexture = glTexEntry?.texture ?? glTexEntry ?? null;
+    if (!glTexture) return;
+    gl.bindTexture(gl.TEXTURE_2D, glTexture);
+    gl.generateMipmap(gl.TEXTURE_2D);
+  } catch (_err) {
+    // Non-fatal; shader will still run without explicit mip generation.
+  }
+}
 
 function isBufferDebugEnabled() {
   try {
@@ -211,18 +308,14 @@ export class ShaderToyBufferChannel {
       this.height,
       this._renderTextureType,
     );
-    if (this.texture?.baseTexture) {
-      this.texture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
-      this.texture.baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF;
-      this.texture.baseTexture.wrapMode = PIXI.WRAP_MODES.CLAMP;
-      this.texture.baseTexture.update?.();
-    }
-    if (this._historyTexture?.baseTexture) {
-      this._historyTexture.baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
-      this._historyTexture.baseTexture.mipmap = PIXI.MIPMAP_MODES.OFF;
-      this._historyTexture.baseTexture.wrapMode = PIXI.WRAP_MODES.CLAMP;
-      this._historyTexture.baseTexture.update?.();
-    }
+    applySamplerToBaseTexture(this.texture?.baseTexture, {
+      samplerFilter: "nearest",
+      samplerWrap: "clamp",
+    });
+    applySamplerToBaseTexture(this._historyTexture?.baseTexture, {
+      samplerFilter: "nearest",
+      samplerWrap: "clamp",
+    });
     this._selfChannelIndices = new Set();
 
     this.fallbackTextures = CHANNEL_INDICES.map(() =>
@@ -343,6 +436,12 @@ export class ShaderToyBufferChannel {
       Math.max(1, Number(layout?.[2]) || 1),
     ];
     uniforms[`cpfxSamplerVflip${index}`] = options?.samplerVflip ? 1 : 0;
+    if (options?.samplerFilter || options?.samplerWrap) {
+      applySamplerToBaseTexture((uniforms[uniformName] ?? null)?.baseTexture, {
+        samplerFilter: options?.samplerFilter,
+        samplerWrap: options?.samplerWrap,
+      });
+    }
   }
 
   setChannelSelf(index, resolution = [this.width, this.height], options = {}) {
@@ -355,6 +454,10 @@ export class ShaderToyBufferChannel {
     uniforms[`cpfxChannelType${index}`] = 0;
     uniforms[`cpfxVolumeLayout${index}`] = [1, 1, 1];
     uniforms[`cpfxSamplerVflip${index}`] = options?.samplerVflip ? 1 : 0;
+    applySamplerToBaseTexture(this._historyTexture?.baseTexture, {
+      samplerFilter: options?.samplerFilter,
+      samplerWrap: options?.samplerWrap,
+    });
   }
 
   update(dtSeconds = 1 / 60, renderer = canvas?.app?.renderer) {
@@ -398,6 +501,7 @@ export class ShaderToyBufferChannel {
       renderTexture: this.texture,
       clear: true,
     });
+    tryGenerateMipmapsForRenderTexture(renderer, this.texture);
 
     if (this._selfChannelIndices.size > 0 && this._historyTexture) {
       this._historyCopySprite.texture = this.texture;
@@ -405,6 +509,7 @@ export class ShaderToyBufferChannel {
         renderTexture: this._historyTexture,
         clear: true,
       });
+      tryGenerateMipmapsForRenderTexture(renderer, this._historyTexture);
     }
     uniforms.iFrame = currentFrame + 1;
   }

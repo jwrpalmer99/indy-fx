@@ -3757,6 +3757,25 @@ export class ShaderManager {
       Math.round(configuredSizeRaw) === DEFAULT_BUFFER_SIZE;
     const bufferWidth = useHintedSize ? hintedWidth : configuredSize;
     const bufferHeight = useHintedSize ? hintedHeight : configuredSize;
+    const resolveCache = options?.resolveCache instanceof Map
+      ? options.resolveCache
+      : null;
+    const cacheShaderId = String(options?.shaderId ?? "").trim();
+    const cachePreviewMode = options?.previewMode === true ? "1" : "0";
+    const cacheTargetType = String(options?.targetType ?? "").trim().toLowerCase();
+    const cacheTargetId = String(options?.targetId ?? "").trim();
+    const cacheKey = mode === "buffer" && source
+      ? [
+        "buffer",
+        source,
+        String(bufferWidth),
+        String(bufferHeight),
+        cacheShaderId,
+        cachePreviewMode,
+        cacheTargetType,
+        cacheTargetId,
+      ].join("::")
+      : "";
     const emptyResult = {
       texture: getSolidTexture([0, 0, 0, 255], 2),
       resolution: [2, 2],
@@ -3997,6 +4016,9 @@ export class ShaderManager {
     }
 
     if (mode === "buffer" && source) {
+      if (resolveCache && cacheKey && resolveCache.has(cacheKey)) {
+        return resolveCache.get(cacheKey);
+      }
       try {
         const runtimeBuffer = new ShaderToyBufferChannel({
           source,
@@ -4004,9 +4026,18 @@ export class ShaderManager {
           height: bufferHeight,
           size: Math.max(bufferWidth, bufferHeight),
         });
-        const runtimeCaptureChannels = [];
-        const runtimeBuffers = [];
-        const runtimeImageChannels = [];
+        const result = {
+          texture: runtimeBuffer.texture,
+          resolution: [bufferWidth, bufferHeight],
+          runtimeCapture: false,
+          runtimeCaptureSize: 0,
+          runtimeCaptureChannels: [],
+          runtimeBuffers: [runtimeBuffer],
+          runtimeImageChannels: [],
+        };
+        if (resolveCache && cacheKey) {
+          resolveCache.set(cacheKey, result);
+        }
         for (const index of CHANNEL_INDICES) {
           const key = `iChannel${index}`;
           const childCfg = channelConfig?.channels?.[key] ??
@@ -4029,6 +4060,8 @@ export class ShaderManager {
               [bufferWidth, bufferHeight],
               {
                 samplerVflip: parseBooleanLike(childCfg?.samplerVflip),
+                samplerFilter: childCfg?.samplerFilter,
+                samplerWrap: childCfg?.samplerWrap,
               },
             );
             continue;
@@ -4057,33 +4090,31 @@ export class ShaderManager {
                   ? resolveVolumeLayoutForChannel(childCfg, resolved.resolution)
                   : [1, 1, 1],
               samplerVflip: parseBooleanLike(childCfg?.samplerVflip),
+              samplerFilter: childCfg?.samplerFilter,
+              samplerWrap: childCfg?.samplerWrap,
             },
           );
           if (resolved.runtimeCapture) {
-            runtimeCaptureChannels.push({
+            result.runtimeCaptureChannels.push({
               size: resolved.runtimeCaptureSize ?? 512,
               resolution: resolved.runtimeCaptureResolution ?? resolved.resolution ?? null,
               runtimeBuffer,
               channel: index,
             });
           }
-          runtimeCaptureChannels.push(
-            ...(resolved.runtimeCaptureChannels ?? []),
-          );
-          runtimeBuffers.push(...(resolved.runtimeBuffers ?? []));
-          runtimeImageChannels.push(...(resolved.runtimeImageChannels ?? []));
+          if (resolved !== result) {
+            result.runtimeCaptureChannels.push(
+              ...(resolved.runtimeCaptureChannels ?? []),
+            );
+            result.runtimeBuffers.push(...(resolved.runtimeBuffers ?? []));
+            result.runtimeImageChannels.push(...(resolved.runtimeImageChannels ?? []));
+          }
         }
-        runtimeBuffers.push(runtimeBuffer);
-        return {
-          texture: runtimeBuffer.texture,
-          resolution: [bufferWidth, bufferHeight],
-          runtimeCapture: false,
-          runtimeCaptureSize: 0,
-          runtimeCaptureChannels,
-          runtimeBuffers,
-          runtimeImageChannels,
-        };
+        return result;
       } catch (err) {
+        if (resolveCache && cacheKey) {
+          resolveCache.delete(cacheKey);
+        }
         console.error(
           `${this.moduleId} | Failed to build imported buffer channel`,
           err,
@@ -4267,6 +4298,7 @@ export class ShaderManager {
     const runtimeBufferChannels = [];
     const runtimeImageChannels = [];
     const seenRuntimeBuffers = new Set();
+    const importedResolveCache = new Map();
     if (def.type === "imported") {
       uniforms.uTime = cfg.uTime ?? uniforms.time ?? 0;
       uniforms.iTime = uniforms.uTime;
@@ -4338,6 +4370,7 @@ export class ShaderManager {
             bufferWidthHint: importedBufferResolutionHint[0],
             bufferHeightHint: importedBufferResolutionHint[1],
             bufferResolutionHint: importedBufferResolutionHint,
+            resolveCache: importedResolveCache,
           },
         );
         applyChannelSamplerToTexture(
