@@ -54,7 +54,7 @@ function isSanitizeColorEnabled() {
 function getAdapterVariantKey() {
   const ns = isNumericStabilityRewriteEnabled() ? "ns1" : "ns0";
   const sc = isSanitizeColorEnabled() ? "sc1" : "sc0";
-  return `v3|${ns}|${sc}`;
+  return `v4|${ns}|${sc}`;
 }
 
 function buildSanitizeColorHelpers(enabled) {
@@ -1679,7 +1679,7 @@ function applyCompatibilityRewrites(source) {
     }
 
     const iterVar = `cpfxEmptyLoop${emptyForRewriteIndex++}`;
-    const stepStmt = stepExpr ? `\n  ${stepExpr};` : "";
+    const stepStmtRaw = stepExpr ? `\n  ${stepExpr};` : "";
 
     let replacement = "";
     let usedFixedCount = false;
@@ -1687,10 +1687,14 @@ function applyCompatibilityRewrites(source) {
       condExpr.match(/^([A-Za-z_]\w*)\s*(\+\+|--)\s*(<=|<|>=|>)\s*(.+)$/);
     const preIncCond =
       condExpr.match(/^(\+\+|--)\s*([A-Za-z_]\w*)\s*(<=|<|>=|>)\s*(.+)$/);
-    const condLoopVar = postIncCond
+    const simpleCond =
+      condExpr.match(/^([A-Za-z_]\w*)\s*(<=|<|>=|>)\s*(.+)$/);
+    let condLoopVar = postIncCond
       ? String(postIncCond[1] ?? "")
       : preIncCond
       ? String(preIncCond[2] ?? "")
+      : simpleCond
+      ? String(simpleCond[1] ?? "")
       : "";
     const condIncOp = postIncCond
       ? String(postIncCond[2] ?? "")
@@ -1701,16 +1705,52 @@ function applyCompatibilityRewrites(source) {
       ? String(postIncCond[3] ?? "")
       : preIncCond
       ? String(preIncCond[3] ?? "")
+      : simpleCond
+      ? String(simpleCond[2] ?? "")
       : "";
     const condBoundExpr = postIncCond
       ? String(postIncCond[4] ?? "")
       : preIncCond
       ? String(preIncCond[4] ?? "")
+      : simpleCond
+      ? String(simpleCond[3] ?? "")
       : "";
     const isPreInc = !postIncCond && !!preIncCond;
 
     if (condLoopVar) {
-      const stepValue = condIncOp === "--" ? -1 : 1;
+      let stepValue = condIncOp === "--" ? -1 : 1;
+      let stepConsumedByFixedLoop = false;
+      if (!condIncOp) {
+        const stepTrim = String(stepExpr ?? "").trim();
+        const postStep = new RegExp(`^${condLoopVar}\\s*(\\+\\+|--)$`).exec(stepTrim);
+        const preStep = new RegExp(`^(\\+\\+|--)\\s*${condLoopVar}$`).exec(stepTrim);
+        const plusEqStep = new RegExp(`^${condLoopVar}\\s*\\+=\\s*(.+)$`).exec(stepTrim);
+        const minusEqStep = new RegExp(`^${condLoopVar}\\s*-=\\s*(.+)$`).exec(stepTrim);
+        if (postStep || preStep) {
+          const op = String((postStep?.[1] ?? preStep?.[1]) ?? "++");
+          stepValue = op === "--" ? -1 : 1;
+          stepConsumedByFixedLoop = true;
+        } else if (plusEqStep) {
+          const plusV = evalNumericExpressionLocal(plusEqStep[1], scalarLoopConsts);
+          if (Number.isFinite(plusV)) {
+            stepValue = plusV;
+            stepConsumedByFixedLoop = true;
+          } else {
+            condLoopVar = "";
+          }
+        } else if (minusEqStep) {
+          const minusV = evalNumericExpressionLocal(minusEqStep[1], scalarLoopConsts);
+          if (Number.isFinite(minusV)) {
+            stepValue = -minusV;
+            stepConsumedByFixedLoop = true;
+          } else {
+            condLoopVar = "";
+          }
+        } else {
+          condLoopVar = "";
+        }
+      }
+      const stepStmt = stepConsumedByFixedLoop ? "" : stepStmtRaw;
       let initValue = NaN;
       const initAssignMatch = initExpr.match(/^([A-Za-z_]\w*)\s*=\s*(.+)$/);
       if (!initExpr) {
@@ -1722,24 +1762,32 @@ function applyCompatibilityRewrites(source) {
         initValue = evalNumericExpressionLocal(initAssignMatch[2], scalarLoopConsts);
       }
       const boundValue = evalNumericExpressionLocal(condBoundExpr, scalarLoopConsts);
-      const cmpInit = isPreInc ? (initValue + stepValue) : initValue;
+      const cmpInit = condIncOp
+        ? (isPreInc ? (initValue + stepValue) : initValue)
+        : initValue;
       const iters = computeLoopIterationsLocal(cmpInit, boundValue, stepValue, condCmp);
       const stepMutatesLoopVar = new RegExp(
         `(^|[^A-Za-z0-9_])${condLoopVar}\\s*(?:\\+\\+|--|[+\\-*/]?=)`,
       ).test(stepExpr);
+      const forbiddenStepMutation = condIncOp
+        ? stepMutatesLoopVar
+        : false;
 
       if (
         Number.isFinite(iters) &&
         iters >= 0 &&
         iters <= 8192 &&
         Number.isFinite(initValue) &&
-        !stepMutatesLoopVar
+        !forbiddenStepMutation
       ) {
         const initLiteral = toFloatLiteral(initValue);
         const stepLiteral = toFloatLiteral(stepValue);
+        const iterExpr = condIncOp
+          ? `${iterVar} + 1`
+          : `${iterVar}`;
         replacement =
           `for(int ${iterVar}=0; ${iterVar}<${Math.floor(iters)}; ++${iterVar}){\n` +
-          `  ${condLoopVar} = (${initLiteral}) + float(${iterVar} + 1) * (${stepLiteral});\n` +
+          `  ${condLoopVar} = (${initLiteral}) + float(${iterExpr}) * (${stepLiteral});\n` +
           `  ${body}${stepStmt}\n}`;
         usedFixedCount = true;
       }
@@ -1750,7 +1798,7 @@ function applyCompatibilityRewrites(source) {
       replacement =
         `${initStmt}for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n` +
         `  if (!(${condExpr})) break;\n` +
-        `  ${body}${stepStmt}\n}`;
+        `  ${body}${stepStmtRaw}\n}`;
     }
     next = `${next.slice(0, forStart)}${replacement}${next.slice(sliceEnd)}`;
     // Rescan from this location so nested non-declaration for-loops in the
