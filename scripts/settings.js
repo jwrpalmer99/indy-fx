@@ -31,7 +31,6 @@ export const SHADER_SETTINGS_KEYS = [
 export const DEBUG_SETTINGS_KEYS = [
   "shaderDebug",
   "shaderDebugMode",
-  "shaderNumericStabilityRewrite",
   "shaderSanitizeColor",
 ];
 
@@ -193,15 +192,6 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
       tokenRotation: "token rotation (cpfxTokenRotation)"
     },
     default: "off"
-  });
-
-  game.settings.register(moduleId, "shaderNumericStabilityRewrite", {
-    name: "Numeric stability rewrite",
-    hint: "Client preference. Applies adapter rewrites that reduce NaN/Inf artifacts in imported ShaderToy shaders.",
-    scope: "client",
-    config: false,
-    type: Boolean,
-    default: true,
   });
 
   game.settings.register(moduleId, "shaderSanitizeColor", {

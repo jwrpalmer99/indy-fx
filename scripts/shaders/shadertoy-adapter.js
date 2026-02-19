@@ -27,18 +27,6 @@ const _bufferFragmentCache = new Map();
 const _referencedChannelsCache = new Map();
 const ADAPTER_MODULE_ID = "indy-fx";
 
-function isNumericStabilityRewriteEnabled() {
-  try {
-    const value = game?.settings?.get?.(
-      ADAPTER_MODULE_ID,
-      "shaderNumericStabilityRewrite",
-    );
-    return value !== false;
-  } catch (_err) {
-    return true;
-  }
-}
-
 function isSanitizeColorEnabled() {
   try {
     const value = game?.settings?.get?.(
@@ -57,9 +45,8 @@ function resolveSanitizeColorEnabled(override) {
 }
 
 function getAdapterVariantKey({ sanitizeColor } = {}) {
-  const ns = isNumericStabilityRewriteEnabled() ? "ns1" : "ns0";
   const sc = resolveSanitizeColorEnabled(sanitizeColor) ? "sc1" : "sc0";
-  return `v5|${ns}|${sc}`;
+  return `v6|${sc}`;
 }
 
 function buildSanitizeColorHelpers(enabled) {
@@ -622,7 +609,6 @@ function rewriteTopLevelRedeclaredLocals(source) {
   return next;
 }
 function applyCompatibilityRewrites(source) {
-  const numericStabilityRewriteEnabled = isNumericStabilityRewriteEnabled();
   const injectMainImageParameterAliases = (value) => {
     const text = String(value ?? "");
     const mainImageHeadRe =
@@ -738,18 +724,6 @@ function applyCompatibilityRewrites(source) {
       /\btextureSize\s*\(\s*([A-Za-z_]\w*)\s*\)/g,
       "cpfx_textureSizeAny($1, 0)",
     );
-    return out;
-  };
-  const rewriteNumericStabilityPatterns = (value) => {
-    let out = String(value ?? "");
-    // Stabilize patterns that often produce NaN/Inf in ES 1.00 runtimes.
-    // dot(v, v/v) -> dot(v, cpfx_safeSelfDiv(v))
-    out = out.replace(
-      /\bdot\s*\(\s*([A-Za-z_]\w*)\s*,\s*\1\s*\/\s*\1\s*\)/g,
-      "dot($1, cpfx_safeSelfDiv($1))",
-    );
-    // Keep x/s/s untouched. Clamping this pattern can noticeably change
-    // highlight intensity/color compared to ShaderToy output.
     return out;
   };
   const rewriteDynamicArrayReadIndexing = (value) => {
@@ -2315,14 +2289,6 @@ function applyCompatibilityRewrites(source) {
   );
 
   next = rewriteTextureBuiltins(next);
-  if (
-    numericStabilityRewriteEnabled &&
-    (/\bdot\s*\(\s*([A-Za-z_]\w*)\s*,\s*\1\s*\/\s*\1\s*\)/.test(next) ||
-      /\/\s*([A-Za-z_]\w*)\s*\/\s*\1\b/.test(next))
-  ) {
-    next = rewriteNumericStabilityPatterns(next);
-  }
-
   // GLSL ES 1.00 has no mat4x3; rewrite constructor multiply forms.
   const mat4x3MulRe = /cpfx_mat4x3\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)\s*\*\s*(\([^;\n]+\)|[A-Za-z_]\w*)/g;
   next = next.replace(
@@ -2392,13 +2358,6 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(/\bsampler3D\b/g, "sampler2D");
   // Re-run ES3 texture builtin rewrites on unmasked macro bodies.
   next = rewriteTextureBuiltins(next);
-  if (
-    numericStabilityRewriteEnabled &&
-    (/\bdot\s*\(\s*([A-Za-z_]\w*)\s*,\s*\1\s*\/\s*\1\s*\)/.test(next) ||
-      /\/\s*([A-Za-z_]\w*)\s*\/\s*\1\b/.test(next))
-  ) {
-    next = rewriteNumericStabilityPatterns(next);
-  }
   // Final post-preprocessor pass for macro-expanded bodies that may still
   // contain ES3-only compound bitwise operators.
   next = next.replace(new RegExp(`${lvalue}\\s*\\^=\\s*([^;]+);`, "g"), "$1 = cpfx_bitxor($1, $2);");
