@@ -1366,10 +1366,11 @@ export function createMenus({ moduleId, shaderManager }) {
         .join("");
       const escapedPath = String(currentPath).replace(/"/g, "&quot;");
       const escapedSource = String(currentSource).replace(/</g, "&lt;");
+      const channelLabelStyle = `style="max-width:200px;flex:0 0 200px;"`;
       const content = `
       <form class="indy-fx-channel-edit">
         <div class="form-group">
-          <label>Type</label>
+          <label ${channelLabelStyle}>Type</label>
           <div class="form-fields">
             <select name="editChannelMode">${optionsHtml}</select>
           </div>
@@ -1382,25 +1383,25 @@ export function createMenus({ moduleId, shaderManager }) {
           </div>
         </div>
         <div class="form-group" data-channel-source-row>
-          <label>Buffer Source</label>
+          <label ${channelLabelStyle}>Buffer Source</label>
           <div class="form-fields">
             <textarea name="editChannelSource" rows="10">${escapedSource}</textarea>
           </div>
         </div>
         <div class="form-group">
-          <label>Filter</label>
+          <label ${channelLabelStyle}>Filter</label>
           <div class="form-fields">
             <select name="editChannelSamplerFilter">${filterOptionsHtml}</select>
           </div>
         </div>
         <div class="form-group">
-          <label>Wrap</label>
+          <label ${channelLabelStyle}>Wrap</label>
           <div class="form-fields">
             <select name="editChannelSamplerWrap">${wrapOptionsHtml}</select>
           </div>
         </div>
         <div class="form-group">
-          <label>VFlip</label>
+          <label ${channelLabelStyle}>VFlip</label>
           <div class="form-fields">
             <input type="checkbox" name="editChannelSamplerVflip" ${currentVflip ? "checked" : ""} />
           </div>
