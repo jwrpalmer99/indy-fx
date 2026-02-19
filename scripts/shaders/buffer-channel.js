@@ -8,6 +8,7 @@ const PIXI_TEXTURE_TYPES = typeof PIXI !== "undefined" ? PIXI?.TYPES ?? {} : {};
 const PIXI_FLOAT_TYPE = PIXI_TEXTURE_TYPES?.FLOAT ?? null;
 const PIXI_HALF_FLOAT_TYPE = PIXI_TEXTURE_TYPES?.HALF_FLOAT ?? null;
 let _didWarnBufferPrecisionFallback = false;
+const _renderTypeProbeCache = new Map();
 
 function isBufferDebugEnabled() {
   try {
@@ -87,13 +88,77 @@ function makeRenderTexture(width, height, type = null) {
 }
 
 function chooseBufferRenderTextureType() {
-  const { gl } = getRendererGlContext();
-  if (!gl) return null;
-  if (PIXI_FLOAT_TYPE && canRenderType(gl, PIXI_FLOAT_TYPE)) return PIXI_FLOAT_TYPE;
-  if (PIXI_HALF_FLOAT_TYPE && canRenderType(gl, PIXI_HALF_FLOAT_TYPE)) {
+  const { renderer, gl } = getRendererGlContext();
+  if (!renderer || !gl) return null;
+  if (
+    PIXI_FLOAT_TYPE &&
+    (canRenderType(gl, PIXI_FLOAT_TYPE) ||
+      probeRenderTextureType(renderer, gl, PIXI_FLOAT_TYPE))
+  ) {
+    return PIXI_FLOAT_TYPE;
+  }
+  if (
+    PIXI_HALF_FLOAT_TYPE &&
+    (canRenderType(gl, PIXI_HALF_FLOAT_TYPE) ||
+      probeRenderTextureType(renderer, gl, PIXI_HALF_FLOAT_TYPE))
+  ) {
     return PIXI_HALF_FLOAT_TYPE;
   }
   return null;
+}
+
+function clearGlErrors(gl) {
+  if (!gl || typeof gl.getError !== "function") return;
+  for (let i = 0; i < 8; i++) {
+    const err = gl.getError();
+    if (err === gl.NO_ERROR) break;
+  }
+}
+
+function probeRenderTextureType(renderer, gl, type) {
+  if (!renderer || !gl || !type) return false;
+  const isWebGL2 =
+    typeof WebGL2RenderingContext !== "undefined" &&
+    gl instanceof WebGL2RenderingContext;
+  const key = `${isWebGL2 ? 2 : 1}:${String(type)}`;
+  if (_renderTypeProbeCache.has(key)) {
+    return _renderTypeProbeCache.get(key) === true;
+  }
+
+  let ok = false;
+  let probeRt = null;
+  let probeSprite = null;
+  try {
+    clearGlErrors(gl);
+    probeRt = makeRenderTexture(4, 4, type);
+    if (probeRt?.baseTexture?.type !== type) {
+      ok = false;
+    } else {
+      probeSprite = new PIXI.Sprite(getSolidTexture([255, 255, 255, 255], 2));
+      renderer.render(probeSprite, {
+        renderTexture: probeRt,
+        clear: true,
+      });
+      const err = gl.getError?.();
+      ok = err === undefined || err === gl.NO_ERROR;
+    }
+  } catch (_err) {
+    ok = false;
+  } finally {
+    try {
+      probeSprite?.destroy?.({ children: false, texture: false, baseTexture: false });
+    } catch (_err) {
+      // Non-fatal cleanup.
+    }
+    try {
+      probeRt?.destroy?.(true);
+    } catch (_err) {
+      // Non-fatal cleanup.
+    }
+  }
+
+  _renderTypeProbeCache.set(key, ok);
+  return ok;
 }
 
 function warnBufferPrecisionFallbackOnce({ gl, renderTextureType } = {}) {
@@ -296,7 +361,10 @@ export class ShaderToyBufferChannel {
     if (!this.texture || !this.mesh || !renderer) return;
     const dtValue = Number(dtSeconds);
     // Some ticker paths can report zero dt; keep feedback buffers animated.
-    const dt = Number.isFinite(dtValue) && dtValue > 0 ? dtValue : 1 / 60;
+    // Clamp very large dt spikes (low FPS/tab throttling) to avoid unstable
+    // jumps in complex multipass shaders that depend on incremental updates.
+    const dtRaw = Number.isFinite(dtValue) && dtValue > 0 ? dtValue : 1 / 60;
+    const dt = Math.min(dtRaw, 1 / 24);
     const uniforms = this.mesh.shader.uniforms;
 
     const currentFrame = Number.isFinite(Number(uniforms.iFrame))
