@@ -10,6 +10,7 @@ https://github.com/user-attachments/assets/1e7c158e-9e5c-4d2e-bc8e-319638b709d5
 
 This file is the GM/player usage guide.
 For macro/API details, see [README_API.md](./README_API.md).
+For settings details, see [README_settings.md](./README_settings.md)
 
 ## Requirements
 - Foundry VTT v13+
