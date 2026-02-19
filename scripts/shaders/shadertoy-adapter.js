@@ -612,16 +612,28 @@ function applyCompatibilityRewrites(source) {
   const injectMainImageParameterAliases = (value) => {
     const text = String(value ?? "");
     const mainImageHeadRe =
-      /void\s+mainImage\s*\(\s*out\s+vec4\s+([A-Za-z_]\w*)\s*,\s*(?:in\s+)?vec2\s+([A-Za-z_]\w*)\s*\)\s*\{/m;
-    const m = mainImageHeadRe.exec(text);
-    if (!m) return text;
+      /void\s+mainImage\s*\(\s*out\s+vec4\s+([A-Za-z_]\w*)\s*,\s*(?:in\s+)?vec2\s+([A-Za-z_]\w*)\s*\)\s*\{/g;
+    let m = null;
+    let found = null;
+    while ((m = mainImageHeadRe.exec(text)) !== null) {
+      const lineStart = text.lastIndexOf("\n", m.index) + 1;
+      const lineEndRaw = text.indexOf("\n", m.index);
+      const lineEnd = lineEndRaw < 0 ? text.length : lineEndRaw;
+      const line = text.slice(lineStart, lineEnd);
+      // Skip macro-based headers such as:
+      //   #define Main void mainImage(...)
+      if (/^\s*#/.test(line)) continue;
+      found = m;
+      break;
+    }
+    if (!found) return text;
 
-    const colorParam = String(m[1] ?? "").trim();
-    const coordParam = String(m[2] ?? "").trim();
+    const colorParam = String(found[1] ?? "").trim();
+    const coordParam = String(found[2] ?? "").trim();
     if (!colorParam || !coordParam) return text;
     if (colorParam === "fragColor" && coordParam === "fragCoord") return text;
 
-    const braceIdx = text.indexOf("{", m.index);
+    const braceIdx = text.indexOf("{", found.index);
     if (braceIdx < 0) return text;
     let depth = 0;
     let endIdx = -1;
@@ -864,17 +876,8 @@ function applyCompatibilityRewrites(source) {
   //   #define ZERO min(iFrame,0)
   //   for (int i=ZERO; i<N; i++) ...
   // GLSL ES 1.00 requires loop init to be compile-time constant.
-  next = next.replace(
-    /^\s*#\s*define\s+ZERO\s+([^\n]+)$/gm,
-    (full, expr) => {
-      const rhs = String(expr ?? "").trim();
-      if (/^0(?:\.0+)?$/.test(rhs)) return full;
-      if (/\biFrame\b|\biTime\b|\biMouse\b|\bmin\s*\(|\bmax\s*\(|\bcpfx_min\s*\(|\bcpfx_max\s*\(/.test(rhs)) {
-        return "#define ZERO 0";
-      }
-      return full;
-    },
-  );
+  // Only rewrite loop initializers; mutating #define bodies can break
+  // multiline macro DSL shaders.
   next = next.replace(
     /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*\(?\s*ZERO\s*\)?\s*;/g,
     "for(int $1=0;",
@@ -891,22 +894,6 @@ function applyCompatibilityRewrites(source) {
     },
   );
   for (const macroName of loopInitMacroNames) {
-    const defineRe = new RegExp(
-      `^\\s*#\\s*define\\s+${macroName}\\s+([^\\n]+)$`,
-      "gm",
-    );
-    next = next.replace(defineRe, (full, expr) => {
-      const rhs = String(expr ?? "").trim();
-      if (/^[-+]?\d+(?:\.\d+)?$/.test(rhs)) return full;
-      if (
-        /\biFrame\b|\biTime\b|\biMouse\b|\bmin\s*\(|\bmax\s*\(|\bcpfx_min\s*\(|\bcpfx_max\s*\(/.test(
-          rhs,
-        )
-      ) {
-        return `#define ${macroName} 0`;
-      }
-      return full;
-    });
     const loopStartRe = new RegExp(
       `for\\s*\\(\\s*int\\s+([A-Za-z_]\\w*)\\s*=\\s*\\(?\\s*${macroName}\\s*\\)?\\s*;`,
       "g",
@@ -2214,6 +2201,37 @@ function applyCompatibilityRewrites(source) {
     /([+-]?\d+)(?![\d.])\s*([+\-*/])\s*iFrame\b/g,
     (_full, lhs, op) => `${lhs}.0 ${op} iFrame`,
   );
+  const castIntAssignmentsFromFrameUniforms = (input) => {
+    let output = String(input ?? "");
+    const intVars = new Set();
+    output.replace(/\bint\s+([^;(){}]+);/g, (_full, decls) => {
+      const parts = String(decls ?? "").split(",");
+      for (const rawPart of parts) {
+        const part = String(rawPart ?? "").trim();
+        if (!part) continue;
+        const m = /^([A-Za-z_]\w*)/.exec(part);
+        if (m?.[1]) intVars.add(String(m[1]));
+      }
+      return _full;
+    });
+    for (const name of intVars) {
+      const intAssignRe = new RegExp(
+        `\\b${name}\\s*=\\s*(?!\\s*=)([^;\\n]*\\biFrame(?:Rate)?\\b[^;\\n]*)`,
+        "g",
+      );
+      output = output.replace(intAssignRe, (_full, rhs) => {
+        const expr = String(rhs ?? "").trim();
+        if (!expr) return `${name} = int(0.0)`;
+        if (/^int\s*\(/.test(expr)) return `${name} = ${expr}`;
+        return `${name} = int(${expr})`;
+      });
+    }
+    return output;
+  };
+  // iFrame/iFrameRate are floats in adapter uniforms. Some shaders keep
+  // frame counters in int variables (for example: int I; I = iFrame;).
+  // Cast RHS in int assignments to avoid float->int compile errors.
+  next = castIntAssignmentsFromFrameUniforms(next);
 
   // GLSL ES 1.00 has no bitwise operators. Rewrite common patterns.
   // Rewrite compound bitwise assignments (unsupported in GLSL ES 1.00).
@@ -2331,22 +2349,6 @@ function applyCompatibilityRewrites(source) {
     },
   );
   for (const macroName of postLoopInitMacroNames) {
-    const defineRe = new RegExp(
-      `^\\s*#\\s*define\\s+${macroName}\\s+([^\\n]+)$`,
-      "gm",
-    );
-    next = next.replace(defineRe, (full, expr) => {
-      const rhs = String(expr ?? "").trim();
-      if (/^[-+]?\d+(?:\.\d+)?$/.test(rhs)) return full;
-      if (
-        /\biFrame\b|\biTime\b|\biMouse\b|\bmin\s*\(|\bmax\s*\(|\bcpfx_min\s*\(|\bcpfx_max\s*\(/.test(
-          rhs,
-        )
-      ) {
-        return `#define ${macroName} 0`;
-      }
-      return full;
-    });
     const loopStartRe = new RegExp(
       `for\\s*\\(\\s*int\\s+([A-Za-z_]\\w*)\\s*=\\s*\\(?\\s*${macroName}\\s*\\)?\\s*;`,
       "g",
@@ -2358,6 +2360,9 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(/\bsampler3D\b/g, "sampler2D");
   // Re-run ES3 texture builtin rewrites on unmasked macro bodies.
   next = rewriteTextureBuiltins(next);
+  // Re-run int assignment casts after preprocessor unmasking so macro DSL
+  // bodies such as `#define Main ... I = iFrame;` are covered too.
+  next = castIntAssignmentsFromFrameUniforms(next);
   // Final post-preprocessor pass for macro-expanded bodies that may still
   // contain ES3-only compound bitwise operators.
   next = next.replace(new RegExp(`${lvalue}\\s*\\^=\\s*([^;]+);`, "g"), "$1 = cpfx_bitxor($1, $2);");
