@@ -25,6 +25,23 @@ const _rewrittenSourceCache = new Map();
 const _fragmentCache = new Map();
 const _bufferFragmentCache = new Map();
 const _referencedChannelsCache = new Map();
+const ADAPTER_MODULE_ID = "indy-fx";
+
+function isNumericStabilityRewriteEnabled() {
+  try {
+    const value = game?.settings?.get?.(
+      ADAPTER_MODULE_ID,
+      "shaderNumericStabilityRewrite",
+    );
+    return value !== false;
+  } catch (_err) {
+    return true;
+  }
+}
+
+function getAdapterVariantKey() {
+  return isNumericStabilityRewriteEnabled() ? "ns1" : "ns0";
+}
 
 function getCachedLru(cache, key) {
   if (!cache.has(key)) return undefined;
@@ -70,10 +87,10 @@ function getValidatedShaderSourceCached(source) {
 }
 
 function getCompatibilityRewrittenSourceCached(validatedSource) {
-  const key = String(validatedSource ?? "");
+  const key = `${getAdapterVariantKey()}|${String(validatedSource ?? "")}`;
   const cached = getCachedLru(_rewrittenSourceCache, key);
   if (typeof cached === "string") return cached;
-  const rewritten = applyCompatibilityRewrites(key);
+  const rewritten = applyCompatibilityRewrites(String(validatedSource ?? ""));
   return setCachedLru(
     _rewrittenSourceCache,
     key,
@@ -554,6 +571,7 @@ function rewriteTopLevelRedeclaredLocals(source) {
   return next;
 }
 function applyCompatibilityRewrites(source) {
+  const numericStabilityRewriteEnabled = isNumericStabilityRewriteEnabled();
   const injectMainImageParameterAliases = (value) => {
     const text = String(value ?? "");
     const mainImageHeadRe =
@@ -669,6 +687,18 @@ function applyCompatibilityRewrites(source) {
       /\btextureSize\s*\(\s*([A-Za-z_]\w*)\s*\)/g,
       "cpfx_textureSizeAny($1, 0)",
     );
+    return out;
+  };
+  const rewriteNumericStabilityPatterns = (value) => {
+    let out = String(value ?? "");
+    // Stabilize patterns that often produce NaN/Inf in ES 1.00 runtimes.
+    // dot(v, v/v) -> dot(v, cpfx_safeSelfDiv(v))
+    out = out.replace(
+      /\bdot\s*\(\s*([A-Za-z_]\w*)\s*,\s*\1\s*\/\s*\1\s*\)/g,
+      "dot($1, cpfx_safeSelfDiv($1))",
+    );
+    // Keep x/s/s untouched. Clamping this pattern can noticeably change
+    // highlight intensity/color compared to ShaderToy output.
     return out;
   };
   const rewriteDynamicArrayReadIndexing = (value) => {
@@ -2043,6 +2073,13 @@ function applyCompatibilityRewrites(source) {
   );
 
   next = rewriteTextureBuiltins(next);
+  if (
+    numericStabilityRewriteEnabled &&
+    (/\bdot\s*\(\s*([A-Za-z_]\w*)\s*,\s*\1\s*\/\s*\1\s*\)/.test(next) ||
+      /\/\s*([A-Za-z_]\w*)\s*\/\s*\1\b/.test(next))
+  ) {
+    next = rewriteNumericStabilityPatterns(next);
+  }
 
   // GLSL ES 1.00 has no mat4x3; rewrite constructor multiply forms.
   const mat4x3MulRe = /cpfx_mat4x3\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)\s*\*\s*(\([^;\n]+\)|[A-Za-z_]\w*)/g;
@@ -2113,6 +2150,13 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(/\bsampler3D\b/g, "sampler2D");
   // Re-run ES3 texture builtin rewrites on unmasked macro bodies.
   next = rewriteTextureBuiltins(next);
+  if (
+    numericStabilityRewriteEnabled &&
+    (/\bdot\s*\(\s*([A-Za-z_]\w*)\s*,\s*\1\s*\/\s*\1\s*\)/.test(next) ||
+      /\/\s*([A-Za-z_]\w*)\s*\/\s*\1\b/.test(next))
+  ) {
+    next = rewriteNumericStabilityPatterns(next);
+  }
   // Final post-preprocessor pass for macro-expanded bodies that may still
   // contain ES3-only compound bitwise operators.
   next = next.replace(new RegExp(`${lvalue}\\s*\\^=\\s*([^;]+);`, "g"), "$1 = cpfx_bitxor($1, $2);");
@@ -2148,6 +2192,32 @@ function buildCompatMacroPreamble(source) {
   }
 
   return blocks.length ? `\n${blocks.join("\n")}\n` : "\n";
+}
+
+function buildNumericSafetyHelpers(source) {
+  const text = String(source ?? "");
+  const needsSelfDiv = /\bcpfx_safeSelfDiv\s*\(/.test(text);
+  const needsInvSq = /\bcpfx_invSq\s*\(/.test(text);
+  if (!needsSelfDiv && !needsInvSq) return "";
+
+  const lines = [];
+  if (needsInvSq) {
+    lines.push(`
+float cpfx_invSq(float v) { float a = max(abs(v), 1e-4); return 1.0 / (a * a); }
+vec2 cpfx_invSq(vec2 v) { vec2 a = max(abs(v), vec2(1e-4)); return 1.0 / (a * a); }
+vec3 cpfx_invSq(vec3 v) { vec3 a = max(abs(v), vec3(1e-4)); return 1.0 / (a * a); }
+vec4 cpfx_invSq(vec4 v) { vec4 a = max(abs(v), vec4(1e-4)); return 1.0 / (a * a); }
+`);
+  }
+  if (needsSelfDiv) {
+    lines.push(`
+float cpfx_safeSelfDiv(float v) { return step(1e-4, abs(v)); }
+vec2 cpfx_safeSelfDiv(vec2 v) { return step(vec2(1e-4), abs(v)); }
+vec3 cpfx_safeSelfDiv(vec3 v) { return step(vec3(1e-4), abs(v)); }
+vec4 cpfx_safeSelfDiv(vec4 v) { return step(vec4(1e-4), abs(v)); }
+`);
+  }
+  return lines.join("\n");
 }
 
 function buildChannelSamplingHelpers() {
@@ -2237,7 +2307,7 @@ vec4 cpfx_sampleVolumeAtlas(sampler2D s, vec3 uvw, int idx) {
   for (let idx = 0; idx <= 3; idx += 1) {
     channelFns.push(`
 vec4 cpfx_textureCh${idx}(vec2 uv) { return textureCompat(iChannel${idx}, cpfx_applyChannelUv(${idx}, uv)); }
-vec4 cpfx_textureCh${idx}(vec2 uv, float bias) { return cpfx_textureCh${idx}(uv); }
+vec4 cpfx_textureCh${idx}(vec2 uv, float bias) { return textureCompat(iChannel${idx}, cpfx_applyChannelUv(${idx}, uv), bias); }
 vec4 cpfx_textureCh${idx}(vec3 v) {
   float t = cpfx_channelType(${idx});
   if (t > 1.5) return cpfx_sampleVolumeAtlas(iChannel${idx}, v, ${idx});
@@ -2245,10 +2315,20 @@ vec4 cpfx_textureCh${idx}(vec3 v) {
   return textureCompat(iChannel${idx}, cpfx_applyChannelUv(${idx}, v.xy));
 }
 vec4 cpfx_textureCh${idx}(vec3 v, float bias) { return cpfx_textureCh${idx}(v); }
-vec4 cpfx_textureLodCh${idx}(vec2 uv, float lod) { return cpfx_textureCh${idx}(uv); }
-vec4 cpfx_textureLodCh${idx}(vec3 v, float lod) { return cpfx_textureCh${idx}(v); }
-vec4 cpfx_textureGradCh${idx}(vec2 uv, vec2 dPdx, vec2 dPdy) { return cpfx_textureCh${idx}(uv); }
-vec4 cpfx_textureGradCh${idx}(vec3 v, vec3 dPdx, vec3 dPdy) { return cpfx_textureCh${idx}(v); }
+vec4 cpfx_textureLodCh${idx}(vec2 uv, float lod) { return cpfx_textureLod(iChannel${idx}, cpfx_applyChannelUv(${idx}, uv), lod); }
+vec4 cpfx_textureLodCh${idx}(vec3 v, float lod) {
+  float t = cpfx_channelType(${idx});
+  if (t > 1.5) return cpfx_sampleVolumeAtlas(iChannel${idx}, v, ${idx});
+  if (t > 0.5) return cpfx_textureLod(iChannel${idx}, v, lod);
+  return cpfx_textureLod(iChannel${idx}, cpfx_applyChannelUv(${idx}, v.xy), lod);
+}
+vec4 cpfx_textureGradCh${idx}(vec2 uv, vec2 dPdx, vec2 dPdy) { return cpfx_textureGrad(iChannel${idx}, cpfx_applyChannelUv(${idx}, uv), dPdx, dPdy); }
+vec4 cpfx_textureGradCh${idx}(vec3 v, vec3 dPdx, vec3 dPdy) {
+  float t = cpfx_channelType(${idx});
+  if (t > 1.5) return cpfx_sampleVolumeAtlas(iChannel${idx}, v, ${idx});
+  if (t > 0.5) return cpfx_textureGrad(iChannel${idx}, v, dPdx, dPdy);
+  return cpfx_textureGrad(iChannel${idx}, cpfx_applyChannelUv(${idx}, v.xy), dPdx.xy, dPdy.xy);
+}
 `);
   }
 
@@ -2282,7 +2362,8 @@ export function extractReferencedChannels(source) {
 
 export function adaptShaderToyFragment(source) {
   const validated = getValidatedShaderSourceCached(source);
-  const cached = getCachedLru(_fragmentCache, validated);
+  const cacheKey = `${getAdapterVariantKey()}|${validated}`;
+  const cached = getCachedLru(_fragmentCache, cacheKey);
   if (typeof cached === "string") return cached;
   const body = getCompatibilityRewrittenSourceCached(validated);
   const compatMacros = buildCompatMacroPreamble(body);
@@ -2361,6 +2442,35 @@ vec2 cpfx_rotate(vec2 p, float a) {
   return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
 }
 
+float cpfx_isFinite(float v) {
+  return (v > -1e20 && v < 1e20) ? 1.0 : 0.0;
+}
+float cpfx_sanitizeScalar(float v, float fallback) {
+  return (v > -1e20 && v < 1e20) ? v : fallback;
+}
+vec4 cpfx_sanitizeColor(vec4 c) {
+  float vr = cpfx_isFinite(c.r);
+  float vg = cpfx_isFinite(c.g);
+  float vb = cpfx_isFinite(c.b);
+  float validCount = vr + vg + vb;
+
+  float r = cpfx_sanitizeScalar(c.r, 0.0);
+  float g = cpfx_sanitizeScalar(c.g, 0.0);
+  float b = cpfx_sanitizeScalar(c.b, 0.0);
+  float mx = max(r, max(g, b));
+  if (vr < 0.5) r = mx;
+  if (vg < 0.5) g = mx;
+  if (vb < 0.5) b = mx;
+  if (validCount < 0.5) {
+    r = 1.0;
+    g = 1.0;
+    b = 1.0;
+  }
+
+  float a = cpfx_sanitizeScalar(c.a, 1.0);
+  return vec4(max(vec3(r, g, b), vec3(0.0)), clamp(a, 0.0, 1.0));
+}
+
 float cpfx_sinh(float x) {
   return 0.5 * (exp(x) - exp(-x));
 }
@@ -2428,7 +2538,7 @@ vec4 textureCompat(sampler2D s, vec3 dir) {
   return texture2D(s, vec2(u, v));
 }
 vec4 textureCompat(sampler2D s, vec2 uv, float bias) {
-  return textureCompat(s, uv);
+  return texture2D(s, uv, bias);
 }
 vec4 textureCompat(sampler2D s, vec3 dir, float bias) {
   return textureCompat(s, dir);
@@ -2438,7 +2548,7 @@ vec4 cpfx_textureLod(sampler2D s, vec2 uv, float lod) {
 #ifdef GL_EXT_shader_texture_lod
   return texture2DLodEXT(s, uv, lod);
 #else
-  return textureCompat(s, uv);
+  return textureCompat(s, uv, lod);
 #endif
 }
 
@@ -2457,6 +2567,7 @@ vec4 cpfx_textureGrad(sampler2D s, vec3 dir, vec3 dPdx, vec3 dPdy) {
 }
 
 ${buildChannelSamplingHelpers()}
+${buildNumericSafetyHelpers(body)}
 
 vec4 cpfx_texelFetch(sampler2D s, int channelIndex, ivec2 p, int lod) {
   int idx = channelIndex;
@@ -3011,6 +3122,7 @@ void main() {
 
   vec4 shaderColor = vec4(0.0, 0.0, 0.0, 1.0);
   mainImage(shaderColor, fragCoord);
+  shaderColor = cpfx_sanitizeColor(shaderColor);
   float srcAlpha = shaderColor.a;
   if (debugMode > 2.5 && debugMode < 3.5) {
     gl_FragColor = vec4(vec3(srcAlpha), srcAlpha);
@@ -3040,7 +3152,7 @@ void main() {
 }`;
   return setCachedLru(
     _fragmentCache,
-    validated,
+    cacheKey,
     fragment,
     ADAPTER_CACHE_LIMITS.fragment,
   );
@@ -3048,7 +3160,8 @@ void main() {
 
 export function adaptShaderToyBufferFragment(source) {
   const validated = getValidatedShaderSourceCached(source);
-  const cached = getCachedLru(_bufferFragmentCache, validated);
+  const cacheKey = `${getAdapterVariantKey()}|${validated}`;
+  const cached = getCachedLru(_bufferFragmentCache, cacheKey);
   if (typeof cached === "string") return cached;
   const body = getCompatibilityRewrittenSourceCached(validated);
   const compatMacros = buildCompatMacroPreamble(body);
@@ -3125,6 +3238,35 @@ vec2 cpfx_rotate(vec2 p, float a) {
   return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
 }
 
+float cpfx_isFinite(float v) {
+  return (v > -1e20 && v < 1e20) ? 1.0 : 0.0;
+}
+float cpfx_sanitizeScalar(float v, float fallback) {
+  return (v > -1e20 && v < 1e20) ? v : fallback;
+}
+vec4 cpfx_sanitizeColor(vec4 c) {
+  float vr = cpfx_isFinite(c.r);
+  float vg = cpfx_isFinite(c.g);
+  float vb = cpfx_isFinite(c.b);
+  float validCount = vr + vg + vb;
+
+  float r = cpfx_sanitizeScalar(c.r, 0.0);
+  float g = cpfx_sanitizeScalar(c.g, 0.0);
+  float b = cpfx_sanitizeScalar(c.b, 0.0);
+  float mx = max(r, max(g, b));
+  if (vr < 0.5) r = mx;
+  if (vg < 0.5) g = mx;
+  if (vb < 0.5) b = mx;
+  if (validCount < 0.5) {
+    r = 1.0;
+    g = 1.0;
+    b = 1.0;
+  }
+
+  float a = cpfx_sanitizeScalar(c.a, 1.0);
+  return vec4(max(vec3(r, g, b), vec3(0.0)), clamp(a, 0.0, 1.0));
+}
+
 float cpfx_sinh(float x) {
   return 0.5 * (exp(x) - exp(-x));
 }
@@ -3192,7 +3334,7 @@ vec4 textureCompat(sampler2D s, vec3 dir) {
   return texture2D(s, vec2(u, v));
 }
 vec4 textureCompat(sampler2D s, vec2 uv, float bias) {
-  return textureCompat(s, uv);
+  return texture2D(s, uv, bias);
 }
 vec4 textureCompat(sampler2D s, vec3 dir, float bias) {
   return textureCompat(s, dir);
@@ -3202,7 +3344,7 @@ vec4 cpfx_textureLod(sampler2D s, vec2 uv, float lod) {
 #ifdef GL_EXT_shader_texture_lod
   return texture2DLodEXT(s, uv, lod);
 #else
-  return textureCompat(s, uv);
+  return textureCompat(s, uv, lod);
 #endif
 }
 
@@ -3221,6 +3363,7 @@ vec4 cpfx_textureGrad(sampler2D s, vec3 dir, vec3 dPdx, vec3 dPdy) {
 }
 
 ${buildChannelSamplingHelpers()}
+${buildNumericSafetyHelpers(body)}
 
 vec4 cpfx_texelFetch(sampler2D s, int channelIndex, ivec2 p, int lod) {
   int idx = channelIndex;
@@ -3763,11 +3906,12 @@ void main() {
   cpfxFragCoord = fragCoord;
   vec4 shaderColor = vec4(0.0, 0.0, 0.0, 1.0);
   mainImage(shaderColor, fragCoord);
+  shaderColor = cpfx_sanitizeColor(shaderColor);
   gl_FragColor = shaderColor;
 }`;
   return setCachedLru(
     _bufferFragmentCache,
-    validated,
+    cacheKey,
     fragment,
     ADAPTER_CACHE_LIMITS.bufferFragment,
   );
