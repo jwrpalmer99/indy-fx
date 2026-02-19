@@ -36,7 +36,7 @@ This file is the GM/player usage guide.
 5. Select a suitable alpha (transparency) value for your effect if it doesn't provide it's own transparency.
 
 If you save that and drag/drop on token it will be the same size..
-You can then right click it in library and create token macro - this will create a macro in IndyFX folder that will add the effect to selected token(s).
+You can then right click it in library and create token macro - this will create a macro in IndyFX folder that will add the effect to selected token(s) with your currently saved settings.
 
 >[!NOTE]  
 >To remove/disable/edit the shader on the token you can access it through token hud or via a macro (there is a macro in IndyFX compendium for this "ShaderOffSelectedTiles")
