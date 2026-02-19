@@ -149,4 +149,5 @@ Notes:
 
 ## Related Docs
 - API/macros/options: `README_API.md`
+- Shader editor setting guide: `readme_settings.md`
 - Licensing/attributions: `license.md`
