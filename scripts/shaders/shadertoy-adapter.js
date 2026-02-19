@@ -1537,6 +1537,79 @@ function applyCompatibilityRewrites(source) {
   // Rewrite non-declaration loop headers to bounded canonical loops and
   // evaluate the original condition at the top of each iteration so side
   // effects are preserved.
+  const evalNumericExpressionLocal = (expr, constants) => {
+    const raw = String(expr ?? "").trim();
+    if (!raw) return NaN;
+    if (/[^0-9eE+\-*/().,\sA-Za-z_]/.test(raw)) return NaN;
+    const substituted = raw.replace(/\b([A-Za-z_]\w*)\b/g, (_full, name) => {
+      if (constants.has(name)) return `(${constants.get(name)})`;
+      if (name === "float" || name === "int") return "";
+      return "NaN";
+    });
+    try {
+      const v = Function(`"use strict"; return (${substituted});`)();
+      return Number(v);
+    } catch (_err) {
+      return NaN;
+    }
+  };
+  const computeLoopIterationsLocal = (init, bound, step, cmpOp) => {
+    if (!Number.isFinite(init) || !Number.isFinite(bound) || !Number.isFinite(step) || step === 0) {
+      return NaN;
+    }
+    let iters = NaN;
+    if (cmpOp === "<") {
+      if (step <= 0) return NaN;
+      iters = Math.ceil((bound - init) / step - 1e-8);
+    } else if (cmpOp === "<=") {
+      if (step <= 0) return NaN;
+      iters = Math.floor((bound - init) / step + 1e-8) + 1;
+    } else if (cmpOp === ">") {
+      if (step >= 0) return NaN;
+      iters = Math.ceil((init - bound) / (-step) - 1e-8);
+    } else if (cmpOp === ">=") {
+      if (step >= 0) return NaN;
+      iters = Math.floor((init - bound) / (-step) + 1e-8) + 1;
+    } else {
+      return NaN;
+    }
+    if (!Number.isFinite(iters)) return NaN;
+    return Math.max(0, iters);
+  };
+  const toFloatLiteral = (value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "0.0";
+    const s = n.toString();
+    return /[.eE]/.test(s) ? s : `${s}.0`;
+  };
+  const scalarLoopConsts = new Map();
+  const scalarDeclListRe = /\b(?:const\s+)?(?:float|int)\s+([^;]+);/g;
+  for (let pass = 0; pass < 4; pass += 1) {
+    let learned = false;
+    scalarDeclListRe.lastIndex = 0;
+    let match;
+    while ((match = scalarDeclListRe.exec(next)) !== null) {
+      const declList = String(match[1] ?? "");
+      const declParts = splitTopLevel(declList, ",");
+      for (const declRaw of declParts) {
+        const decl = String(declRaw ?? "").trim();
+        if (!decl) continue;
+        const eq = decl.indexOf("=");
+        if (eq < 0) continue;
+        const lhs = String(decl.slice(0, eq) ?? "").trim();
+        const rhs = String(decl.slice(eq + 1) ?? "").trim();
+        const nameMatch = lhs.match(/^([A-Za-z_]\w*)$/);
+        if (!nameMatch) continue;
+        const name = String(nameMatch[1] ?? "");
+        if (!name || scalarLoopConsts.has(name)) continue;
+        const v = evalNumericExpressionLocal(rhs, scalarLoopConsts);
+        if (!Number.isFinite(v)) continue;
+        scalarLoopConsts.set(name, v);
+        learned = true;
+      }
+    }
+    if (!learned) break;
+  }
   let emptyForRewriteIndex = 0;
   const emptyForHeadRe = /for\s*\(/g;
   while (true) {
@@ -1606,9 +1679,79 @@ function applyCompatibilityRewrites(source) {
     }
 
     const iterVar = `cpfxEmptyLoop${emptyForRewriteIndex++}`;
-    const initStmt = initExpr ? `${initExpr};\n` : "";
     const stepStmt = stepExpr ? `\n  ${stepExpr};` : "";
-    const replacement = `${initStmt}for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n  if (!(${condExpr})) break;\n  ${body}${stepStmt}\n}`;
+
+    let replacement = "";
+    let usedFixedCount = false;
+    const postIncCond =
+      condExpr.match(/^([A-Za-z_]\w*)\s*(\+\+|--)\s*(<=|<|>=|>)\s*(.+)$/);
+    const preIncCond =
+      condExpr.match(/^(\+\+|--)\s*([A-Za-z_]\w*)\s*(<=|<|>=|>)\s*(.+)$/);
+    const condLoopVar = postIncCond
+      ? String(postIncCond[1] ?? "")
+      : preIncCond
+      ? String(preIncCond[2] ?? "")
+      : "";
+    const condIncOp = postIncCond
+      ? String(postIncCond[2] ?? "")
+      : preIncCond
+      ? String(preIncCond[1] ?? "")
+      : "";
+    const condCmp = postIncCond
+      ? String(postIncCond[3] ?? "")
+      : preIncCond
+      ? String(preIncCond[3] ?? "")
+      : "";
+    const condBoundExpr = postIncCond
+      ? String(postIncCond[4] ?? "")
+      : preIncCond
+      ? String(preIncCond[4] ?? "")
+      : "";
+    const isPreInc = !postIncCond && !!preIncCond;
+
+    if (condLoopVar) {
+      const stepValue = condIncOp === "--" ? -1 : 1;
+      let initValue = NaN;
+      const initAssignMatch = initExpr.match(/^([A-Za-z_]\w*)\s*=\s*(.+)$/);
+      if (!initExpr) {
+        initValue = Number(scalarLoopConsts.get(condLoopVar));
+      } else if (
+        initAssignMatch &&
+        String(initAssignMatch[1] ?? "") === condLoopVar
+      ) {
+        initValue = evalNumericExpressionLocal(initAssignMatch[2], scalarLoopConsts);
+      }
+      const boundValue = evalNumericExpressionLocal(condBoundExpr, scalarLoopConsts);
+      const cmpInit = isPreInc ? (initValue + stepValue) : initValue;
+      const iters = computeLoopIterationsLocal(cmpInit, boundValue, stepValue, condCmp);
+      const stepMutatesLoopVar = new RegExp(
+        `(^|[^A-Za-z0-9_])${condLoopVar}\\s*(?:\\+\\+|--|[+\\-*/]?=)`,
+      ).test(stepExpr);
+
+      if (
+        Number.isFinite(iters) &&
+        iters >= 0 &&
+        iters <= 8192 &&
+        Number.isFinite(initValue) &&
+        !stepMutatesLoopVar
+      ) {
+        const initLiteral = toFloatLiteral(initValue);
+        const stepLiteral = toFloatLiteral(stepValue);
+        replacement =
+          `for(int ${iterVar}=0; ${iterVar}<${Math.floor(iters)}; ++${iterVar}){\n` +
+          `  ${condLoopVar} = (${initLiteral}) + float(${iterVar} + 1) * (${stepLiteral});\n` +
+          `  ${body}${stepStmt}\n}`;
+        usedFixedCount = true;
+      }
+    }
+
+    if (!usedFixedCount) {
+      const initStmt = initExpr ? `${initExpr};\n` : "";
+      replacement =
+        `${initStmt}for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n` +
+        `  if (!(${condExpr})) break;\n` +
+        `  ${body}${stepStmt}\n}`;
+    }
     next = `${next.slice(0, forStart)}${replacement}${next.slice(sliceEnd)}`;
     // Rescan from this location so nested non-declaration for-loops in the
     // rewritten body are normalized too.
