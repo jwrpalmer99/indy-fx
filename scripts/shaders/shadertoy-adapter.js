@@ -1224,10 +1224,16 @@ function applyCompatibilityRewrites(source) {
         pos += 1;
       }
 
-      let block = body.slice(start, pos).trim();
-      block = block.replace(/\bbreak\s*;\s*$/m, "").trim();
-      if (isDefault) defaultBlock = block;
-      else if (label) cases.push({ label, block });
+      const rawBlock = body.slice(start, pos).trim();
+      const hasBreak = /\bbreak\s*;\s*$/.test(rawBlock);
+      const block = hasBreak
+        ? rawBlock.replace(/\bbreak\s*;\s*$/, "").trim()
+        : rawBlock;
+      if (isDefault) {
+        defaultBlock = block;
+      } else if (label) {
+        cases.push({ label, block, hasBreak });
+      }
     }
     return { cases, defaultBlock };
   };
@@ -1264,13 +1270,32 @@ function applyCompatibilityRewrites(source) {
       continue;
     }
 
+    // Preserve C-style switch fallthrough semantics for simple lowered switches.
+    // This is important for common grouped-label forms:
+    //   case A:
+    //   case B:
+    //     statement;
+    const effectiveCaseBlocks = new Array(parsed.cases.length);
+    let suffixBlock = parsed.defaultBlock;
+    for (let i = parsed.cases.length - 1; i >= 0; i -= 1) {
+      const c = parsed.cases[i];
+      const block = String(c.block ?? "").trim();
+      const hasBreak = c.hasBreak === true;
+      let effective = block;
+      if (!hasBreak && suffixBlock) {
+        effective = effective ? `${effective}\n${suffixBlock}` : suffixBlock;
+      }
+      effectiveCaseBlocks[i] = effective;
+      suffixBlock = effective;
+    }
+
     const selector = `cpfxSwitch${switchRewriteIndex++}`;
     let lowered = `{\n  int ${selector} = int(${switchExpr});\n`;
     for (let i = 0; i < parsed.cases.length; i += 1) {
       const prefix = i === 0 ? "if" : "else if";
       const c = parsed.cases[i];
       lowered += `  ${prefix} (${selector} == int(${c.label})) {\n`;
-      if (c.block) lowered += `    ${c.block}\n`;
+      if (effectiveCaseBlocks[i]) lowered += `    ${effectiveCaseBlocks[i]}\n`;
       lowered += "  }\n";
     }
     if (parsed.defaultBlock) {
