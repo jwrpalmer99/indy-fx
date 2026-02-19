@@ -392,8 +392,12 @@ export class ShaderToyBufferChannel {
     this._historyCopySprite.eventMode = "none";
     this._historyCopySprite.width = this.width;
     this._historyCopySprite.height = this.height;
+    this._clearSprite = new PIXI.Sprite(getSolidTexture([0, 0, 0, 0], 2));
+    this._clearSprite.eventMode = "none";
+    this._clearSprite.width = this.width;
+    this._clearSprite.height = this.height;
 
-    this.update(0);
+    this._clearTargets();
     debugBufferLog("buffer channel created", {
       size: this.size,
       width: this.width,
@@ -401,6 +405,20 @@ export class ShaderToyBufferChannel {
       renderTextureType: this._renderTextureType,
       selfChannelCount: this._selfChannelIndices.size,
     });
+  }
+
+  _clearTargets(renderer = canvas?.app?.renderer) {
+    if (!renderer || !this.texture || !this._historyTexture || !this._clearSprite) return;
+    renderer.render(this._clearSprite, {
+      renderTexture: this.texture,
+      clear: true,
+    });
+    tryGenerateMipmapsForRenderTexture(renderer, this.texture);
+    renderer.render(this._clearSprite, {
+      renderTexture: this._historyTexture,
+      clear: true,
+    });
+    tryGenerateMipmapsForRenderTexture(renderer, this._historyTexture);
   }
 
   _setChannelResolution(index, resolution = [1, 1]) {
@@ -519,6 +537,8 @@ export class ShaderToyBufferChannel {
     this.mesh = null;
     this._historyCopySprite?.destroy({ children: true, texture: false, baseTexture: false });
     this._historyCopySprite = null;
+    this._clearSprite?.destroy({ children: true, texture: false, baseTexture: false });
+    this._clearSprite = null;
     this.texture?.destroy(true);
     this.texture = null;
     this._historyTexture?.destroy(true);

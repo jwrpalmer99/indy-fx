@@ -46,7 +46,8 @@ function resolveSanitizeColorEnabled(override) {
 
 function getAdapterVariantKey({ sanitizeColor } = {}) {
   const sc = resolveSanitizeColorEnabled(sanitizeColor) ? "sc1" : "sc0";
-  return `v6|${sc}`;
+  // Bump when adapter code generation changes to avoid stale in-session cache.
+  return `v7|${sc}`;
 }
 
 function buildSanitizeColorHelpers(enabled) {

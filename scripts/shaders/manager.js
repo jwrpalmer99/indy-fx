@@ -101,6 +101,14 @@ const SHADERTOY_MEDIA_REPLACEMENTS = new Map([
   [
     "https://www.shadertoy.com/media/a/e6e5631ce1237ae4c05b3563eda686400a401df4548d0f9fad40ecac1659c46c.jpg",
     "modules/indy-fx/images/brownstar.jpg",
+  ],
+  [
+    "https://www.shadertoy.com/media/a/793a105653fbdadabdc1325ca08675e1ce48ae5f12e37973829c87bea4be3232.png",
+    "modules/indy-fx/images/793a105653fbdadabdc1325ca08675e1ce48ae5f12e37973829c87bea4be3232.png",
+  ],
+  [
+    "https://www.shadertoy.com/media/a/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg",
+    "modules/indy-fx/images/79520a3d3a0f4d3caa440802ef4362e99d54e12b1392973e4ea321840970a88a.jpg",
   ]
 ]);
 const THUMBNAIL_SIZE = 256;
@@ -4026,6 +4034,11 @@ export class ShaderManager {
           height: bufferHeight,
           size: Math.max(bufferWidth, bufferHeight),
         });
+        {
+          const orderRaw = Number(channelConfig?.bufferOrder);
+          runtimeBuffer.__cpfxBufferOrder =
+            Number.isInteger(orderRaw) && orderRaw >= 0 ? orderRaw : null;
+        }
         const result = {
           texture: runtimeBuffer.texture,
           resolution: [bufferWidth, bufferHeight],
@@ -4272,7 +4285,10 @@ export class ShaderManager {
       1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     ];
     uniforms.globalAlpha = Number.isFinite(cfg.alpha) ? cfg.alpha : 1.0;
-    uniforms.cpfxPreserveTransparent = cfg.useGradientMask === true ? 0.0 : 1.0;
+    // Preserve shader alpha by default. Some workflows (like gradient masks)
+    // intentionally override alpha handling.
+    uniforms.cpfxPreserveTransparent =
+      cfg.useGradientMask === true ? 0.0 : 1.0;
     uniforms.cpfxForceOpaqueCaptureAlpha =
       cfg.previewForceOpaqueCaptureAlpha === true ? 1.0 : 0.0;
 
@@ -4298,6 +4314,7 @@ export class ShaderManager {
     const runtimeBufferChannels = [];
     const runtimeImageChannels = [];
     const seenRuntimeBuffers = new Set();
+    let runtimeBufferSeq = 0;
     const importedResolveCache = new Map();
     if (def.type === "imported") {
       uniforms.uTime = cfg.uTime ?? uniforms.time ?? 0;
@@ -4471,9 +4488,23 @@ export class ShaderManager {
         for (const runtimeBuffer of resolved.runtimeBuffers ?? []) {
           if (!runtimeBuffer || seenRuntimeBuffers.has(runtimeBuffer)) continue;
           seenRuntimeBuffers.add(runtimeBuffer);
-          runtimeBufferChannels.push({ channel: index, runtimeBuffer });
+          runtimeBufferChannels.push({
+            channel: index,
+            runtimeBuffer,
+            order:
+              Number.isInteger(Number(runtimeBuffer?.__cpfxBufferOrder))
+                ? Number(runtimeBuffer.__cpfxBufferOrder)
+                : Number.MAX_SAFE_INTEGER,
+            seq: runtimeBufferSeq++,
+          });
         }
       }
+      runtimeBufferChannels.sort((a, b) => {
+        const orderA = Number(a?.order ?? Number.MAX_SAFE_INTEGER);
+        const orderB = Number(b?.order ?? Number.MAX_SAFE_INTEGER);
+        if (orderA !== orderB) return orderA - orderB;
+        return Number(a?.seq ?? 0) - Number(b?.seq ?? 0);
+      });
       uniforms.iChannelResolution = channelResolution;
       uniforms.cpfxChannelType0 = Number(channelTypes[0] ?? 0);
       uniforms.cpfxChannelType1 = Number(channelTypes[1] ?? 0);
@@ -4828,13 +4859,23 @@ export class ShaderManager {
         passKey,
         currentPassKey,
       );
+      const bufferOrderRaw = Number(pass?.__cpfxBufferOrder);
+      const bufferOrder =
+        Number.isInteger(bufferOrderRaw) && bufferOrderRaw >= 0
+          ? bufferOrderRaw
+          : null;
       if (currentPassKey && passKey === currentPassKey) {
         debugLog(this.moduleId, "detected buffer self-reference", {
           passKey,
           currentPassKey,
           size: bufferSize,
         });
-        return { mode: "bufferSelf", size: bufferSize, ...samplerCfg };
+        return {
+          mode: "bufferSelf",
+          size: bufferSize,
+          ...(bufferOrder === null ? {} : { bufferOrder }),
+          ...samplerCfg,
+        };
       }
       if (stack.has(passKey)) {
         console.warn(
@@ -4866,6 +4907,7 @@ export class ShaderManager {
         source,
         channels,
         size: bufferSize,
+        ...(bufferOrder === null ? {} : { bufferOrder }),
         ...samplerCfg,
       };
     }
@@ -5058,6 +5100,7 @@ export class ShaderManager {
         pass,
         DEFAULT_BUFFER_SIZE,
       );
+      pass.__cpfxBufferOrder = null;
       passBufferSizeByPassKey.set(pass.__cpfxPassKey, pass.__cpfxBufferSize);
       for (const output of toArray(pass.outputs)) {
         const outId = String(output?.id ?? "").trim();
@@ -5079,6 +5122,12 @@ export class ShaderManager {
         if (Number.isInteger(outCh) && outCh >= 0 && outCh <= 3) {
           passByOutputChannel.set(outCh, pass);
           passBufferSizeByOutputChannel.set(outCh, outputSize);
+          if (
+            !Number.isInteger(Number(pass.__cpfxBufferOrder)) ||
+            Number(pass.__cpfxBufferOrder) < 0
+          ) {
+            pass.__cpfxBufferOrder = outCh;
+          }
         }
       }
     }
