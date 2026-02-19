@@ -23,6 +23,33 @@ For macro/API details, see `README_API.md`.
 6. Edit shaders from button on token/tile/template.
 7. You can also apply shaders to region via indyFX region behaviour.
 
+## Adding a Shader to a Token (or Tile)
+- Shaders can be scaled to fit a token - you can either edit an existing shader or right click one and duplicate then edit the copy.
+
+1. Double click the shader to open the editor.
+2. Select "Scale to Token".
+3. Select "Rotate with Token" if you want.
+4. Usually you will want:
+    Capture Scale: 1
+    Capture Rotation 0
+5. Select a suitable alpha (transparency) value for your effect if it doesn't provide it's own transparency.
+
+If you save that and drag/drop on token it will be the same size..
+You can then right click it in library and create token macro - this will create a macro in IndyFX folder that will add the effect to selected token(s).
+
+>[!NOTE]  
+>To remove/disable/edit the shader on the token you can access it through token hud or via a macro (there is a macro in IndyFX compendium for this "ShaderOffSelectedTiles")
+
+You can go 1 better if you have tokens with transparency you can make the shader only draw on the filled in parts of the token. 
+This involves setting a shader channel to capture the token/tile image - and then using the alpha from that capture as the final alpha of the shader; luckily there is a button that will set that up for you..
+
+## Circular Tokens (or Tokens with Transparency)
+
+1. In Shader Editor - click Inject Token Alpha
+2. Save the shader
+   
+Now when you apply to a token only the non-transparent will be filled.
+
 ## Main Workflows
 ### Shader Library
 - Search/filter imported shaders by name or label.
