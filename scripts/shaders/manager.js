@@ -423,9 +423,26 @@ function getTextureDebugInfo(texture, fallback = 256) {
 }
 
 function normalizeBufferSize(value, fallback = DEFAULT_BUFFER_SIZE) {
+  const resolveBufferSizeCap = () => {
+    try {
+      const renderer = canvas?.app?.renderer ?? null;
+      const gl = renderer?.gl ?? renderer?.context?.gl ?? null;
+      const maxTex = Number(gl?.getParameter?.(gl?.MAX_TEXTURE_SIZE));
+      if (Number.isFinite(maxTex) && maxTex > 0) return Math.round(maxTex);
+    } catch (_err) {
+      // Fall through to conservative default cap.
+    }
+    return 2048;
+  };
+  const maxSize = Math.max(64, resolveBufferSizeCap());
+  const fallbackSize = Number(fallback);
+  const normalizedFallback =
+    Number.isFinite(fallbackSize) && fallbackSize > 0
+      ? Math.max(64, Math.min(maxSize, Math.round(fallbackSize)))
+      : Math.max(64, Math.min(maxSize, DEFAULT_BUFFER_SIZE));
   const size = Number(value);
-  if (!Number.isFinite(size)) return fallback;
-  return Math.max(64, Math.min(2048, Math.round(size)));
+  if (!Number.isFinite(size)) return normalizedFallback;
+  return Math.max(64, Math.min(maxSize, Math.round(size)));
 }
 
 function normalizeSamplerFilter(value, fallback = "") {
