@@ -1575,6 +1575,7 @@ function applyCompatibilityRewrites(source) {
     return /[.eE]/.test(s) ? s : `${s}.0`;
   };
   const scalarLoopConsts = new Map();
+  const scalarLoopVarTypes = new Map();
   const scalarDeclListRe = /\b(?:const\s+)?(?:float|int)\s+([^;]+);/g;
   for (let pass = 0; pass < 4; pass += 1) {
     let learned = false;
@@ -1601,6 +1602,23 @@ function applyCompatibilityRewrites(source) {
       }
     }
     if (!learned) break;
+  }
+  // Track scalar loop variable types so fixed-count rewrites preserve int vars.
+  const scalarDeclTypeRe =
+    /\b(?:const\s+)?(?:(?:lowp|mediump|highp)\s+)?(float|int)\s+([^;]+);/g;
+  let scalarDeclTypeMatch;
+  while ((scalarDeclTypeMatch = scalarDeclTypeRe.exec(next)) !== null) {
+    const baseType = String(scalarDeclTypeMatch[1] ?? "").trim();
+    const declList = String(scalarDeclTypeMatch[2] ?? "");
+    const declParts = splitTopLevel(declList, ",");
+    for (const declRaw of declParts) {
+      const decl = String(declRaw ?? "").trim();
+      if (!decl) continue;
+      const nameMatch = decl.match(/^([A-Za-z_]\w*)/);
+      const name = String(nameMatch?.[1] ?? "");
+      if (!name) continue;
+      scalarLoopVarTypes.set(name, baseType);
+    }
   }
   let emptyForRewriteIndex = 0;
   const emptyForHeadRe = /for\s*\(/g;
@@ -1710,6 +1728,10 @@ function applyCompatibilityRewrites(source) {
     const isPreInc = !postIncCond && !!preIncCond;
 
     if (condLoopVar) {
+      const condLoopVarType = String(
+        scalarLoopVarTypes.get(condLoopVar) ?? "float",
+      );
+      const isIntLoopVar = condLoopVarType === "int";
       let stepValue = condIncOp === "--" ? -1 : 1;
       let stepConsumedByFixedLoop = false;
       if (!condIncOp) {
@@ -1758,6 +1780,11 @@ function applyCompatibilityRewrites(source) {
         ? (isPreInc ? (initValue + stepValue) : initValue)
         : initValue;
       const iters = computeLoopIterationsLocal(cmpInit, boundValue, stepValue, condCmp);
+      const isIntLike = (value) =>
+        Number.isFinite(value) && Math.abs(value - Math.round(value)) <= 1e-6;
+      const typeCompatible =
+        !isIntLoopVar ||
+        (isIntLike(initValue) && isIntLike(stepValue) && isIntLike(cmpInit));
       const stepMutatesLoopVar = new RegExp(
         `(^|[^A-Za-z0-9_])${condLoopVar}\\s*(?:\\+\\+|--|[+\\-*/]?=)`,
       ).test(stepExpr);
@@ -1770,16 +1797,24 @@ function applyCompatibilityRewrites(source) {
         iters >= 0 &&
         iters <= 8192 &&
         Number.isFinite(initValue) &&
+        typeCompatible &&
         !forbiddenStepMutation
       ) {
-        const initLiteral = toFloatLiteral(initValue);
-        const stepLiteral = toFloatLiteral(stepValue);
+        const initLiteral = isIntLoopVar
+          ? String(Math.round(initValue))
+          : toFloatLiteral(initValue);
+        const stepLiteral = isIntLoopVar
+          ? String(Math.round(stepValue))
+          : toFloatLiteral(stepValue);
         const iterExpr = condIncOp
           ? `${iterVar} + 1`
           : `${iterVar}`;
+        const assignExpr = isIntLoopVar
+          ? `(${initLiteral}) + (${iterExpr}) * (${stepLiteral})`
+          : `(${initLiteral}) + float(${iterExpr}) * (${stepLiteral})`;
         replacement =
           `for(int ${iterVar}=0; ${iterVar}<${Math.floor(iters)}; ++${iterVar}){\n` +
-          `  ${condLoopVar} = (${initLiteral}) + float(${iterExpr}) * (${stepLiteral});\n` +
+          `  ${condLoopVar} = ${assignExpr};\n` +
           `  ${body}${stepStmt}\n}`;
         usedFixedCount = true;
       }
@@ -1796,6 +1831,80 @@ function applyCompatibilityRewrites(source) {
     // Rescan from this location so nested non-declaration for-loops in the
     // rewritten body are normalized too.
     emptyForHeadRe.lastIndex = forStart;
+  }
+
+  // GLSL ES 1.00 in this runtime rejects do-while loops.
+  // Rewrite do { body } while(cond); into a bounded canonical for-loop.
+  let doWhileRewriteIndex = 0;
+  const doHeadRe = /\bdo\b/g;
+  while (true) {
+    const m = doHeadRe.exec(next);
+    if (!m) break;
+
+    const doStart = m.index;
+    let bodyStart = doStart + 2;
+    while (bodyStart < next.length && /\s/.test(next[bodyStart])) bodyStart += 1;
+    if (bodyStart >= next.length) break;
+
+    let body = "";
+    let bodyEnd = bodyStart;
+    if (next[bodyStart] === "{") {
+      const closeBrace = findMatchingBrace(next, bodyStart);
+      if (closeBrace < 0) {
+        doHeadRe.lastIndex = doStart + 2;
+        continue;
+      }
+      body = next.slice(bodyStart + 1, closeBrace).trim();
+      bodyEnd = closeBrace + 1;
+    } else {
+      const stmtEnd = findStatementEnd(next, bodyStart);
+      if (stmtEnd < 0) {
+        doHeadRe.lastIndex = doStart + 2;
+        continue;
+      }
+      body = next.slice(bodyStart, stmtEnd + 1).trim();
+      bodyEnd = stmtEnd + 1;
+    }
+
+    let whileStart = bodyEnd;
+    while (whileStart < next.length && /\s/.test(next[whileStart])) whileStart += 1;
+    if (!/^while\b/.test(next.slice(whileStart))) {
+      doHeadRe.lastIndex = doStart + 2;
+      continue;
+    }
+    const openParen = next.indexOf("(", whileStart);
+    if (openParen < 0) {
+      doHeadRe.lastIndex = doStart + 2;
+      continue;
+    }
+    const closeParen = findMatchingParen(next, openParen);
+    if (closeParen < 0) {
+      doHeadRe.lastIndex = doStart + 2;
+      continue;
+    }
+    const condPart = String(next.slice(openParen + 1, closeParen) ?? "").trim();
+    const condExpr = stripInlineComments(condPart);
+    if (!condExpr) {
+      doHeadRe.lastIndex = doStart + 2;
+      continue;
+    }
+
+    let tail = closeParen + 1;
+    while (tail < next.length && /\s/.test(next[tail])) tail += 1;
+    if (next[tail] !== ";") {
+      doHeadRe.lastIndex = doStart + 2;
+      continue;
+    }
+    const sliceEnd = tail + 1;
+
+    const iterVar = `cpfxDoLoop${doWhileRewriteIndex++}`;
+    const replacement =
+      `for(int ${iterVar}=0; ${iterVar}<1024; ++${iterVar}){\n` +
+      `  ${body}\n` +
+      `  if (!(${condExpr})) break;\n` +
+      `}`;
+    next = `${next.slice(0, doStart)}${replacement}${next.slice(sliceEnd)}`;
+    doHeadRe.lastIndex = doStart;
   }
 
   // GLSL ES 1.00 in this runtime rejects while-loops.
