@@ -39,8 +39,54 @@ function isNumericStabilityRewriteEnabled() {
   }
 }
 
+function isSanitizeColorEnabled() {
+  try {
+    const value = game?.settings?.get?.(
+      ADAPTER_MODULE_ID,
+      "shaderSanitizeColor",
+    );
+    return value !== false;
+  } catch (_err) {
+    return true;
+  }
+}
+
 function getAdapterVariantKey() {
-  return isNumericStabilityRewriteEnabled() ? "ns1" : "ns0";
+  const ns = isNumericStabilityRewriteEnabled() ? "ns1" : "ns0";
+  const sc = isSanitizeColorEnabled() ? "sc1" : "sc0";
+  return `v3|${ns}|${sc}`;
+}
+
+function buildSanitizeColorHelpers(enabled) {
+  if (!enabled) return "";
+  return `
+float cpfx_isFinite(float v) {
+  return (v == v && abs(v) < 1e30) ? 1.0 : 0.0;
+}
+float cpfx_sanitizeScalar(float v, float fallback) {
+  return (v == v && abs(v) < 1e30) ? v : fallback;
+}
+vec4 cpfx_sanitizeColor(vec4 c) {
+  float vr = cpfx_isFinite(c.r);
+  float vg = cpfx_isFinite(c.g);
+  float vb = cpfx_isFinite(c.b);
+  float validCount = vr + vg + vb;
+
+  float r = cpfx_sanitizeScalar(c.r, 0.0);
+  float g = cpfx_sanitizeScalar(c.g, 0.0);
+  float b = cpfx_sanitizeScalar(c.b, 0.0);
+  float strongestFinite = max(
+    vr > 0.5 ? r : -1e20,
+    max(vg > 0.5 ? g : -1e20, vb > 0.5 ? b : -1e20)
+  );
+  float invalidFallback = validCount > 0.5 ? strongestFinite : 1.0;
+  if (vr < 0.5) r = invalidFallback;
+  if (vg < 0.5) g = invalidFallback;
+  if (vb < 0.5) b = invalidFallback;
+  float a = cpfx_sanitizeScalar(c.a, 1.0);
+  return vec4(r, g, b, a);
+}
+`;
 }
 
 function getCachedLru(cache, key) {
@@ -2367,6 +2413,11 @@ export function adaptShaderToyFragment(source) {
   if (typeof cached === "string") return cached;
   const body = getCompatibilityRewrittenSourceCached(validated);
   const compatMacros = buildCompatMacroPreamble(body);
+  const sanitizeColorEnabled = isSanitizeColorEnabled();
+  const sanitizeColorHelpers = buildSanitizeColorHelpers(sanitizeColorEnabled);
+  const sanitizeColorStage = sanitizeColorEnabled
+    ? "  shaderColor = cpfx_sanitizeColor(shaderColor);"
+    : "";
   const fragment = `
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable
@@ -2441,35 +2492,7 @@ vec2 cpfx_rotate(vec2 p, float a) {
   float s = sin(a);
   return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
 }
-
-float cpfx_isFinite(float v) {
-  return (v > -1e20 && v < 1e20) ? 1.0 : 0.0;
-}
-float cpfx_sanitizeScalar(float v, float fallback) {
-  return (v > -1e20 && v < 1e20) ? v : fallback;
-}
-vec4 cpfx_sanitizeColor(vec4 c) {
-  float vr = cpfx_isFinite(c.r);
-  float vg = cpfx_isFinite(c.g);
-  float vb = cpfx_isFinite(c.b);
-  float validCount = vr + vg + vb;
-
-  float r = cpfx_sanitizeScalar(c.r, 0.0);
-  float g = cpfx_sanitizeScalar(c.g, 0.0);
-  float b = cpfx_sanitizeScalar(c.b, 0.0);
-  float mx = max(r, max(g, b));
-  if (vr < 0.5) r = mx;
-  if (vg < 0.5) g = mx;
-  if (vb < 0.5) b = mx;
-  if (validCount < 0.5) {
-    r = 1.0;
-    g = 1.0;
-    b = 1.0;
-  }
-
-  float a = cpfx_sanitizeScalar(c.a, 1.0);
-  return vec4(max(vec3(r, g, b), vec3(0.0)), clamp(a, 0.0, 1.0));
-}
+${sanitizeColorHelpers}
 
 float cpfx_sinh(float x) {
   return 0.5 * (exp(x) - exp(-x));
@@ -3122,7 +3145,7 @@ void main() {
 
   vec4 shaderColor = vec4(0.0, 0.0, 0.0, 1.0);
   mainImage(shaderColor, fragCoord);
-  shaderColor = cpfx_sanitizeColor(shaderColor);
+${sanitizeColorStage}
   float srcAlpha = shaderColor.a;
   if (debugMode > 2.5 && debugMode < 3.5) {
     gl_FragColor = vec4(vec3(srcAlpha), srcAlpha);
@@ -3165,6 +3188,11 @@ export function adaptShaderToyBufferFragment(source) {
   if (typeof cached === "string") return cached;
   const body = getCompatibilityRewrittenSourceCached(validated);
   const compatMacros = buildCompatMacroPreamble(body);
+  const sanitizeColorEnabled = isSanitizeColorEnabled();
+  const sanitizeColorHelpers = buildSanitizeColorHelpers(sanitizeColorEnabled);
+  const sanitizeColorStage = sanitizeColorEnabled
+    ? "  shaderColor = cpfx_sanitizeColor(shaderColor);"
+    : "";
   const fragment = `
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable
@@ -3237,35 +3265,7 @@ vec2 cpfx_rotate(vec2 p, float a) {
   float s = sin(a);
   return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
 }
-
-float cpfx_isFinite(float v) {
-  return (v > -1e20 && v < 1e20) ? 1.0 : 0.0;
-}
-float cpfx_sanitizeScalar(float v, float fallback) {
-  return (v > -1e20 && v < 1e20) ? v : fallback;
-}
-vec4 cpfx_sanitizeColor(vec4 c) {
-  float vr = cpfx_isFinite(c.r);
-  float vg = cpfx_isFinite(c.g);
-  float vb = cpfx_isFinite(c.b);
-  float validCount = vr + vg + vb;
-
-  float r = cpfx_sanitizeScalar(c.r, 0.0);
-  float g = cpfx_sanitizeScalar(c.g, 0.0);
-  float b = cpfx_sanitizeScalar(c.b, 0.0);
-  float mx = max(r, max(g, b));
-  if (vr < 0.5) r = mx;
-  if (vg < 0.5) g = mx;
-  if (vb < 0.5) b = mx;
-  if (validCount < 0.5) {
-    r = 1.0;
-    g = 1.0;
-    b = 1.0;
-  }
-
-  float a = cpfx_sanitizeScalar(c.a, 1.0);
-  return vec4(max(vec3(r, g, b), vec3(0.0)), clamp(a, 0.0, 1.0));
-}
+${sanitizeColorHelpers}
 
 float cpfx_sinh(float x) {
   return 0.5 * (exp(x) - exp(-x));
@@ -3906,7 +3906,7 @@ void main() {
   cpfxFragCoord = fragCoord;
   vec4 shaderColor = vec4(0.0, 0.0, 0.0, 1.0);
   mainImage(shaderColor, fragCoord);
-  shaderColor = cpfx_sanitizeColor(shaderColor);
+${sanitizeColorStage}
   gl_FragColor = shaderColor;
 }`;
   return setCachedLru(

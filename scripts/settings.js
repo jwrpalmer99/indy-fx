@@ -32,6 +32,7 @@ export const DEBUG_SETTINGS_KEYS = [
   "shaderDebug",
   "shaderDebugMode",
   "shaderNumericStabilityRewrite",
+  "shaderSanitizeColor",
 ];
 
 export function registerModuleSettings({ moduleId, shaderManager, menus }) {
@@ -198,7 +199,16 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
     name: "Numeric stability rewrite",
     hint: "Client preference. Applies adapter rewrites that reduce NaN/Inf artifacts in imported ShaderToy shaders.",
     scope: "client",
-    config: true,
+    config: false,
+    type: Boolean,
+    default: true,
+  });
+
+  game.settings.register(moduleId, "shaderSanitizeColor", {
+    name: "Sanitize shader output color",
+    hint: "Client preference. Clamps/repairs NaN or infinite imported-shader color output before final compositing.",
+    scope: "client",
+    config: false,
     type: Boolean,
     default: true,
   });
