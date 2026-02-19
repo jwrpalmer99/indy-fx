@@ -11,6 +11,7 @@ import {
   vecToHex,
 } from "./shader-variable-utils.js";
 import { applyEditorSettingTooltips } from "./editor-tooltips.js";
+import { enhanceShaderCodeEditors, disposeShaderCodeEditors } from "./glsl-editor.js";
 export function createMenus({ moduleId, shaderManager }) {
   const MODULE_ID = moduleId;
   const isDebugLoggingEnabled = () => {
@@ -1383,6 +1384,9 @@ export function createMenus({ moduleId, shaderManager }) {
           resolveElementRoot(candidate);
         if (!(dialogRoot instanceof Element)) return;
         ensureDialogVerticalScroll(dialogRoot);
+        enhanceShaderCodeEditors(dialogRoot, {
+          selectors: ['textarea[name="editChannelSource"]'],
+        });
         if (dialogRoot.dataset.indyFxChannelEditBound === "1") return;
         dialogRoot.dataset.indyFxChannelEditBound = "1";
         const modeInput = dialogRoot.querySelector('[name="editChannelMode"]');
@@ -2259,6 +2263,7 @@ export function createMenus({ moduleId, shaderManager }) {
         const root =
           resolveElementRoot(dialogOrRoot?.element) ??
           resolveElementRoot(dialogOrRoot);
+        disposeShaderCodeEditors(root);
         root?._indyFxPreviewCtl?.destroy?.();
         if (root?._indyFxPreviewCtl) delete root._indyFxPreviewCtl;
       };
@@ -2289,6 +2294,9 @@ export function createMenus({ moduleId, shaderManager }) {
         formEl.dataset.indyFxShaderEditorBound = "1";
 
         const root = formEl;
+        enhanceShaderCodeEditors(root, {
+          selectors: ['textarea[name="editSource"]'],
+        });
 
         for (const ff of root.querySelectorAll(".form-fields")) {
           if (ff instanceof HTMLElement) ff.style.marginTop = "2px";
@@ -3494,6 +3502,9 @@ ui.notifications.info(\`indyFX: applied shader to \${selected.length} ${label}\$
       if (!(root instanceof Element)) return;
       const form = root.matches("form") ? root : root.querySelector("form");
       if (!(form instanceof HTMLFormElement)) return;
+      enhanceShaderCodeEditors(root, {
+        selectors: ['textarea[name="importSource"]', "textarea[data-channel-source]"],
+      });
       if (Number.isFinite(this._shaderLibraryScrollTop)) {
         const targetTop = Number(this._shaderLibraryScrollTop);
         form.scrollTop = targetTop;
