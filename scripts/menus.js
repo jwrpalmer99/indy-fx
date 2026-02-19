@@ -1634,7 +1634,7 @@ export function createMenus({ moduleId, shaderManager }) {
 
       if (!hasEnd) {
         const tail = /\r?\n\s*$/.test(nextBody) ? "" : "\n";
-        nextBody = `${nextBody}${tail}${indent}fragColor = vec4(vec3(fragColor), fragToken.a);\n`;
+        nextBody = `${nextBody}${tail}${indent}fragColor = vec4(fragColor.rgb*fragToken.a, fragToken.a);\n`;
       }
 
       const nextSource =
