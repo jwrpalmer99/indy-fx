@@ -4063,16 +4063,17 @@ export class ShaderManager {
             };
           const childMode = normalizeChannelMode(childCfg?.mode ?? "none");
           if (childMode === "bufferSelf") {
+            const samplerVflip = parseBooleanLike(childCfg?.samplerVflip);
             debugLog(this.moduleId, "binding buffer self-feedback channel", {
               channel: index,
               size: [bufferWidth, bufferHeight],
-              samplerVflip: parseBooleanLike(childCfg?.samplerVflip),
+              samplerVflip,
             });
             runtimeBuffer.setChannelSelf(
               index,
               [bufferWidth, bufferHeight],
               {
-                samplerVflip: parseBooleanLike(childCfg?.samplerVflip),
+                samplerVflip,
                 samplerFilter: childCfg?.samplerFilter,
                 samplerWrap: childCfg?.samplerWrap,
               },
@@ -4446,7 +4447,7 @@ export class ShaderManager {
             samplerWrap: normalizeSamplerWrap(effectiveChannelCfg?.samplerWrap, ""),
             samplerWrapResolved: resolvedSamplerWrap,
             samplerWrapUniform: channelWraps[index],
-            samplerVflip: parseBooleanLike(effectiveChannelCfg?.samplerVflip),
+            samplerVflip: channelVflips[index] === 1,
             targetType: cfg.targetType ?? null,
             targetId: cfg.targetId ?? null,
             resolution: [resolvedWidth, resolvedHeight],
