@@ -572,6 +572,95 @@ function applyChannelSamplerToTexture(texture, channelCfg, mode) {
   base.update?.();
 }
 
+function isLikelyVideoPath(path) {
+  const raw = String(path ?? "").trim().toLowerCase();
+  if (!raw) return false;
+  return /\.(webm|mp4|m4v|mov|ogv|ogg)(?:[?#].*)?$/.test(raw);
+}
+
+function createImportedChannelTexture(path) {
+  const normalized = String(path ?? "").trim();
+  if (!normalized) return PIXI.Texture.WHITE;
+
+  if (!isLikelyVideoPath(normalized)) return PIXI.Texture.from(normalized);
+  try {
+    return PIXI.Texture.from(normalized, {
+      resourceOptions: {
+        autoPlay: false,
+        autoLoad: true,
+      },
+    });
+  } catch (_err) {
+    return PIXI.Texture.from(normalized);
+  }
+}
+
+const VIDEO_PLAY_REQUESTED = new WeakSet();
+
+function ensureVideoTexturePlayback(texture, sourcePath = "") {
+  const base = texture?.baseTexture;
+  if (!base) return false;
+  if (!isLikelyVideoPath(sourcePath)) return false;
+
+  const resource = base?.resource ?? null;
+  const media =
+    resource?.source ??
+    resource?.media ??
+    resource?.video ??
+    null;
+  const isVideoElement =
+    typeof HTMLVideoElement !== "undefined" &&
+    media instanceof HTMLVideoElement;
+  if (!isVideoElement) return false;
+
+  try {
+    media.muted = true;
+    media.loop = true;
+    media.autoplay = false;
+    media.playsInline = true;
+    media.preload = "auto";
+  } catch (_err) {
+    // Ignore media property failures.
+  }
+
+  try {
+    if (resource && typeof resource === "object") {
+      // Avoid Pixi autoplay recursion on some browsers/video codecs.
+      if ("autoPlay" in resource) resource.autoPlay = false;
+      if ("_autoPlay" in resource) resource._autoPlay = false;
+      if ("autoUpdate" in resource) resource.autoUpdate = true;
+    }
+    if ("autoUpdate" in base) base.autoUpdate = true;
+  } catch (_err) {
+    // Ignore resource property failures.
+  }
+
+  try {
+    if (!VIDEO_PLAY_REQUESTED.has(media)) {
+      VIDEO_PLAY_REQUESTED.add(media);
+      const tryPlay = () => {
+        try {
+          const playPromise = media.play?.();
+          if (playPromise && typeof playPromise.catch === "function") {
+            playPromise.catch(() => {
+              VIDEO_PLAY_REQUESTED.delete(media);
+            });
+          }
+        } catch (_err) {
+          VIDEO_PLAY_REQUESTED.delete(media);
+        }
+      };
+      if (Number(media.readyState ?? 0) >= 2) tryPlay();
+      else media.addEventListener?.("loadeddata", tryPlay, { once: true });
+    }
+  } catch (_err) {
+    // Ignore playback failures.
+  }
+
+  base.update?.();
+  return true;
+}
+
 function getSamplerWrapUniformCode(wrap) {
   if (wrap === "clamp") return 0;
   if (wrap === "mirror") return 2;
@@ -1065,9 +1154,10 @@ export class ShaderManager {
     const normalized = String(path ?? "").trim();
     if (!normalized) return null;
 
-    const texture = PIXI.Texture.from(normalized);
+    const texture = createImportedChannelTexture(normalized);
     const base = texture?.baseTexture;
     if (!base) return null;
+    ensureVideoTexturePlayback(texture, normalized);
 
     base.wrapMode = PIXI.WRAP_MODES.CLAMP;
     base.scaleMode = PIXI.SCALE_MODES.LINEAR;
@@ -4340,9 +4430,10 @@ export class ShaderManager {
         };
       }
 
-      const texture = PIXI.Texture.from(resolvedPath);
+      const texture = createImportedChannelTexture(resolvedPath);
       const base = texture?.baseTexture;
       if (base) {
+        ensureVideoTexturePlayback(texture, resolvedPath);
         applyChannelSamplerToTexture(texture, channelConfig, mode);
         base.once?.("error", (err) => {
           this._notifyImportedChannelTextureLoadError({
