@@ -1526,9 +1526,6 @@ export function createMenus({ moduleId, shaderManager }) {
           <div class="form-fields">
             <textarea name="editCommonSourceDialog" rows="18">${escapedSource}</textarea>
           </div>
-          <p class="notes">
-            Common code is prepended at compile time to Image/Buffer passes for this imported shader.
-          </p>
         </div>
       </form>
     `;
