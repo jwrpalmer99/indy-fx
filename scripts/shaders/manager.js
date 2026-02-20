@@ -317,6 +317,7 @@ function buildShaderLibraryPayloadDiagnostics(records) {
   const list = toArray(records);
   const summary = {
     totalSourceBytes: 0,
+    totalCommonSourceBytes: 0,
     totalThumbnailBytes: 0,
     totalDefaultsBytes: 0,
     totalChannelConfigBytes: 0,
@@ -337,6 +338,8 @@ function buildShaderLibraryPayloadDiagnostics(records) {
     if (!record || typeof record !== "object") continue;
     const id = String(record.id ?? "");
     const sourceBytes = typeof record.source === "string" ? record.source.length : 0;
+    const commonSourceBytes =
+      typeof record.commonSource === "string" ? record.commonSource.length : 0;
     const thumbnail = typeof record.thumbnail === "string" ? record.thumbnail : "";
     const thumbnailBytes = thumbnail.length;
     const defaultsBytes = safeJsonLength(record.defaults ?? {});
@@ -345,6 +348,7 @@ function buildShaderLibraryPayloadDiagnostics(records) {
     const totalBytes = safeJsonLength(record);
 
     summary.totalSourceBytes += sourceBytes;
+    summary.totalCommonSourceBytes += commonSourceBytes;
     summary.totalThumbnailBytes += thumbnailBytes;
     summary.totalDefaultsBytes += defaultsBytes;
     summary.totalChannelConfigBytes += channelConfigBytes;
@@ -365,6 +369,7 @@ function buildShaderLibraryPayloadDiagnostics(records) {
       id,
       totalBytes,
       sourceBytes,
+      commonSourceBytes,
       thumbnailBytes,
       defaultsBytes,
       channelConfigBytes,
@@ -2015,6 +2020,7 @@ export class ShaderManager {
       size = THUMBNAIL_SIZE,
       defaults = null,
       source = null,
+      commonSource = null,
       channels = null,
       autoAssignCapture = null,
       reason = "",
@@ -2073,12 +2079,23 @@ export class ShaderManager {
         }
       }
     }
+    if (commonSource !== null && commonSource !== undefined) {
+      previewRecord.commonSource = this._normalizeCommonSource(commonSource);
+    } else {
+      previewRecord.commonSource = this._normalizeCommonSource(
+        previewRecord.commonSource,
+      );
+    }
+    const previewComposedSource = this._composeShaderSourceWithCommon(
+      previewRecord.source,
+      previewRecord.commonSource,
+    );
     phaseMs.sourceOverride = perfNow() - tSource0;
 
     const tRefs0 = perfNow();
     try {
       previewRecord.referencedChannels = extractReferencedChannels(
-        previewRecord.source,
+        previewComposedSource,
       );
     } catch (_err) {
       previewRecord.referencedChannels = [];
@@ -2097,7 +2114,8 @@ export class ShaderManager {
           channels,
         );
         previewRecord.channels = this.buildChannelConfig({
-          source: previewRecord.source,
+          source: previewComposedSource,
+          commonSource: previewRecord.commonSource,
           channels: mergedChannels,
           autoAssignCapture:
             autoAssignCapture === null || autoAssignCapture === undefined
@@ -2139,13 +2157,14 @@ export class ShaderManager {
       id: previewRecord.id,
       label: sanitizeName(previewRecord.label ?? previewRecord.name),
       type: "imported",
+      commonSource: previewRecord.commonSource,
       requiresResolution: true,
       usesNoiseTexture: true,
       channelConfig: previewChannelConfig,
       referencedChannels: toArray(previewRecord.referencedChannels)
         .map((v) => Number(v))
         .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
-      fragment: adaptShaderToyFragment(previewRecord.source, {
+      fragment: adaptShaderToyFragment(previewComposedSource, {
         sanitizeColor: previewHasBufferPass ? false : undefined,
       }),
     };
@@ -2571,6 +2590,7 @@ export class ShaderManager {
 
       const name = sanitizeName(raw.name ?? raw.label ?? "Imported Shader");
       const label = sanitizeName(raw.label ?? name);
+      const commonSource = this._normalizeCommonSource(raw.commonSource);
 
       let sourceText = "";
       try {
@@ -2578,6 +2598,10 @@ export class ShaderManager {
       } catch (_err) {
         continue;
       }
+      const composedSource = this._composeShaderSourceWithCommon(
+        sourceText,
+        commonSource,
+      );
 
       const baseIdRaw = String(raw.id ?? "").trim();
       const fallbackBaseId = slugify(name);
@@ -2595,7 +2619,8 @@ export class ShaderManager {
       }
 
       const channelConfig = this.buildChannelConfig({
-        source: sourceText,
+        source: composedSource,
+        commonSource,
         channels: raw.channels,
         autoAssignCapture: true,
       });
@@ -2605,7 +2630,8 @@ export class ShaderManager {
         name,
         label,
         source: sourceText,
-        referencedChannels: extractReferencedChannels(sourceText),
+        commonSource,
+        referencedChannels: extractReferencedChannels(composedSource),
         channels: channelConfig,
         defaults: this.normalizeImportedShaderDefaults(
           raw.defaults,
@@ -2815,6 +2841,7 @@ export class ShaderManager {
       size = THUMBNAIL_SIZE,
       captureSeconds = THUMBNAIL_CAPTURE_SECONDS,
       source = null,
+      commonSource = null,
       channels = null,
       defaults = null,
       autoAssignCapture = null,
@@ -2833,6 +2860,7 @@ export class ShaderManager {
       size: targetSize,
       reason: "thumbnail-regenerate",
       source,
+      commonSource,
       channels,
       defaults,
       autoAssignCapture,
@@ -3012,6 +3040,19 @@ export class ShaderManager {
     this._registeredShaderRecordSettings.add(key);
   }
 
+  _normalizeCommonSource(value) {
+    if (typeof value !== "string") return "";
+    return value.trim();
+  }
+
+  _composeShaderSourceWithCommon(source, commonSource) {
+    const mainSource = String(source ?? "").trim();
+    const sharedCommonSource = this._normalizeCommonSource(commonSource);
+    if (!sharedCommonSource) return mainSource;
+    if (!mainSource) return sharedCommonSource;
+    return `${sharedCommonSource}\n\n${mainSource}`;
+  }
+
   _normalizeImportedRecord(rawRecord, { fallbackId = "", fallbackName = "" } = {}) {
     const entry = rawRecord && typeof rawRecord === "object" ? rawRecord : null;
     if (!entry) return null;
@@ -3028,6 +3069,7 @@ export class ShaderManager {
       id,
       name: nextName,
       label: sanitizeName(entry.label ?? nextName),
+      commonSource: this._normalizeCommonSource(entry.commonSource),
       thumbnail: typeof entry.thumbnail === "string" ? entry.thumbnail : "",
       defaults: this.normalizeImportedShaderDefaults(
         entry.defaults,
@@ -3583,10 +3625,19 @@ export class ShaderManager {
     return defaults;
   }
 
-  buildChannelConfig({ source, channels = {}, autoAssignCapture = true } = {}) {
+  buildChannelConfig({
+    source,
+    commonSource = "",
+    channels = {},
+    autoAssignCapture = true,
+  } = {}) {
     const normalizedSource = validateShaderToySource(source);
-    const next = this.getDefaultChannelConfig(
+    const combinedSource = this._composeShaderSourceWithCommon(
       normalizedSource,
+      commonSource,
+    );
+    const next = this.getDefaultChannelConfig(
+      combinedSource,
       autoAssignCapture,
     );
 
@@ -3607,6 +3658,7 @@ export class ShaderManager {
           sourceValue = validateShaderToySource(sourceValue);
           nestedChannels = this.buildChannelConfig({
             source: sourceValue,
+            commonSource,
             channels: candidate.channels,
             autoAssignCapture: false,
           });
@@ -3635,18 +3687,23 @@ export class ShaderManager {
   }
 
   getRecordChannelConfig(record) {
+    const commonSource = this._normalizeCommonSource(record?.commonSource);
     if (!record?.source || typeof record.source !== "string") {
       return this.getDefaultChannelConfig(
         "void mainImage(out vec4 fragColor, in vec2 fragCoord){ fragColor = vec4(0.0); }",
         true,
       );
     }
+    const composedRecordSource = this._composeShaderSourceWithCommon(
+      record.source,
+      commonSource,
+    );
 
     if (!record?.channels || typeof record.channels !== "object") {
-      return this.getDefaultChannelConfig(record.source, true);
+      return this.getDefaultChannelConfig(composedRecordSource, true);
     }
 
-    const next = this.getDefaultChannelConfig(record.source, true);
+    const next = this.getDefaultChannelConfig(composedRecordSource, true);
     for (const index of CHANNEL_INDICES) {
       const key = `iChannel${index}`;
       const candidate = normalizeChannelInput(
@@ -3660,6 +3717,7 @@ export class ShaderManager {
             sourceValue = validateShaderToySource(sourceValue);
             nestedChannels = this.buildChannelConfig({
               source: sourceValue,
+              commonSource,
               channels: candidate.channels,
               autoAssignCapture: false,
             });
@@ -3699,9 +3757,14 @@ export class ShaderManager {
       (entry) => entry.id === resolvedId,
     );
     if (!record) return this.builtinById.get(DEFAULT_SHADER_ID);
+    const commonSource = this._normalizeCommonSource(record.commonSource);
+    const composedSource = this._composeShaderSourceWithCommon(
+      record.source,
+      commonSource,
+    );
     let referencedChannels = [];
     try {
-      referencedChannels = extractReferencedChannels(record.source);
+      referencedChannels = extractReferencedChannels(composedSource);
     } catch (_err) {
       referencedChannels = toArray(record.referencedChannels);
     }
@@ -3715,13 +3778,14 @@ export class ShaderManager {
       id: record.id,
       label: sanitizeName(record.label ?? record.name),
       type: "imported",
+      commonSource,
       requiresResolution: true,
       usesNoiseTexture: true,
       channelConfig,
       referencedChannels: toArray(referencedChannels)
         .map((v) => Number(v))
         .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
-      fragment: adaptShaderToyFragment(record.source, {
+      fragment: adaptShaderToyFragment(composedSource, {
         sanitizeColor: hasBufferPass ? false : undefined,
       }),
     };
@@ -3730,19 +3794,37 @@ export class ShaderManager {
   buildImportedDefinitionOverride(
     shaderId,
     sourceOverride,
-    { referencedChannels = null } = {},
+    { referencedChannels = null, commonSource = null, channels = null } = {},
   ) {
     const record = this.getImportedRecord(shaderId);
     if (!record) return null;
 
     const sourceText = String(sourceOverride ?? "");
-    if (!sourceText.trim()) return null;
-    const validatedSource = validateShaderToySource(sourceText);
+    const validatedSource = sourceText.trim()
+      ? validateShaderToySource(sourceText)
+      : String(record.source ?? "");
+    const overrideCommonSource =
+      commonSource == null
+        ? this._normalizeCommonSource(record.commonSource)
+        : this._normalizeCommonSource(commonSource);
+    const composedSource = this._composeShaderSourceWithCommon(
+      validatedSource,
+      overrideCommonSource,
+    );
     const refs = Array.isArray(referencedChannels)
       ? referencedChannels
-      : extractReferencedChannels(validatedSource);
+      : extractReferencedChannels(composedSource);
 
-    const channelConfig = this.getRecordChannelConfig(record);
+    const channelInput =
+      channels == null
+        ? foundry.utils.deepClone(record.channels ?? {})
+        : this._mergeChannelsPreservingNested(record.channels ?? {}, channels ?? {});
+    const channelConfig = this.buildChannelConfig({
+      source: composedSource,
+      commonSource: overrideCommonSource,
+      channels: channelInput,
+      autoAssignCapture: Boolean(record?.autoAssignCapture),
+    });
     const hasBufferPass =
       channelConfigHasMode(channelConfig, "buffer") ||
       channelConfigHasMode(channelConfig, "bufferSelf");
@@ -3751,13 +3833,14 @@ export class ShaderManager {
       id: record.id,
       label: sanitizeName(record.label ?? record.name),
       type: "imported",
+      commonSource: overrideCommonSource,
       requiresResolution: true,
       usesNoiseTexture: true,
       channelConfig,
       referencedChannels: toArray(refs)
         .map((v) => Number(v))
         .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
-      fragment: adaptShaderToyFragment(validatedSource, {
+      fragment: adaptShaderToyFragment(composedSource, {
         sanitizeColor: hasBufferPass ? false : undefined,
       }),
     };
@@ -3810,10 +3893,15 @@ export class ShaderManager {
     const cachePreviewMode = options?.previewMode === true ? "1" : "0";
     const cacheTargetType = String(options?.targetType ?? "").trim().toLowerCase();
     const cacheTargetId = String(options?.targetId ?? "").trim();
-    const cacheKey = mode === "buffer" && source
+    const commonSource = this._normalizeCommonSource(options?.commonSource);
+    const composedBufferSource =
+      mode === "buffer"
+        ? this._composeShaderSourceWithCommon(source, commonSource)
+        : "";
+    const cacheKey = mode === "buffer" && composedBufferSource
       ? [
         "buffer",
-        source,
+        composedBufferSource,
         String(bufferWidth),
         String(bufferHeight),
         cacheShaderId,
@@ -4061,13 +4149,13 @@ export class ShaderManager {
       };
     }
 
-    if (mode === "buffer" && source) {
+    if (mode === "buffer" && composedBufferSource) {
       if (resolveCache && cacheKey && resolveCache.has(cacheKey)) {
         return resolveCache.get(cacheKey);
       }
       try {
         const runtimeBuffer = new ShaderToyBufferChannel({
-          source,
+          source: composedBufferSource,
           width: bufferWidth,
           height: bufferHeight,
           size: Math.max(bufferWidth, bufferHeight),
@@ -4422,6 +4510,7 @@ export class ShaderManager {
             captureRotationDeg: cfg.captureRotationDeg,
             captureFlipHorizontal: cfg.captureFlipHorizontal,
             captureFlipVertical: cfg.captureFlipVertical,
+            commonSource: def.commonSource,
             bufferSizeHint: importedBufferSizeHint,
             bufferWidthHint: importedBufferResolutionHint[0],
             bufferHeightHint: importedBufferResolutionHint[1],
@@ -4619,6 +4708,7 @@ export class ShaderManager {
     name,
     label = null,
     source,
+    commonSource = "",
     channels = {},
     autoAssignCapture = true,
     defaults = null,
@@ -4626,7 +4716,12 @@ export class ShaderManager {
     const normalizedName = sanitizeName(name);
     const normalizedLabel = sanitizeName(label ?? normalizedName);
     const normalizedSource = validateShaderToySource(source);
-    adaptShaderToyFragment(normalizedSource);
+    const normalizedCommonSource = this._normalizeCommonSource(commonSource);
+    const composedSource = this._composeShaderSourceWithCommon(
+      normalizedSource,
+      normalizedCommonSource,
+    );
+    adaptShaderToyFragment(composedSource);
 
     const records = this.getImportedRecords();
     const used = new Set(records.map((entry) => entry.id));
@@ -4642,9 +4737,11 @@ export class ShaderManager {
       name: normalizedName,
       label: normalizedLabel,
       source: normalizedSource,
-      referencedChannels: extractReferencedChannels(normalizedSource),
+      commonSource: normalizedCommonSource,
+      referencedChannels: extractReferencedChannels(composedSource),
       channels: this.buildChannelConfig({
-        source: normalizedSource,
+        source: composedSource,
+        commonSource: normalizedCommonSource,
         channels,
         autoAssignCapture,
       }),
@@ -4929,7 +5026,7 @@ export class ShaderManager {
       stack.add(passKey);
       let source = "";
       try {
-        source = validateShaderToySource(pass.__cpfxCombinedCode ?? pass.code);
+        source = validateShaderToySource(pass.__cpfxPassCode ?? pass.code);
       } catch (_err) {
         source = "";
       }
@@ -5125,9 +5222,7 @@ export class ShaderManager {
 
     for (const pass of renderPasses) {
       const passCode = String(pass?.code ?? "").trim();
-      pass.__cpfxCombinedCode = commonCode
-        ? `${commonCode}\n\n${passCode}`
-        : passCode;
+      pass.__cpfxPassCode = passCode;
     }
 
 
@@ -5178,7 +5273,7 @@ export class ShaderManager {
     );
     if (!imagePass) imagePass = renderPasses[0];
     const imageSource = validateShaderToySource(
-      imagePass.__cpfxCombinedCode ?? imagePass.code,
+      imagePass.__cpfxPassCode ?? imagePass.code,
     );
 
     const channels = this._buildChannelsFromShaderToyInputs(
@@ -5198,6 +5293,7 @@ export class ShaderManager {
     const record = await this.importShaderToy({
       name: displayName,
       source: imageSource,
+      commonSource: commonCode,
       channels,
       autoAssignCapture: false,
     });
@@ -5306,6 +5402,7 @@ export class ShaderManager {
       name = null,
       label = null,
       source = null,
+      commonSource = null,
       channels = null,
       defaults = null,
       autoAssignCapture = true,
@@ -5314,6 +5411,7 @@ export class ShaderManager {
     const saveStart = nowMs();
     const timings = {};
     const sourceProvided = source != null;
+    const commonSourceProvided = commonSource != null;
 
     let phaseStart = nowMs();
     const records = this.getImportedRecords();
@@ -5334,24 +5432,38 @@ export class ShaderManager {
       label == null
         ? sanitizeName(record.label ?? nextName)
         : sanitizeName(label);
+    const nextCommonSource =
+      commonSource == null
+        ? this._normalizeCommonSource(record.commonSource)
+        : this._normalizeCommonSource(commonSource);
     timings.normalizeNamesMs = roundMs(nowMs() - phaseStart);
     const nameChanged = nextName !== String(record.name ?? "");
     const labelChanged = nextLabel !== String(record.label ?? nextName);
+    const commonSourceChanged =
+      nextCommonSource !== this._normalizeCommonSource(record.commonSource);
 
     phaseStart = nowMs();
     const nextSource =
       source == null ? record.source : validateShaderToySource(source);
+    const nextComposedSource = this._composeShaderSourceWithCommon(
+      nextSource,
+      nextCommonSource,
+    );
     timings.validateSourceMs = roundMs(nowMs() - phaseStart);
     const sourceChanged = nextSource !== record.source;
 
     phaseStart = nowMs();
-    adaptShaderToyFragment(nextSource);
+    adaptShaderToyFragment(nextComposedSource);
     timings.adapterCompileCheckMs = roundMs(nowMs() - phaseStart);
     debugLog(this.moduleId, "shader text compile", {
       shaderId,
       context: "editor-save",
-      sourceChanged: source != null && nextSource !== record.source,
+      sourceChanged:
+        source != null && nextSource !== record.source,
+      commonSourceChanged,
       sourceLength: String(nextSource ?? "").length,
+      commonSourceLength: String(nextCommonSource ?? "").length,
+      composedSourceLength: String(nextComposedSource ?? "").length,
     });
 
     phaseStart = nowMs();
@@ -5363,7 +5475,8 @@ export class ShaderManager {
 
     phaseStart = nowMs();
     const nextChannels = this.buildChannelConfig({
-      source: nextSource,
+      source: nextComposedSource,
+      commonSource: nextCommonSource,
       channels: channelInput,
       autoAssignCapture,
     });
@@ -5383,23 +5496,30 @@ export class ShaderManager {
       JSON.stringify(record.defaults ?? {});
 
     phaseStart = nowMs();
-    const referencedChannels = extractReferencedChannels(nextSource);
+    const referencedChannels = extractReferencedChannels(nextComposedSource);
     timings.extractReferencedChannelsMs = roundMs(nowMs() - phaseStart);
     const previousReferencedChannels = Array.isArray(record.referencedChannels)
       ? record.referencedChannels
-      : extractReferencedChannels(String(record.source ?? ""));
+      : extractReferencedChannels(
+          this._composeShaderSourceWithCommon(
+            String(record.source ?? ""),
+            this._normalizeCommonSource(record.commonSource),
+          ),
+        );
     const referencedChannelsChanged =
       JSON.stringify(referencedChannels ?? []) !==
       JSON.stringify(previousReferencedChannels ?? []);
     const shouldPersist =
       nameChanged ||
       labelChanged ||
+      commonSourceChanged ||
       sourceChanged ||
       channelsChanged ||
       defaultsChanged ||
       referencedChannelsChanged;
     const thumbnailRegenerateReasons = [];
     if (sourceChanged) thumbnailRegenerateReasons.push("source");
+    if (commonSourceChanged) thumbnailRegenerateReasons.push("commonSource");
     if (channelsChanged) thumbnailRegenerateReasons.push("channels");
     if (defaultsChanged) thumbnailRegenerateReasons.push("defaults");
     if (referencedChannelsChanged) thumbnailRegenerateReasons.push("referencedChannels");
@@ -5412,6 +5532,7 @@ export class ShaderManager {
         name: nextName,
         label: nextLabel,
         source: nextSource,
+        commonSource: nextCommonSource,
         channels: nextChannels,
         defaults: normalizedDefaults,
         referencedChannels,
@@ -5456,6 +5577,7 @@ export class ShaderManager {
     if (shouldPersist && shouldRegenerateThumbnail) {
       this._queueImportedShaderThumbnailRegeneration(shaderId, {
         source: nextSource,
+        commonSource: nextCommonSource,
         channels: nextChannels,
         defaults: normalizedDefaults,
         autoAssignCapture,
@@ -5470,8 +5592,12 @@ export class ShaderManager {
     debugLog(this.moduleId, "shader save timing", {
       shaderId,
       sourceProvided,
+      commonSourceProvided,
       sourceChanged: sourceProvided && sourceChanged,
+      commonSourceChanged,
       sourceLength: String(nextSource ?? "").length,
+      commonSourceLength: String(nextCommonSource ?? "").length,
+      composedSourceLength: String(nextComposedSource ?? "").length,
       channelInputKeys: Object.keys(channelInput ?? {}).length,
       referencedChannelsCount: Array.isArray(referencedChannels)
         ? referencedChannels.length
@@ -5502,6 +5628,11 @@ export class ShaderManager {
     }
 
     const record = records[idx];
+    const commonSource = this._normalizeCommonSource(record.commonSource);
+    const composedSource = this._composeShaderSourceWithCommon(
+      record.source,
+      commonSource,
+    );
     const mergedChannels = this._mergeChannelsPreservingNested(
       record.channels ?? {},
       channels ?? {},
@@ -5509,11 +5640,12 @@ export class ShaderManager {
     records[idx] = {
       ...record,
       channels: this.buildChannelConfig({
-        source: record.source,
+        source: composedSource,
+        commonSource,
         channels: mergedChannels,
         autoAssignCapture,
       }),
-      referencedChannels: extractReferencedChannels(record.source),
+      referencedChannels: extractReferencedChannels(composedSource),
       updatedAt: Date.now(),
     };
 
@@ -5524,6 +5656,7 @@ export class ShaderManager {
     });
     this._queueImportedShaderThumbnailRegeneration(shaderId, {
       source: record.source,
+      commonSource,
       channels: records[idx]?.channels ?? mergedChannels,
       defaults: records[idx]?.defaults ?? record.defaults,
       autoAssignCapture,

@@ -41,14 +41,7 @@ import {
   destroyRegionClusterRuntime
 } from "./shader-runtime-utils.js";
 import { getCircleMaskTexture } from "./shaders/textures.js";
-import {
-  applyEditableShaderVariables,
-  extractEditableShaderVariables,
-  formatShaderScalarValue,
-  formatShaderVectorValue,
-  hexToVecRgb as hexToVecRgbForShaderVariable,
-  vecToHex as vecToHexForShaderVariable,
-} from "./shader-variable-utils.js";
+import { openShaderVariableEditorDialog } from "./shader-variable-editor-dialog.js";
 import { applyEditorSettingTooltips } from "./editor-tooltips.js";
 const MODULE_ID = "indy-fx";
 const SOCKET = `module.${MODULE_ID}`;
@@ -1997,6 +1990,16 @@ function sanitizeShaderPersistOpts(opts = {}) {
   } else {
     delete clean.instanceSource;
   }
+  if (typeof clean.instanceCommonSource === "string") {
+    if (!clean.instanceCommonSource.trim()) delete clean.instanceCommonSource;
+  } else {
+    delete clean.instanceCommonSource;
+  }
+  if (!clean.instanceChannels || typeof clean.instanceChannels !== "object") {
+    delete clean.instanceChannels;
+  } else if (!Object.keys(clean.instanceChannels).length) {
+    delete clean.instanceChannels;
+  }
   return clean;
 }
 
@@ -2095,7 +2098,16 @@ function resolveInstanceShaderDefinitionOverride(
   { notify = false, target = null } = {},
 ) {
   const instanceSource = String(opts?.instanceSource ?? "");
-  if (!instanceSource.trim()) return null;
+  const instanceCommonSource = String(opts?.instanceCommonSource ?? "");
+  const instanceChannels =
+    opts?.instanceChannels && typeof opts.instanceChannels === "object"
+      ? opts.instanceChannels
+      : null;
+  const hasSourceOverride = instanceSource.trim().length > 0;
+  const hasCommonOverride = instanceCommonSource.trim().length > 0;
+  const hasChannelOverride =
+    !!instanceChannels && Object.keys(instanceChannels).length > 0;
+  if (!hasSourceOverride && !hasCommonOverride && !hasChannelOverride) return null;
   const normalizedShaderId = String(shaderId ?? "").trim();
   if (!normalizedShaderId) return null;
   const importedRecord = shaderManager.getImportedRecord?.(normalizedShaderId);
@@ -2108,7 +2120,11 @@ function resolveInstanceShaderDefinitionOverride(
   try {
     const override = shaderManager.buildImportedDefinitionOverride?.(
       normalizedShaderId,
-      instanceSource,
+      hasSourceOverride ? instanceSource : String(importedRecord?.source ?? ""),
+      {
+        commonSource: hasCommonOverride ? instanceCommonSource : null,
+        channels: hasChannelOverride ? instanceChannels : null,
+      },
     );
     return override ?? null;
   } catch (err) {
@@ -2431,6 +2447,17 @@ function getDocumentShaderEditableOptions(target) {
   if (typeof opts.instanceSource !== "string" || !opts.instanceSource.trim()) {
     delete opts.instanceSource;
   }
+  if (
+    typeof opts.instanceCommonSource !== "string" ||
+    !opts.instanceCommonSource.trim()
+  ) {
+    delete opts.instanceCommonSource;
+  }
+  if (!opts.instanceChannels || typeof opts.instanceChannels !== "object") {
+    delete opts.instanceChannels;
+  } else if (!Object.keys(opts.instanceChannels).length) {
+    delete opts.instanceChannels;
+  }
   opts._disabled = parsePersistDisabled(persisted?._disabled);
   return opts;
 }
@@ -2483,14 +2510,47 @@ function parseDocumentShaderForm(root, currentOpts) {
   next.bloomQuality = numVal("bloomQuality", Number(next.bloomQuality ?? 2));
   const instanceSourceInput = root?.querySelector?.('[name="instanceSource"]');
   const instanceSourceShaderIdInput = root?.querySelector?.('[name="instanceSourceShaderId"]');
+  const instanceCommonSourceInput = root?.querySelector?.('[name="instanceCommonSource"]');
+  const instanceChannelsJsonInput = root?.querySelector?.('[name="instanceChannelsJson"]');
   const instanceSource = instanceSourceInput instanceof HTMLTextAreaElement
     ? String(instanceSourceInput.value ?? "")
+    : "";
+  const instanceCommonSource = instanceCommonSourceInput instanceof HTMLTextAreaElement
+    ? String(instanceCommonSourceInput.value ?? "")
+    : "";
+  const instanceChannelsJson = instanceChannelsJsonInput instanceof HTMLTextAreaElement
+    ? String(instanceChannelsJsonInput.value ?? "")
     : "";
   const instanceSourceShaderId = String(instanceSourceShaderIdInput?.value ?? "").trim();
   if (instanceSource.trim() && (!instanceSourceShaderId || instanceSourceShaderId === next.shaderId)) {
     next.instanceSource = instanceSource;
   } else {
     delete next.instanceSource;
+  }
+  if (
+    instanceCommonSource.trim() &&
+    (!instanceSourceShaderId || instanceSourceShaderId === next.shaderId)
+  ) {
+    next.instanceCommonSource = instanceCommonSource;
+  } else {
+    delete next.instanceCommonSource;
+  }
+  if (
+    instanceChannelsJson.trim() &&
+    (!instanceSourceShaderId || instanceSourceShaderId === next.shaderId)
+  ) {
+    try {
+      const parsed = JSON.parse(instanceChannelsJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        next.instanceChannels = parsed;
+      } else {
+        delete next.instanceChannels;
+      }
+    } catch (_err) {
+      delete next.instanceChannels;
+    }
+  } else {
+    delete next.instanceChannels;
   }
 
   const enabledInput = root?.querySelector?.('[name="enabled"]');
@@ -2568,9 +2628,20 @@ async function openDocumentShaderConfigDialog(app) {
     `<input type="number" name="${name}" value="${escapeHtml(value)}" ${attrs}>`;
   const currentInstanceSource =
     typeof current?.instanceSource === "string" ? current.instanceSource : "";
-  const currentInstanceSourceShaderId = currentInstanceSource.trim()
-    ? String(current.shaderId ?? "")
-    : "";
+  const currentInstanceCommonSource =
+    typeof current?.instanceCommonSource === "string"
+      ? current.instanceCommonSource
+      : "";
+  const currentInstanceChannelsJson =
+    current?.instanceChannels && typeof current.instanceChannels === "object"
+      ? JSON.stringify(current.instanceChannels)
+      : "";
+  const currentInstanceSourceShaderId =
+    currentInstanceSource.trim() ||
+    currentInstanceCommonSource.trim() ||
+    currentInstanceChannelsJson.trim()
+      ? String(current.shaderId ?? "")
+      : "";
 
   const content = `
 <form class="indy-fx-doc-shader-config" style="max-height:min(74vh, calc(100vh - 240px));overflow-y:auto;overflow-x:hidden;padding-right:0.35rem;">
@@ -2583,6 +2654,8 @@ async function openDocumentShaderConfigDialog(app) {
     <div class="form-fields"><select name="shaderId">${shaderOptions}</select></div>
   </div>
   <textarea name="instanceSource" style="display:none;">${escapeHtml(currentInstanceSource)}</textarea>
+  <textarea name="instanceCommonSource" style="display:none;">${escapeHtml(currentInstanceCommonSource)}</textarea>
+  <textarea name="instanceChannelsJson" style="display:none;">${escapeHtml(currentInstanceChannelsJson)}</textarea>
   <input type="hidden" name="instanceSourceShaderId" value="${escapeHtml(currentInstanceSourceShaderId)}" />
   <div class="form-group"><label>Layer</label><div class="form-fields"><select name="layer">${layerOptions}</select></div></div>
   <div class="form-group"><label>Gradient Mask</label><div class="form-fields">${checkbox("useGradientMask", current.useGradientMask === true)}</div></div>
@@ -2728,12 +2801,27 @@ async function openDocumentShaderConfigDialog(app) {
 
     const hasInstanceSourceOverride =
       typeof next?.instanceSource === "string" && next.instanceSource.trim().length > 0;
-    if (hasInstanceSourceOverride) {
+    const hasInstanceCommonOverride =
+      typeof next?.instanceCommonSource === "string" &&
+      next.instanceCommonSource.trim().length > 0;
+    const hasInstanceChannelOverride =
+      !!next?.instanceChannels &&
+      typeof next.instanceChannels === "object" &&
+      Object.keys(next.instanceChannels).length > 0;
+    const hasInstanceOverride =
+      hasInstanceSourceOverride || hasInstanceCommonOverride || hasInstanceChannelOverride;
+    if (hasInstanceOverride) {
       const normalizedShaderId = String(next?.shaderId ?? "").trim();
       if (!shaderManager.getImportedRecord?.(normalizedShaderId)) {
         delete next.instanceSource;
+        delete next.instanceCommonSource;
+        delete next.instanceChannels;
         const sourceInput = form?.querySelector?.('[name="instanceSource"]');
         if (sourceInput instanceof HTMLTextAreaElement) sourceInput.value = "";
+        const commonSourceInput = form?.querySelector?.('[name="instanceCommonSource"]');
+        if (commonSourceInput instanceof HTMLTextAreaElement) commonSourceInput.value = "";
+        const channelsInput = form?.querySelector?.('[name="instanceChannelsJson"]');
+        if (channelsInput instanceof HTMLTextAreaElement) channelsInput.value = "";
         const sourceShaderInput = form?.querySelector?.('[name="instanceSourceShaderId"]');
         if (sourceShaderInput instanceof HTMLInputElement) sourceShaderInput.value = "";
       } else {
@@ -2785,200 +2873,124 @@ async function openDocumentShaderConfigDialog(app) {
     const storedSource = instanceSourceInput instanceof HTMLTextAreaElement
       ? String(instanceSourceInput.value ?? "")
       : "";
+    const instanceCommonSourceInput = form?.querySelector?.('[name="instanceCommonSource"]');
+    const instanceChannelsJsonInput = form?.querySelector?.('[name="instanceChannelsJson"]');
     const storedSourceShaderId = String(instanceSourceShaderIdInput?.value ?? "").trim();
     let workingSource = (storedSource.trim() && (!storedSourceShaderId || storedSourceShaderId === shaderId))
       ? storedSource
       : String(record.source ?? "");
+    const storedCommonSource = instanceCommonSourceInput instanceof HTMLTextAreaElement
+      ? String(instanceCommonSourceInput.value ?? "")
+      : "";
+    let workingCommonSource =
+      storedCommonSource.trim() && (!storedSourceShaderId || storedSourceShaderId === shaderId)
+        ? storedCommonSource
+        : String(record?.commonSource ?? "");
+    const storedChannelsJson = instanceChannelsJsonInput instanceof HTMLTextAreaElement
+      ? String(instanceChannelsJsonInput.value ?? "")
+      : "";
+    const parsedStoredChannels = (() => {
+      if (!(storedChannelsJson.trim() && (!storedSourceShaderId || storedSourceShaderId === shaderId))) return null;
+      try {
+        const parsed = JSON.parse(storedChannelsJson);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+      } catch (_err) {
+        return null;
+      }
+    })();
+    let workingChannels = foundry.utils.deepClone(
+      parsedStoredChannels ?? record?.channels ?? {},
+    );
 
-    const variables = extractEditableShaderVariables(workingSource);
-    if (!variables.length) {
-      ui.notifications.info(
-        "No editable const/#define bool/float/int/vec3/vec4 variables detected.",
-      );
-      return;
-    }
-
-    const rows = variables
-      .map((variable, index) => {
-        const name = String(variable.name ?? "");
-        const type = String(variable.type ?? "");
-        if (variable.kind === "scalar") {
-          if (type === "bool") {
-            const isChecked = Boolean(variable.value);
-            return `
-              <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
-                <label>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
-                <div class="form-fields">
-                  <label class="checkbox" style="gap:.35rem;">
-                    <input type="checkbox" name="var_${index}_value" ${isChecked ? "checked" : ""} />
-                    Enabled
-                  </label>
-                </div>
-              </div>
-            `;
-          }
-          return `
-            <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
-              <label>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
-              <div class="form-fields">
-                <input type="number" name="var_${index}_value" value="${escapeHtml(formatShaderScalarValue(variable.value, type))}" step="${type === "int" ? "1" : "0.001"}" />
-              </div>
-            </div>
-          `;
-        }
-
-        const expected = type === "vec4" ? 4 : 3;
-        const values = Array.isArray(variable.values) ? variable.values.slice(0, expected) : [];
-        while (values.length < expected) values.push(0);
-        const colorHex = vecToHexForShaderVariable(values);
-        const componentInputs = values
-          .map(
-            (value, componentIndex) =>
-              `<input type="number" name="var_${index}_c${componentIndex}" value="${escapeHtml(formatShaderVectorValue(value))}" step="0.001" />`,
-          )
-          .join("");
-
-        return `
-          <div class="form-group" data-var-index="${index}" data-var-kind="vector" data-var-type="${escapeHtml(type)}">
-            <label>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
-            <div class="form-fields" style="gap:0.35rem;align-items:center;flex-wrap:wrap;">
-              <input type="color" name="var_${index}_color" value="${escapeHtml(colorHex)}" />
-              ${componentInputs}
-            </div>
-          </div>
-        `;
-      })
-      .join("");
-
-    const variableContent = `<form class="indy-fx-variable-editor" style="max-height:min(72vh, calc(100vh - 220px));overflow-y:auto;overflow-x:hidden;padding-right:.35rem;">${rows}</form>`;
-
-    const readDialogVariables = (dialogRoot) => {
-      return variables.map((variable, index) => {
-        if (variable.kind === "scalar") {
-          if (String(variable.type ?? "") === "bool") {
-            const el = dialogRoot?.querySelector?.(`[name="var_${index}_value"]`);
-            const checked = el instanceof HTMLInputElement ? el.checked : Boolean(variable.value);
-            return {
-              ...variable,
-              value: checked,
-            };
-          }
-          const raw = Number(dialogRoot?.querySelector?.(`[name="var_${index}_value"]`)?.value);
-          return {
-            ...variable,
-            value: Number.isFinite(raw) ? raw : Number(variable.value ?? 0),
-          };
-        }
-
-        const type = String(variable.type ?? "vec3");
-        const expected = type === "vec4" ? 4 : 3;
-        const values = [];
-        for (let componentIndex = 0; componentIndex < expected; componentIndex += 1) {
-          const raw = Number(
-            dialogRoot?.querySelector?.(`[name="var_${index}_c${componentIndex}"]`)?.value,
-          );
-          values.push(Number.isFinite(raw) ? raw : Number(variable.values?.[componentIndex] ?? 0));
-        }
-        return {
-          ...variable,
-          values,
-        };
-      });
+    const writeInstanceCommonToHost = () => {
+      if (instanceCommonSourceInput instanceof HTMLTextAreaElement) {
+        instanceCommonSourceInput.value = String(workingCommonSource ?? "");
+      }
+      if (instanceSourceShaderIdInput instanceof HTMLInputElement) {
+        instanceSourceShaderIdInput.value = shaderId;
+      }
     };
-
-    const writeOverrideToHost = (sourceText) => {
-      if (instanceSourceInput instanceof HTMLTextAreaElement) {
-        instanceSourceInput.value = sourceText;
+    const writeInstanceChannelsToHost = () => {
+      if (instanceChannelsJsonInput instanceof HTMLTextAreaElement) {
+        instanceChannelsJsonInput.value = JSON.stringify(workingChannels ?? {});
       }
       if (instanceSourceShaderIdInput instanceof HTMLInputElement) {
         instanceSourceShaderIdInput.value = shaderId;
       }
     };
 
-    const applyFromDialog = async (dialogRoot, action = "apply") => {
-      const nextVariables = readDialogVariables(dialogRoot);
-      const nextSource = applyEditableShaderVariables(workingSource, nextVariables);
-      workingSource = nextSource;
-      writeOverrideToHost(nextSource);
-      await applyAction(dlg, action === "save" ? "save" : "apply");
-    };
-
-    const variableDialog = new foundry.applications.api.DialogV2({
-      window: {
-        title: "Edit Shader Variables",
-        resizable: true,
-      },
-      content: variableContent,
-      buttons: [
-        {
-          action: "save",
-          label: "Save",
-          icon: "fas fa-save",
-          default: true,
-          close: true,
-          callback: async (_event, _button, dialog) => {
-            const dialogRoot = resolveDialogRoot(dialog);
-            await applyFromDialog(dialogRoot, "save");
-            return true;
-          },
-        },
-        {
-          action: "apply",
-          label: "Apply",
-          icon: "fas fa-check",
-          close: false,
-          callback: async (_event, _button, dialog) => {
-            const dialogRoot = resolveDialogRoot(dialog);
-            await applyFromDialog(dialogRoot, "apply");
-            return false;
-          },
-        },
-        {
-          action: "cancel",
-          label: "Cancel",
-          icon: "fas fa-times",
-          close: true,
-        },
-      ],
-    });
-
-    await variableDialog.render(true);
-    const variableRoot = resolveDialogRoot(variableDialog);
-    ensureDialogVerticalScroll(variableRoot);
-
-    const applyButton = variableRoot?.querySelector?.('[data-action="apply"]');
-    if (applyButton instanceof HTMLElement) {
-      if (applyButton.dataset.indyFxNoCloseApplyBound !== "1") {
-        applyButton.dataset.indyFxNoCloseApplyBound = "1";
-        applyButton.addEventListener(
-          "click",
-          (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            event.stopImmediatePropagation?.();
-            const dialogRoot = resolveDialogRoot(variableDialog);
-            void applyFromDialog(dialogRoot, "apply");
-          },
-          { capture: true },
-        );
-      }
-    }
-
-    for (const group of variableRoot?.querySelectorAll?.('[data-var-kind="vector"][data-var-index]') ?? []) {
-      const idx = Number(group.getAttribute("data-var-index") ?? -1);
-      if (!Number.isInteger(idx) || idx < 0) continue;
-      const colorInput = group.querySelector(`[name="var_${idx}_color"]`);
-      if (!(colorInput instanceof HTMLInputElement)) continue;
-      colorInput.addEventListener("input", () => {
-        const rgb = hexToVecRgbForShaderVariable(colorInput.value);
-        for (let c = 0; c < 3; c += 1) {
-          const componentInput = group.querySelector(`[name="var_${idx}_c${c}"]`);
-          if (componentInput instanceof HTMLInputElement) {
-            componentInput.value = formatShaderVectorValue(rgb[c]);
+    const sourceEntries = [
+      {
+        key: "instanceSource",
+        label: "Shader Source",
+        readSource: () => String(workingSource ?? ""),
+        writeSource: (nextSource) => {
+          workingSource = String(nextSource ?? "");
+          if (instanceSourceInput instanceof HTMLTextAreaElement) {
+            instanceSourceInput.value = workingSource;
           }
-        }
+          if (instanceSourceShaderIdInput instanceof HTMLInputElement) {
+            instanceSourceShaderIdInput.value = shaderId;
+          }
+        },
+      },
+    ];
+
+    if (workingCommonSource.trim()) {
+      sourceEntries.push({
+        key: "recordCommonSource",
+        label: "Common Source",
+        readSource: () => workingCommonSource,
+        writeSource: (nextSource) => {
+          workingCommonSource = String(nextSource ?? "");
+          writeInstanceCommonToHost();
+        },
       });
     }
+
+    const channelConfig = Array.isArray(record?.channelConfig) ? record.channelConfig : [];
+    for (let channel = 0; channel < 4; channel += 1) {
+      const entry = channelConfig[channel];
+      const mode = String(entry?.mode ?? "").trim().toLowerCase();
+      if (mode !== "buffer" && mode !== "bufferself") continue;
+      const sourceText = String(entry?.source ?? "");
+      if (!sourceText.trim()) continue;
+      const channelKey = `iChannel${channel}`;
+      sourceEntries.push({
+        key: `recordBufferSource_${channel}`,
+        label: `iChannel${channel} Buffer`,
+        readSource: () => String(
+          workingChannels?.[channelKey]?.source ??
+            workingChannels?.[channel]?.source ??
+            sourceText,
+        ),
+        writeSource: (nextSource) => {
+          const next = String(nextSource ?? "");
+          const existingChannel = (() => {
+            const direct = workingChannels?.[channelKey];
+            if (direct && typeof direct === "object") return direct;
+            const numeric = workingChannels?.[channel];
+            if (numeric && typeof numeric === "object") return numeric;
+            return {};
+          })();
+          workingChannels[channelKey] = {
+            ...existingChannel,
+            mode: mode === "bufferself" ? "bufferSelf" : (existingChannel?.mode ?? entry?.mode ?? "buffer"),
+            source: next,
+          };
+          writeInstanceChannelsToHost();
+        },
+      });
+    }
+
+    await openShaderVariableEditorDialog({
+      title: "Edit Shader Variables",
+      sourceEntries,
+      onApply: async ({ action, changed }) => {
+        if (!changed) return;
+        await applyAction(dlg, action === "save" ? "save" : "apply");
+      },
+    });
   };
 
   const dlg = new foundry.applications.api.DialogV2({

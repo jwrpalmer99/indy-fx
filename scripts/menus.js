@@ -2,16 +2,9 @@ import {
   SHADER_SETTINGS_KEYS,
   DEBUG_SETTINGS_KEYS,
 } from "./settings.js";
-import {
-  applyEditableShaderVariables,
-  extractEditableShaderVariables,
-  formatShaderScalarValue as formatScalarNumber,
-  formatShaderVectorValue as formatVectorNumber,
-  hexToVecRgb,
-  vecToHex,
-} from "./shader-variable-utils.js";
 import { applyEditorSettingTooltips } from "./editor-tooltips.js";
 import { enhanceShaderCodeEditors, disposeShaderCodeEditors } from "./glsl-editor.js";
+import { openShaderVariableEditorDialog } from "./shader-variable-editor-dialog.js";
 export function createMenus({ moduleId, shaderManager }) {
   const MODULE_ID = moduleId;
   const isDebugLoggingEnabled = () => {
@@ -1162,6 +1155,7 @@ export function createMenus({ moduleId, shaderManager }) {
             name: String(shader?.name ?? ""),
             label: String(shader?.label ?? shader?.name ?? ""),
             source: String(shader?.source ?? ""),
+            commonSource: String(shader?.commonSource ?? ""),
             thumbnail: String(shader?.thumbnail ?? ""),
             defaults,
             autoAssignCapture: this._inferAutoAssignCapture(channelConfig),
@@ -1518,6 +1512,71 @@ export function createMenus({ moduleId, shaderManager }) {
       bindUi(dlg);
       setTimeout(() => bindUi(dlg), 0);
     }
+    async _openCommonSourceEditor(root, { onChanged = null } = {}) {
+      const sourceInput = root?.querySelector?.('[name="editCommonSource"]');
+      if (!(sourceInput instanceof HTMLTextAreaElement)) {
+        ui.notifications.warn("Common source editor not found.");
+        return;
+      }
+      const escapedSource = String(sourceInput.value ?? "").replace(/</g, "&lt;");
+      const content = `
+      <form class="indy-fx-common-source-edit">
+        <div class="form-group">
+          <label>Shared Common Source</label>
+          <div class="form-fields">
+            <textarea name="editCommonSourceDialog" rows="18">${escapedSource}</textarea>
+          </div>
+          <p class="notes">
+            Common code is prepended at compile time to Image/Buffer passes for this imported shader.
+          </p>
+        </div>
+      </form>
+    `;
+      const bindUi = (candidate) => {
+        const dialogRoot =
+          resolveElementRoot(candidate?.element) ??
+          resolveElementRoot(candidate);
+        if (!(dialogRoot instanceof Element)) return;
+        ensureDialogVerticalScroll(dialogRoot);
+        enhanceShaderCodeEditors(dialogRoot, {
+          selectors: ['textarea[name="editCommonSourceDialog"]'],
+        });
+      };
+      const dlg = new foundry.applications.api.DialogV2({
+        window: { title: "Edit Common Source", resizable: true },
+        position: {
+          width: 980,
+          height: Math.max(560, Math.floor(window.innerHeight * 0.82)),
+        },
+        content,
+        buttons: [
+          {
+            action: "save",
+            label: "Apply",
+            icon: "fas fa-save",
+            default: true,
+            callback: (_event, _button, dialog) => {
+              const dialogRoot =
+                resolveElementRoot(dialog?.element) ??
+                resolveElementRoot(dialog);
+              if (!(dialogRoot instanceof Element)) return;
+              const nextSource = String(
+                dialogRoot.querySelector('[name="editCommonSourceDialog"]')
+                  ?.value ?? "",
+              );
+              sourceInput.value = nextSource;
+              sourceInput.dispatchEvent(new Event("change", { bubbles: true }));
+              if (typeof onChanged === "function") onChanged();
+            },
+          },
+          { action: "cancel", label: "Cancel", icon: "fas fa-times" },
+        ],
+        render: (app) => bindUi(app),
+      });
+      await dlg.render(true);
+      bindUi(dlg);
+      setTimeout(() => bindUi(dlg), 0);
+    }
     _injectChannelAlphaIntoMainImage(
       sourceText,
       {
@@ -1779,20 +1838,36 @@ export function createMenus({ moduleId, shaderManager }) {
     }
     async _openShaderVariableEditor(root, refreshPreview) {
       const sourceInputs = [];
-      const seenInputs = new Set();
-      const registerSourceInput = (input) => {
+      const sourceInputByKey = new Map();
+      const registerSourceInput = (input, sourceLabel) => {
         if (!(input instanceof HTMLTextAreaElement)) return;
-        if (seenInputs.has(input)) return;
-        seenInputs.add(input);
-        sourceInputs.push(input);
+        const key = String(input.name ?? "").trim() || String(sourceLabel ?? "").trim();
+        if (!key || sourceInputByKey.has(key)) return;
+        const entry = {
+          key,
+          label: String(sourceLabel ?? key),
+          input,
+        };
+        sourceInputByKey.set(key, entry);
+        sourceInputs.push(entry);
       };
 
-      registerSourceInput(root?.querySelector?.('[name="editSource"]'));
-      registerSourceInput(root?.querySelector?.('[name="editCommonSource"]'));
+      registerSourceInput(
+        root?.querySelector?.('[name="editSource"]'),
+        "Shader Source",
+      );
+      registerSourceInput(
+        root?.querySelector?.('[name="editCommonSource"]'),
+        "Common Source",
+      );
       for (const input of root?.querySelectorAll?.(
         'textarea[name^="channel"][name$="Source"]',
       ) ?? []) {
-        registerSourceInput(input);
+        const channelMatch = String(input?.name ?? "").match(/^channel([0-3])Source$/i);
+        const sourceLabel = channelMatch
+          ? `iChannel${channelMatch[1]} Buffer`
+          : "Buffer Source";
+        registerSourceInput(input, sourceLabel);
       }
 
       if (!sourceInputs.length) {
@@ -1800,210 +1875,24 @@ export function createMenus({ moduleId, shaderManager }) {
         return;
       }
 
-      const variableByKey = new Map();
-      for (const sourceInput of sourceInputs) {
-        const extracted = extractEditableShaderVariables(sourceInput.value);
-        for (const variable of extracted) {
-          const key = [
-            String(variable?.declaration ?? "const"),
-            String(variable?.kind ?? ""),
-            String(variable?.type ?? ""),
-            String(variable?.name ?? ""),
-          ].join(":");
-          if (!key || variableByKey.has(key)) continue;
-          variableByKey.set(key, variable);
-        }
-      }
-      const variables = Array.from(variableByKey.values()).sort((a, b) =>
-        String(a?.name ?? "").localeCompare(String(b?.name ?? ""), undefined, {
-          sensitivity: "base",
-        }),
-      );
-      if (!variables.length) {
-        ui.notifications.info(
-          "No editable const/#define bool/float/int/vec3/vec4 variables detected.",
-        );
-        return;
-      }
-
-      const rows = variables
-        .map((variable, index) => {
-          const name = String(variable.name ?? "");
-          const type = String(variable.type ?? "");
-          if (variable.kind === "scalar") {
-            if (type === "bool") {
-              const isChecked = Boolean(variable.value);
-              return `
-                <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
-                  <label>${name} <small style="opacity:.8;">(${type})</small></label>
-                  <div class="form-fields">
-                    <label class="checkbox" style="gap:.35rem;">
-                      <input type="checkbox" name="var_${index}_value" ${isChecked ? "checked" : ""} />
-                      Enabled
-                    </label>
-                  </div>
-                </div>
-              `;
-            }
-            return `
-              <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
-                <label>${name} <small style="opacity:.8;">(${type})</small></label>
-                <div class="form-fields">
-                  <input type="number" name="var_${index}_value" value="${formatScalarNumber(variable.value, type)}" step="${type === "int" ? "1" : "0.001"}" />
-                </div>
-              </div>
-            `;
-          }
-
-          const expected = type === "vec4" ? 4 : 3;
-          const values = Array.isArray(variable.values) ? variable.values.slice(0, expected) : [];
-          while (values.length < expected) values.push(0);
-          const colorHex = vecToHex(values);
-          const componentInputs = values
-            .map(
-              (value, componentIndex) =>
-                `<input type="number" name="var_${index}_c${componentIndex}" value="${formatVectorNumber(value)}" step="0.001" />`,
-            )
-            .join("");
-
-          return `
-            <div class="form-group" data-var-index="${index}" data-var-kind="vector" data-var-type="${type}">
-              <label>${name} <small style="opacity:.8;">(${type})</small></label>
-              <div class="form-fields" style="gap:0.35rem;align-items:center;flex-wrap:wrap;">
-                <input type="color" name="var_${index}_color" value="${colorHex}" />
-                ${componentInputs}
-              </div>
-            </div>
-          `;
-        })
-        .join("");
-
-      const content = `<form class="indy-fx-variable-editor" style="max-height:min(72vh, calc(100vh - 220px));overflow-y:auto;overflow-x:hidden;padding-right:.35rem;">${rows}</form>`;
-
-      const readDialogVariables = (dialogRoot) => {
-        return variables.map((variable, index) => {
-          if (variable.kind === "scalar") {
-            if (String(variable.type ?? "") === "bool") {
-              const el = dialogRoot?.querySelector?.(`[name="var_${index}_value"]`);
-              const checked = el instanceof HTMLInputElement ? el.checked : Boolean(variable.value);
-              return {
-                ...variable,
-                value: checked,
-              };
-            }
-            const raw = Number(dialogRoot?.querySelector?.(`[name="var_${index}_value"]`)?.value);
-            return {
-              ...variable,
-              value: Number.isFinite(raw) ? raw : Number(variable.value ?? 0),
-            };
-          }
-
-          const type = String(variable.type ?? "vec3");
-          const expected = type === "vec4" ? 4 : 3;
-          const values = [];
-          for (let componentIndex = 0; componentIndex < expected; componentIndex += 1) {
-            const raw = Number(dialogRoot?.querySelector?.(`[name="var_${index}_c${componentIndex}"]`)?.value);
-            values.push(Number.isFinite(raw) ? raw : Number(variable.values?.[componentIndex] ?? 0));
-          }
-
-          return {
-            ...variable,
-            values,
-          };
-        });
-      };
-
-      const applyFromDialog = (dialogRoot) => {
-        const nextVariables = readDialogVariables(dialogRoot);
-        for (const sourceInput of sourceInputs) {
-          const nextSource = applyEditableShaderVariables(
-            sourceInput.value,
-            nextVariables,
-          );
-          if (nextSource === sourceInput.value) continue;
-          sourceInput.value = nextSource;
-          sourceInput.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-        if (typeof refreshPreview === "function") refreshPreview();
-      };
-
-      const bindUi = (candidate) => {
-        const dialogRoot =
-          resolveElementRoot(candidate?.element) ?? resolveElementRoot(candidate);
-        if (!(dialogRoot instanceof Element)) return;
-        ensureDialogVerticalScroll(dialogRoot);
-        if (dialogRoot.dataset.indyFxVariablesBound === "1") return;
-        dialogRoot.dataset.indyFxVariablesBound = "1";
-
-        for (const group of dialogRoot.querySelectorAll('[data-var-kind="vector"][data-var-index]')) {
-          const idx = Number(group.getAttribute("data-var-index") ?? -1);
-          if (!Number.isInteger(idx) || idx < 0) continue;
-          const colorInput = group.querySelector(`[name="var_${idx}_color"]`);
-          if (!(colorInput instanceof HTMLInputElement)) continue;
-          colorInput.addEventListener("input", () => {
-            const rgb = hexToVecRgb(colorInput.value);
-            for (let c = 0; c < 3; c += 1) {
-              const componentInput = group.querySelector(`[name="var_${idx}_c${c}"]`);
-              if (componentInput instanceof HTMLInputElement) {
-                componentInput.value = formatVectorNumber(rgb[c]);
-              }
-            }
-          });
-        }
-
-        const applyButton = dialogRoot.querySelector('[data-action="apply"]');
-        if (applyButton instanceof HTMLElement) {
-          if (applyButton.dataset.indyFxNoCloseApplyBound !== "1") {
-            applyButton.dataset.indyFxNoCloseApplyBound = "1";
-            applyButton.addEventListener(
-              "click",
-              (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                event.stopImmediatePropagation?.();
-                applyFromDialog(dialogRoot);
-              },
-              { capture: true },
-            );
-          }
-        }
-      };
-
-      const dialog = new foundry.applications.api.DialogV2({
-        window: { title: "Edit Shader Variables", resizable: true },
-        content,
-        buttons: [
-          {
-            action: "apply",
-            label: "Apply",
-            icon: "fas fa-play",
-            close: false,
-            callback: (_event, _button, app) => {
-              const dialogRoot =
-                resolveElementRoot(app?.element) ?? resolveElementRoot(app);
-              if (!(dialogRoot instanceof Element)) return false;
-              applyFromDialog(dialogRoot);
-              return false;
-            },
+      await openShaderVariableEditorDialog({
+        title: "Edit Shader Variables",
+        sourceEntries: sourceInputs.map((entry) => ({
+          key: entry.key,
+          label: entry.label,
+          readSource: () => String(entry.input?.value ?? ""),
+          writeSource: (nextSource) => {
+            if (!(entry.input instanceof HTMLTextAreaElement)) return;
+            const next = String(nextSource ?? "");
+            if (entry.input.value === next) return;
+            entry.input.value = next;
+            entry.input.dispatchEvent(new Event("change", { bubbles: true }));
           },
-          {
-            action: "save",
-            label: "Save",
-            icon: "fas fa-save",
-            default: true,
-            callback: (_event, _button, app) => {
-              const dialogRoot =
-                resolveElementRoot(app?.element) ?? resolveElementRoot(app);
-              if (!(dialogRoot instanceof Element)) return;
-              applyFromDialog(dialogRoot);
-            },
-          },
-          { action: "cancel", label: "Cancel", icon: "fas fa-times" },
-        ],
-        render: (app) => bindUi(app),
+        })),
+        onApply: () => {
+          if (typeof refreshPreview === "function") refreshPreview();
+        },
       });
-      await dialog.render(true);
-      bindUi(dialog);
     }
 
     async _exportShaderLibraryToFile() {
@@ -2274,12 +2163,16 @@ export function createMenus({ moduleId, shaderManager }) {
         const sourceText = String(
           root?.querySelector?.('[name="editSource"]')?.value ?? "",
         ).trim();
+        const commonSourceText = String(
+          root?.querySelector?.('[name="editCommonSource"]')?.value ?? "",
+        );
         const { channels, autoAssignCapture } =
           this._collectChannelsFromElement(root);
         preview = shaderManager.createImportedShaderPreview(shaderId, {
           size,
           defaults,
           source: sourceText,
+          commonSource: commonSourceText,
           channels,
           autoAssignCapture,
           captureRotationDeg: defaults?.captureRotationDeg,
@@ -2512,6 +2405,19 @@ export function createMenus({ moduleId, shaderManager }) {
             });
           }
         }
+        const editCommonBtn = root.querySelector(
+          "[data-action='edit-common-source']",
+        );
+        if (editCommonBtn instanceof HTMLElement) {
+          if (editCommonBtn.dataset.indyFxEditCommonBound !== "1") {
+            editCommonBtn.dataset.indyFxEditCommonBound = "1";
+            editCommonBtn.addEventListener("click", () => {
+              void this._openCommonSourceEditor(root, {
+                onChanged: () => refreshPreview(),
+              });
+            });
+          }
+        }
 
         const bindAlphaInjectButton = ({
           selector,
@@ -2705,6 +2611,9 @@ export function createMenus({ moduleId, shaderManager }) {
                 const nextSource = String(
                   root?.querySelector('[name="editSource"]')?.value ?? "",
                 ).trim();
+                const nextCommonSource = String(
+                  root?.querySelector('[name="editCommonSource"]')?.value ?? "",
+                );
                 if (!nextName || !nextSource)
                   return ui.notifications.warn(
                     "Enter both shader name and source.",
@@ -2716,6 +2625,7 @@ export function createMenus({ moduleId, shaderManager }) {
                   name: nextName,
                   label: nextLabel || null,
                   source: nextSource,
+                  commonSource: nextCommonSource,
                   channels,
                   defaults,
                   autoAssignCapture,
