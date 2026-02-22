@@ -52,6 +52,9 @@ This involves setting a shader channel to capture the token/tile image - and the
    
 Now when you apply to a token only the non-transparent will be filled.
 
+>[!TIP]  
+>For a more complex example - applying a shader to multiple targets hit by Scorching Ray with Midi-Qol/Cauldron of Plentiful Resources please see "Flame on Scorching Ray (CPR)" in Compendium 
+
 ## Main Workflows
 ### Shader Library
 - Search/filter imported shaders by name or label.
