@@ -105,13 +105,44 @@ function _extractRegionShape(rawShape, index) {
   }
 
   if (type === "ellipse" || type === "circle") {
-    const w = Number(shape.width ?? shape.w ?? (Number(shape.radius ?? shape.r) * 2));
-    const h = Number(shape.height ?? shape.h ?? (Number(shape.radius ?? shape.r) * 2));
-    if (!(Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0)) return null;
-    const cx = ox + w * 0.5;
-    const cy = oy + h * 0.5;
-    const rx = w * 0.5;
-    const ry = h * 0.5;
+    // Foundry region data may store ellipses either as:
+    // 1) center + radii: {x,y,radiusX,radiusY}
+    // 2) top-left + width/height: {x,y,width,height}
+    // Support both so imported/generated regions (e.g. CPR) work reliably.
+    const radiusX = Number(shape.radiusX ?? shape.rx);
+    const radiusY = Number(shape.radiusY ?? shape.ry);
+    const uniformRadius = Number(shape.radius ?? shape.r);
+    const hasExplicitRadii =
+      Number.isFinite(radiusX) && radiusX > 0 &&
+      Number.isFinite(radiusY) && radiusY > 0;
+    const hasUniformRadius = Number.isFinite(uniformRadius) && uniformRadius > 0;
+
+    let cx;
+    let cy;
+    let rx;
+    let ry;
+
+    if (hasExplicitRadii || hasUniformRadius) {
+      // Radius-based format uses center coordinates.
+      const centerX = Number(shape.cx ?? shape.centerX ?? shape.x);
+      const centerY = Number(shape.cy ?? shape.centerY ?? shape.y);
+      if (!(Number.isFinite(centerX) && Number.isFinite(centerY))) return null;
+      cx = centerX;
+      cy = centerY;
+      rx = hasExplicitRadii ? radiusX : uniformRadius;
+      ry = hasExplicitRadii ? radiusY : uniformRadius;
+    } else {
+      // Width/height format is top-left anchored.
+      const w = Number(shape.width ?? shape.w);
+      const h = Number(shape.height ?? shape.h);
+      if (!(Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0)) return null;
+      cx = ox + w * 0.5;
+      cy = oy + h * 0.5;
+      rx = w * 0.5;
+      ry = h * 0.5;
+    }
+
+    if (!(Number.isFinite(rx) && rx > 0 && Number.isFinite(ry) && ry > 0)) return null;
     const c = Math.cos(rotation);
     const s = Math.sin(rotation);
     const dx = Math.sqrt((rx * c) * (rx * c) + (ry * s) * (ry * s));
