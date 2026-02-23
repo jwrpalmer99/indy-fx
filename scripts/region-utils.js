@@ -476,6 +476,7 @@ export function createRegionShapeMaskTexture(shape) {
 
 function _applyRegionRadialMask(ctx, width, height, { useGradientMask = false, radiusPx = null, gradientMaskFadeStart = 0.8 } = {}) {
   if (!ctx) return;
+  if (useGradientMask !== true) return;
   const cx = width * 0.5;
   const cy = height * 0.5;
   const requestedRadius = Number(radiusPx);
@@ -484,14 +485,6 @@ function _applyRegionRadialMask(ctx, width, height, { useGradientMask = false, r
     ? requestedRadius
     : defaultRadius;
   ctx.globalCompositeOperation = "destination-in";
-  if (useGradientMask === false) {
-    ctx.fillStyle = "rgba(255,255,255,1)";
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.closePath();
-    ctx.fill();
-    return;
-  }
   const fadeStart = Math.max(0, Math.min(0.999, Number(gradientMaskFadeStart) || 0.8));
   const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
   gradient.addColorStop(0, "rgba(255,255,255,1)");
