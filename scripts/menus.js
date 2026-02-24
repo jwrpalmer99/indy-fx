@@ -886,6 +886,79 @@ export function createMenus({ moduleId, shaderManager }) {
         (channel) => String(channel?.mode ?? "") === "sceneCapture",
       );
     }
+    _createEmptyChannelConfigEntry() {
+      return {
+        mode: "auto",
+        path: "",
+        source: "",
+        samplerFilter: "",
+        samplerWrap: "",
+        samplerVflip: null,
+      };
+    }
+    _normalizeChannelConfigEntryForEditor(value) {
+      const entry = this._createEmptyChannelConfigEntry();
+      const raw =
+        value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      entry.mode = String(raw.mode ?? entry.mode);
+      entry.path = String(raw.path ?? "").trim();
+      entry.source = String(raw.source ?? "").trim();
+      entry.samplerFilter = String(raw.samplerFilter ?? "").trim();
+      entry.samplerWrap = String(raw.samplerWrap ?? "").trim();
+      const rawVflip = raw.samplerVflip;
+      if (
+        rawVflip === true ||
+        rawVflip === "true" ||
+        rawVflip === 1 ||
+        rawVflip === "1"
+      ) {
+        entry.samplerVflip = true;
+      } else if (
+        rawVflip === false ||
+        rawVflip === "false" ||
+        rawVflip === 0 ||
+        rawVflip === "0"
+      ) {
+        entry.samplerVflip = false;
+      } else {
+        entry.samplerVflip = null;
+      }
+      return entry;
+    }
+    _normalizeNestedChannelMap(value, depth = 0) {
+      const source =
+        value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      const normalized = {};
+      for (const index of [0, 1, 2, 3]) {
+        const key = `iChannel${index}`;
+        const rawEntry = source[key] ?? source[index];
+        const entry = this._normalizeChannelConfigEntryForEditor(rawEntry);
+        if (
+          depth < 4 &&
+          String(entry.mode).trim().toLowerCase() === "buffer" &&
+          rawEntry &&
+          typeof rawEntry === "object" &&
+          rawEntry.channels &&
+          typeof rawEntry.channels === "object"
+        ) {
+          entry.channels = this._normalizeNestedChannelMap(
+            rawEntry.channels,
+            depth + 1,
+          );
+        }
+        normalized[key] = entry;
+      }
+      return normalized;
+    }
+    _parseNestedChannelMap(rawText) {
+      const raw = String(rawText ?? "").trim();
+      if (!raw) return this._normalizeNestedChannelMap({});
+      try {
+        return this._normalizeNestedChannelMap(JSON.parse(raw));
+      } catch (_err) {
+        return this._normalizeNestedChannelMap({});
+      }
+    }
     _collectChannelsFromElement(element) {
       const root =
         element instanceof HTMLElement
@@ -894,10 +967,9 @@ export function createMenus({ moduleId, shaderManager }) {
       const channels = {};
       for (const index of [0, 1, 2, 3]) {
         const vflipRaw = String(
-          root.querySelector(`[name="channel${index}SamplerVflip"]`)?.value ??
-            "",
+          root.querySelector(`[name="channel${index}SamplerVflip"]`)?.value ?? "",
         ).trim();
-        channels[`iChannel${index}`] = {
+        const entry = this._normalizeChannelConfigEntryForEditor({
           mode: String(
             root.querySelector(`[name="channel${index}Mode"]`)?.value ?? "auto",
           ),
@@ -915,9 +987,15 @@ export function createMenus({ moduleId, shaderManager }) {
             root.querySelector(`[name="channel${index}SamplerWrap"]`)?.value ??
               "",
           ).trim(),
-          samplerVflip:
-            vflipRaw === "" ? null : vflipRaw === "1" || vflipRaw === "true",
-        };
+          samplerVflip: vflipRaw,
+        });
+        const nestedRaw = String(
+          root.querySelector(`[name="channel${index}NestedChannels"]`)?.value ?? "",
+        );
+        if (String(entry.mode).trim().toLowerCase() === "buffer") {
+          entry.channels = this._parseNestedChannelMap(nestedRaw);
+        }
+        channels[`iChannel${index}`] = entry;
       }
       const autoAssignCapture =
         root.querySelector(`[name="autoAssignCapture"]`)?.checked === true;
@@ -1196,14 +1274,9 @@ export function createMenus({ moduleId, shaderManager }) {
           ),
           channelRows: [0, 1, 2, 3].map((index) => {
             const key = `iChannel${index}`;
-            const channel = channelConfig[key] ?? {
-              mode: "auto",
-              path: "",
-              source: "",
-              samplerFilter: "",
-              samplerWrap: "",
-              samplerVflip: null,
-            };
+            const channel = this._normalizeChannelConfigEntryForEditor(
+              channelConfig[key] ?? null,
+            );
             const rawVflip = channel.samplerVflip;
             const vflipValue =
               rawVflip === true || rawVflip === "true" || rawVflip === 1 || rawVflip === "1"
@@ -1211,6 +1284,9 @@ export function createMenus({ moduleId, shaderManager }) {
                 : rawVflip === false || rawVflip === "false" || rawVflip === 0 || rawVflip === "0"
                   ? "0"
                   : "";
+            const nestedChannels = this._normalizeNestedChannelMap(
+              channelConfig?.[key]?.channels ?? {},
+            );
             return {
               index,
               key,
@@ -1218,11 +1294,13 @@ export function createMenus({ moduleId, shaderManager }) {
               modeName: `channel${index}Mode`,
               pathName: `channel${index}Path`,
               sourceName: `channel${index}Source`,
+              nestedName: `channel${index}NestedChannels`,
               filterName: `channel${index}SamplerFilter`,
               wrapName: `channel${index}SamplerWrap`,
               vflipName: `channel${index}SamplerVflip`,
               path: String(channel.path ?? ""),
               source: String(channel.source ?? ""),
+              nestedChannels: JSON.stringify(nestedChannels),
               filter: String(channel.samplerFilter ?? ""),
               wrap: String(channel.samplerWrap ?? ""),
               vflip: vflipValue,
@@ -1320,7 +1398,8 @@ export function createMenus({ moduleId, shaderManager }) {
           }
         }
       }
-    }    async _openEditorChannelDialog(
+    }
+    async _openEditorChannelDialog(
       root,
       channelIndex,
       modeChoices = null,
@@ -1330,6 +1409,7 @@ export function createMenus({ moduleId, shaderManager }) {
       const modeName = `channel${channelIndex}Mode`;
       const pathName = `channel${channelIndex}Path`;
       const sourceName = `channel${channelIndex}Source`;
+      const nestedName = `channel${channelIndex}NestedChannels`;
       const filterName = `channel${channelIndex}SamplerFilter`;
       const wrapName = `channel${channelIndex}SamplerWrap`;
       const vflipName = `channel${channelIndex}SamplerVflip`;
@@ -1352,6 +1432,21 @@ export function createMenus({ moduleId, shaderManager }) {
         root.querySelector(`[name="${vflipName}"]`)?.value ?? "",
       ).trim();
       const currentVflip = currentVflipRaw === "1" || currentVflipRaw === "true";
+      const currentNestedChannels = this._parseNestedChannelMap(
+        root.querySelector(`[name="${nestedName}"]`)?.value ?? "",
+      );
+      const nestedModeChoices = {
+        ...choices,
+        bufferSelf: "Buffer self (feedback)",
+      };
+      const escapeAttr = (value) =>
+        String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/"/g, "&quot;");
+      const escapeText = (value) =>
+        String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;");
       const optionsHtml = Object.entries(choices)
         .map(
           ([value, label]) =>
@@ -1380,9 +1475,88 @@ export function createMenus({ moduleId, shaderManager }) {
             `<option value="${value}" ${value === currentWrap ? "selected" : ""}>${label}</option>`,
         )
         .join("");
-      const escapedPath = String(currentPath).replace(/"/g, "&quot;");
-      const escapedSource = String(currentSource).replace(/</g, "&lt;");
       const channelLabelStyle = `style="max-width:200px;flex:0 0 200px;"`;
+      const escapedPath = escapeAttr(currentPath);
+      const escapedSource = escapeText(currentSource);
+      const nestedRowsHtml = [0, 1, 2, 3]
+        .map((nestedIndex) => {
+          const nestedKey = `iChannel${nestedIndex}`;
+          const nested = this._normalizeChannelConfigEntryForEditor(
+            currentNestedChannels?.[nestedKey] ?? null,
+          );
+          const nestedMode = String(nested.mode ?? "auto");
+          const nestedOptionsHtml = Object.entries(nestedModeChoices)
+            .map(
+              ([value, label]) =>
+                `<option value="${value}" ${value === nestedMode ? "selected" : ""}>${label}</option>`,
+            )
+            .join("");
+          const nestedFilterOptionsHtml = [
+            { value: "", label: "Default" },
+            { value: "nearest", label: "Nearest" },
+            { value: "linear", label: "Linear" },
+            { value: "mipmap", label: "Mipmap" },
+          ]
+            .map(
+              ({ value, label }) =>
+                `<option value="${value}" ${value === String(nested.samplerFilter ?? "") ? "selected" : ""}>${label}</option>`,
+            )
+            .join("");
+          const nestedWrapOptionsHtml = [
+            { value: "", label: "Default" },
+            { value: "repeat", label: "Repeat" },
+            { value: "clamp", label: "Clamp" },
+            { value: "mirror", label: "Mirror" },
+          ]
+            .map(
+              ({ value, label }) =>
+                `<option value="${value}" ${value === String(nested.samplerWrap ?? "") ? "selected" : ""}>${label}</option>`,
+            )
+            .join("");
+          const nestedVflip = nested.samplerVflip === true;
+          return `
+          <details data-nested-channel-row data-nested-index="${nestedIndex}" style="border:1px solid var(--color-border-light-secondary,#555);border-radius:6px;padding:0.25rem 0.45rem;background:rgba(255,255,255,0.03);">
+            <summary style="cursor:pointer;user-select:none;">Buffer iChannel${nestedIndex}</summary>
+            <div class="form-group" style="margin-top:0.35rem;">
+              <label ${channelLabelStyle}>Type</label>
+              <div class="form-fields">
+                <select name="editNested${nestedIndex}Mode" data-nested-mode>${nestedOptionsHtml}</select>
+              </div>
+            </div>
+            <div class="form-group" data-nested-path-row>
+              <label ${channelLabelStyle}>Image/Video Path</label>
+              <div class="form-fields">
+                <input type="text" name="editNested${nestedIndex}Path" value="${escapeAttr(nested.path)}" />
+                <button type="button" data-action="edit-nested-channel-pick-image" data-nested-index="${nestedIndex}"><i class="fas fa-file-import"></i> Browse</button>
+              </div>
+            </div>
+            <div class="form-group" data-nested-source-row>
+              <label ${channelLabelStyle}>Buffer Source</label>
+              <div class="form-fields">
+                <textarea name="editNested${nestedIndex}Source" rows="6">${escapeText(nested.source)}</textarea>
+              </div>
+            </div>
+            <div class="form-group">
+              <label ${channelLabelStyle}>Filter</label>
+              <div class="form-fields">
+                <select name="editNested${nestedIndex}SamplerFilter">${nestedFilterOptionsHtml}</select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label ${channelLabelStyle}>Wrap</label>
+              <div class="form-fields">
+                <select name="editNested${nestedIndex}SamplerWrap">${nestedWrapOptionsHtml}</select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label ${channelLabelStyle}>VFlip</label>
+              <div class="form-fields">
+                <input type="checkbox" name="editNested${nestedIndex}SamplerVflip" ${nestedVflip ? "checked" : ""} />
+              </div>
+            </div>
+          </details>`;
+        })
+        .join("");
       const content = `
       <form class="indy-fx-channel-edit">
         <div class="form-group">
@@ -1422,6 +1596,13 @@ export function createMenus({ moduleId, shaderManager }) {
             <input type="checkbox" name="editChannelSamplerVflip" ${currentVflip ? "checked" : ""} />
           </div>
         </div>
+        <section data-buffer-channel-settings style="display:none;border-top:1px solid var(--color-border-light-secondary,#555);padding-top:0.5rem;margin-top:0.5rem;">
+          <h4 style="margin:0 0 0.3rem 0;">Buffer Input Channels</h4>
+          <p class="notes" style="margin:0 0 0.35rem 0;">Shown only when this channel Type is Buffer.</p>
+          <div style="display:flex;flex-direction:column;gap:0.35rem;">
+            ${nestedRowsHtml}
+          </div>
+        </section>
       </form>
     `;
       const bindUi = (candidate) => {
@@ -1431,13 +1612,30 @@ export function createMenus({ moduleId, shaderManager }) {
         if (!(dialogRoot instanceof Element)) return;
         ensureDialogVerticalScroll(dialogRoot);
         enhanceShaderCodeEditors(dialogRoot, {
-          selectors: ['textarea[name="editChannelSource"]'],
+          selectors: ['textarea[name="editChannelSource"]', 'textarea[name^="editNested"][name$="Source"]'],
         });
         if (dialogRoot.dataset.indyFxChannelEditBound === "1") return;
         dialogRoot.dataset.indyFxChannelEditBound = "1";
         const modeInput = dialogRoot.querySelector('[name="editChannelMode"]');
         const pathRow = dialogRoot.querySelector("[data-channel-path-row]");
         const sourceRow = dialogRoot.querySelector("[data-channel-source-row]");
+        const nestedSection = dialogRoot.querySelector(
+          "[data-buffer-channel-settings]",
+        );
+        const syncNestedRow = (row) => {
+          if (!(row instanceof Element)) return;
+          const nestedModeInput = row.querySelector("[data-nested-mode]");
+          const nestedPathRow = row.querySelector("[data-nested-path-row]");
+          const nestedSourceRow = row.querySelector("[data-nested-source-row]");
+          const mode = String(nestedModeInput?.value ?? "auto").toLowerCase();
+          const showPath =
+            mode === "image" || mode === "cubemap" || mode === "volume";
+          const showSource = mode === "buffer";
+          if (nestedPathRow instanceof HTMLElement)
+            nestedPathRow.style.display = showPath ? "" : "none";
+          if (nestedSourceRow instanceof HTMLElement)
+            nestedSourceRow.style.display = showSource ? "" : "none";
+        };
         const syncUi = () => {
           const mode = String(modeInput?.value ?? "auto");
           if (pathRow instanceof HTMLElement)
@@ -1445,6 +1643,8 @@ export function createMenus({ moduleId, shaderManager }) {
               mode === "image" || mode === "cubemap" || mode === "volume" ? "" : "none";
           if (sourceRow instanceof HTMLElement)
             sourceRow.style.display = mode === "buffer" ? "" : "none";
+          if (nestedSection instanceof HTMLElement)
+            nestedSection.style.display = mode === "buffer" ? "" : "none";
         };
         modeInput?.addEventListener("change", syncUi);
         dialogRoot
@@ -1468,6 +1668,40 @@ export function createMenus({ moduleId, shaderManager }) {
               },
             });
           });
+        for (const row of dialogRoot.querySelectorAll("[data-nested-channel-row]")) {
+          const nestedModeInput = row.querySelector("[data-nested-mode]");
+          nestedModeInput?.addEventListener("change", () => syncNestedRow(row));
+          row
+            .querySelector("[data-action='edit-nested-channel-pick-image']")
+            ?.addEventListener("click", () => {
+              const nestedIndex = Number(row.dataset.nestedIndex ?? -1);
+              if (!Number.isInteger(nestedIndex) || nestedIndex < 0 || nestedIndex > 3)
+                return;
+              const pathInput = row.querySelector(
+                `[name="editNested${nestedIndex}Path"]`,
+              );
+              const current = String(pathInput?.value ?? "");
+              openImagePicker({
+                current,
+                callback: (path) => {
+                  if (pathInput) pathInput.value = path;
+                  const modeSelect = row.querySelector(
+                    `[name="editNested${nestedIndex}Mode"]`,
+                  );
+                  if (
+                    modeSelect &&
+                    !["image", "cubemap", "volume"].includes(
+                      String(modeSelect.value ?? ""),
+                    )
+                  ) {
+                    modeSelect.value = "image";
+                  }
+                  syncNestedRow(row);
+                },
+              });
+            });
+          syncNestedRow(row);
+        }
         syncUi();
       };
       const dlg = new foundry.applications.api.DialogV2({
@@ -1514,12 +1748,68 @@ export function createMenus({ moduleId, shaderManager }) {
               const modeInput = root.querySelector(`[name="${modeName}"]`);
               const pathInput = root.querySelector(`[name="${pathName}"]`);
               const sourceInput = root.querySelector(`[name="${sourceName}"]`);
+              const nestedInput = root.querySelector(`[name="${nestedName}"]`);
               const filterInput = root.querySelector(`[name="${filterName}"]`);
               const wrapInput = root.querySelector(`[name="${wrapName}"]`);
               const vflipInput = root.querySelector(`[name="${vflipName}"]`);
               if (modeInput) modeInput.value = nextMode;
               if (pathInput) pathInput.value = nextPath;
               if (sourceInput) sourceInput.value = nextSource;
+              if (nestedInput instanceof HTMLTextAreaElement) {
+                const nextNestedChannels = {};
+                for (const nestedIndex of [0, 1, 2, 3]) {
+                  const nestedMode = String(
+                    dialogRoot.querySelector(
+                      `[name="editNested${nestedIndex}Mode"]`,
+                    )?.value ?? "auto",
+                  );
+                  const nestedPath = String(
+                    dialogRoot.querySelector(
+                      `[name="editNested${nestedIndex}Path"]`,
+                    )?.value ?? "",
+                  ).trim();
+                  const nestedSource = String(
+                    dialogRoot.querySelector(
+                      `[name="editNested${nestedIndex}Source"]`,
+                    )?.value ?? "",
+                  ).trim();
+                  const nestedFilter = String(
+                    dialogRoot.querySelector(
+                      `[name="editNested${nestedIndex}SamplerFilter"]`,
+                    )?.value ?? "",
+                  ).trim();
+                  const nestedWrap = String(
+                    dialogRoot.querySelector(
+                      `[name="editNested${nestedIndex}SamplerWrap"]`,
+                    )?.value ?? "",
+                  ).trim();
+                  const nestedVflip =
+                    dialogRoot.querySelector(
+                      `[name="editNested${nestedIndex}SamplerVflip"]`,
+                    )?.checked === true;
+                  const nestedEntry = this._normalizeChannelConfigEntryForEditor({
+                    mode: nestedMode,
+                    path: nestedPath,
+                    source: nestedSource,
+                    samplerFilter: nestedFilter,
+                    samplerWrap: nestedWrap,
+                    samplerVflip: nestedVflip ? "1" : "0",
+                  });
+                  const previousNestedEntry =
+                    currentNestedChannels?.[`iChannel${nestedIndex}`];
+                  if (
+                    String(nestedEntry.mode).trim().toLowerCase() === "buffer" &&
+                    previousNestedEntry?.channels &&
+                    typeof previousNestedEntry.channels === "object"
+                  ) {
+                    nestedEntry.channels = this._normalizeNestedChannelMap(
+                      previousNestedEntry.channels,
+                    );
+                  }
+                  nextNestedChannels[`iChannel${nestedIndex}`] = nestedEntry;
+                }
+                nestedInput.value = JSON.stringify(nextNestedChannels);
+              }
               if (filterInput) filterInput.value = nextFilter;
               if (wrapInput) wrapInput.value = nextWrap;
               if (vflipInput) vflipInput.value = nextVflip ? "1" : "0";

@@ -222,6 +222,125 @@ function getBufferValueClampForRenderType(renderTextureType) {
   return 0;
 }
 
+function parseEditableAnnotation(commentText) {
+  const text = String(commentText ?? "");
+  const m = text.match(/@(?:editable|indyfx)\b\s*(?:=|:)?\s*([^\r\n]*)/i);
+  if (!m) return null;
+  return String(m[1] ?? "").trim();
+}
+
+function parseEditableBoolLiteral(value) {
+  let text = String(value ?? "").trim().toLowerCase();
+  const ctor = text.match(/^bool\s*\(\s*(.*?)\s*\)$/);
+  if (ctor) text = String(ctor[1] ?? "").trim().toLowerCase();
+  if (text === "true" || text === "1") return true;
+  if (text === "false" || text === "0") return false;
+  return null;
+}
+
+function parseEditableNumberList(rawValue) {
+  let text = String(rawValue ?? "").trim();
+  if (!text) return [];
+  const ctor = text.match(/^(?:vec[234])\s*\(([\s\S]*)\)\s*$/i);
+  if (ctor) text = String(ctor[1] ?? "").trim();
+  const arrayMatch = text.match(/^\[\s*([\s\S]*)\s*\]$/);
+  if (arrayMatch) text = String(arrayMatch[1] ?? "").trim();
+  if (!text) return [];
+  return text
+    .split(",")
+    .map((part) => Number(String(part ?? "").trim()))
+    .filter((value) => Number.isFinite(value));
+}
+
+function extractEditableUniformDefaults(source) {
+  const text = String(source ?? "").replace(/\r\n/g, "\n");
+  const lines = text.split("\n");
+  const defaults = {};
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = String(lines[lineIndex] ?? "");
+    const m = line.match(
+      /^\s*uniform\s+(float|int|bool|vec2|vec3|vec4)\s+([A-Za-z_]\w*)\s*;\s*(?:\/\/(.*))?\s*$/i,
+    );
+    if (!m) continue;
+    const type = String(m[1] ?? "").toLowerCase();
+    const name = String(m[2] ?? "").trim();
+    if (!name) continue;
+
+    let annotation = parseEditableAnnotation(m[3]);
+    if (annotation === null) {
+      const previousLine = lineIndex > 0 ? String(lines[lineIndex - 1] ?? "") : "";
+      const previousComment = previousLine.match(/^\s*\/\/(.*)\s*$/);
+      if (previousComment) annotation = parseEditableAnnotation(previousComment[1]);
+    }
+    if (annotation === null) continue;
+
+    if (type === "vec2" || type === "vec3" || type === "vec4") {
+      const expected = type === "vec2" ? 2 : type === "vec3" ? 3 : 4;
+      const numbers = parseEditableNumberList(annotation);
+      if (numbers.length < expected) continue;
+      defaults[name] = numbers.slice(0, expected);
+      continue;
+    }
+
+    if (type === "bool") {
+      const parsedBool = parseEditableBoolLiteral(annotation);
+      if (parsedBool === null) continue;
+      defaults[name] = parsedBool;
+      continue;
+    }
+
+    const parsedNumber = Number(annotation);
+    if (!Number.isFinite(parsedNumber)) continue;
+    defaults[name] = type === "int" ? Math.round(parsedNumber) : parsedNumber;
+  }
+
+  return defaults;
+}
+
+function normalizeCustomUniformValue(value) {
+  if (value === true || value === false) return value;
+  if (Number.isFinite(Number(value))) return Number(value);
+  if (Array.isArray(value)) {
+    const values = value
+      .slice(0, 4)
+      .map((entry) => Number(entry))
+      .filter((entry) => Number.isFinite(entry));
+    if (values.length >= 2) return values;
+    return null;
+  }
+  if (value && typeof value === "object") {
+    const values = ["x", "y", "z", "w"]
+      .map((axis) => Number(value?.[axis]))
+      .filter((entry) => Number.isFinite(entry));
+    if (values.length >= 2) return values.slice(0, 4);
+    return null;
+  }
+  return null;
+}
+
+function normalizeCustomUniformMap(value) {
+  let source = value;
+  if (typeof source === "string" && source.trim()) {
+    try {
+      source = JSON.parse(source);
+    } catch (_err) {
+      source = null;
+    }
+  }
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return {};
+  }
+  const normalized = {};
+  for (const [name, rawValue] of Object.entries(source)) {
+    if (!/^[A-Za-z_]\w*$/.test(String(name ?? ""))) continue;
+    const valueNormalized = normalizeCustomUniformValue(rawValue);
+    if (valueNormalized === null) continue;
+    normalized[String(name)] = valueNormalized;
+  }
+  return normalized;
+}
+
 function chooseBufferRenderTextureType(preferredInternal = "") {
   const { renderer, gl } = getRendererGlContext();
   if (!renderer || !gl) return null;
@@ -361,6 +480,7 @@ export class ShaderToyBufferChannel {
     width = null,
     height = null,
     samplerInternal = "",
+    customUniforms = null,
   } = {}) {
     const fallbackSize = Math.max(2, Math.round(Number(size) || 512));
     const widthRaw = Number(width);
@@ -456,6 +576,16 @@ export class ShaderToyBufferChannel {
       iResolution: [this.width, this.height, 1],
       resolution: [this.width, this.height],
     };
+
+    const editableDefaults = extractEditableUniformDefaults(source);
+    for (const [name, value] of Object.entries(editableDefaults)) {
+      if (Object.prototype.hasOwnProperty.call(uniforms, name)) continue;
+      uniforms[name] = value;
+    }
+    const explicitCustomUniforms = normalizeCustomUniformMap(customUniforms);
+    for (const [name, value] of Object.entries(explicitCustomUniforms)) {
+      uniforms[name] = value;
+    }
 
     const fragment = adaptShaderToyBufferFragment(source);
     const shader = PIXI.Shader.from(SHADER_VERT, fragment, uniforms);

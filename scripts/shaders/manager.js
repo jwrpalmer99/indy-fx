@@ -49,6 +49,7 @@ const IMPORTED_NOISE_TEXTURE_SIZE = 1024;
 const PLACEABLE_IMAGE_CAPTURE_SIZE = 1024;
 const PLACEABLE_IMAGE_PREVIEW_SIZE = 512;
 const SHADERTOY_MEDIA_ORIGIN = "https://www.shadertoy.com";
+const EDITABLE_UNIFORM_DEFAULTS_CACHE = new Map();
 const SHADERTOY_MEDIA_REPLACEMENTS = new Map([
   [
     "https://www.shadertoy.com/media/a/cb49c003b454385aa9975733aff4571c62182ccdda480aaba9a8d250014f00ec.png",
@@ -990,6 +991,86 @@ function inferShaderToyVolumeNoiseMode(input, src = "") {
 
   if (looksGray && !looksColor) return "noiseBw";
   return "noiseRgb";
+}
+
+function parseEditableAnnotation(commentText) {
+  const text = String(commentText ?? "");
+  const m = text.match(/@(?:editable|indyfx)\b\s*(?:=|:)?\s*([^\r\n]*)/i);
+  if (!m) return null;
+  return String(m[1] ?? "").trim();
+}
+
+function parseEditableBoolLiteral(value) {
+  let text = String(value ?? "").trim().toLowerCase();
+  const ctor = text.match(/^bool\s*\(\s*(.*?)\s*\)$/);
+  if (ctor) text = String(ctor[1] ?? "").trim().toLowerCase();
+  if (text === "true" || text === "1") return true;
+  if (text === "false" || text === "0") return false;
+  return null;
+}
+
+function parseEditableNumberList(rawValue) {
+  let text = String(rawValue ?? "").trim();
+  if (!text) return [];
+  const ctor = text.match(/^(?:vec[234])\s*\(([\s\S]*)\)\s*$/i);
+  if (ctor) text = String(ctor[1] ?? "").trim();
+  const arrayMatch = text.match(/^\[\s*([\s\S]*)\s*\]$/);
+  if (arrayMatch) text = String(arrayMatch[1] ?? "").trim();
+  if (!text) return [];
+  return text
+    .split(",")
+    .map((part) => Number(String(part ?? "").trim()))
+    .filter((value) => Number.isFinite(value));
+}
+
+function extractEditableUniformDefaults(source) {
+  const text = String(source ?? "").replace(/\r\n/g, "\n");
+  const cached = EDITABLE_UNIFORM_DEFAULTS_CACHE.get(text);
+  if (cached) return cached;
+
+  const lines = text.split("\n");
+  const defaults = {};
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = String(lines[lineIndex] ?? "");
+    const m = line.match(
+      /^\s*uniform\s+(float|int|bool|vec3|vec4)\s+([A-Za-z_]\w*)\s*;\s*(?:\/\/(.*))?\s*$/i,
+    );
+    if (!m) continue;
+    const type = String(m[1] ?? "").toLowerCase();
+    const name = String(m[2] ?? "").trim();
+    if (!name) continue;
+
+    let annotation = parseEditableAnnotation(m[3]);
+    if (annotation === null) {
+      const previousLine = lineIndex > 0 ? String(lines[lineIndex - 1] ?? "") : "";
+      const previousComment = previousLine.match(/^\s*\/\/(.*)\s*$/);
+      if (previousComment) annotation = parseEditableAnnotation(previousComment[1]);
+    }
+    if (annotation === null) continue;
+
+    if (type === "vec3" || type === "vec4") {
+      const expected = type === "vec4" ? 4 : 3;
+      const numbers = parseEditableNumberList(annotation);
+      if (numbers.length < expected) continue;
+      defaults[name] = numbers.slice(0, expected);
+      continue;
+    }
+
+    if (type === "bool") {
+      const parsedBool = parseEditableBoolLiteral(annotation);
+      if (parsedBool === null) continue;
+      defaults[name] = parsedBool;
+      continue;
+    }
+
+    const parsedNumber = Number(annotation);
+    if (!Number.isFinite(parsedNumber)) continue;
+    defaults[name] = type === "int" ? Math.round(parsedNumber) : parsedNumber;
+  }
+
+  EDITABLE_UNIFORM_DEFAULTS_CACHE.set(text, defaults);
+  return defaults;
 }
 
 function stripCodeFence(text) {
@@ -4309,6 +4390,12 @@ export class ShaderManager {
           width: bufferWidth,
           height: bufferHeight,
           size: Math.max(bufferWidth, bufferHeight),
+          customUniforms:
+            options?.customUniforms &&
+            typeof options.customUniforms === "object" &&
+            !Array.isArray(options.customUniforms)
+              ? options.customUniforms
+              : {},
         });
         {
           const orderRaw = Number(channelConfig?.bufferOrder);
@@ -4554,6 +4641,17 @@ export class ShaderManager {
     const def = cfg.definitionOverride ?? this.resolveShaderDefinition(cfg.shaderId);
     const fragment = withGlobalAlpha(def.fragment);
     const uniforms = buildBaseUniforms(cfg);
+    if (def?.type === "imported") {
+      const composedSource = this._composeShaderSourceWithCommon(
+        def?.source ?? "",
+        def?.commonSource ?? "",
+      );
+      const editableDefaults = extractEditableUniformDefaults(composedSource);
+      for (const [name, value] of Object.entries(editableDefaults)) {
+        if (Object.prototype.hasOwnProperty.call(uniforms, name)) continue;
+        uniforms[name] = value;
+      }
+    }
     uniforms.iMouse = cfg.iMouse ?? [0, 0, 0, 0];
     uniforms.iTimeDelta = cfg.iTimeDelta ?? 1 / 60;
     uniforms.iFrame = cfg.iFrame ?? 0;
@@ -4662,6 +4760,10 @@ export class ShaderManager {
             captureFlipHorizontal: cfg.captureFlipHorizontal,
             captureFlipVertical: cfg.captureFlipVertical,
             commonSource: def.commonSource,
+            customUniforms:
+              cfg?.customUniforms && typeof cfg.customUniforms === "object"
+                ? cfg.customUniforms
+                : {},
             bufferSizeHint: importedBufferSizeHint,
             bufferWidthHint: importedBufferResolutionHint[0],
             bufferHeightHint: importedBufferResolutionHint[1],
@@ -5115,10 +5217,54 @@ export class ShaderManager {
     currentPassKey = null,
   ) {
     const ctype = String(input?.ctype ?? input?.type ?? "").toLowerCase();
+    const explicitMode = normalizeChannelMode(
+      input?.mode ?? input?.channelMode ?? "auto",
+    );
     const samplerCfg = this._parseShaderToySamplerConfig(input?.sampler);
     const src = String(
       input?.src ?? input?.filepath ?? input?.previewfilepath ?? "",
     ).trim();
+
+    if (explicitMode !== "auto") {
+      if (explicitMode === "bufferSelf") {
+        return { mode: "bufferSelf", ...samplerCfg };
+      }
+      if (explicitMode === "sceneCapture") {
+        return { mode: "sceneCapture", ...samplerCfg };
+      }
+      if (explicitMode === "tokenTileImage") {
+        return { mode: "tokenTileImage", ...samplerCfg };
+      }
+      if (explicitMode !== "buffer") {
+        // Non-buffer explicit modes are direct channel assignments.
+        return {
+          mode: explicitMode,
+          path: src,
+          ...samplerCfg,
+        };
+      }
+      // explicitMode === "buffer" falls through to standard buffer handling below.
+    }
+
+    // Indy FX extension: allow custom JSON imports to explicitly request
+    // capture channels inside ShaderToy-style payloads.
+    if (
+      ctype === "scenecapture" ||
+      ctype === "scene_capture" ||
+      ctype === "scene-capture"
+    ) {
+      return { mode: "sceneCapture", ...samplerCfg };
+    }
+    if (
+      ctype === "tokentileimage" ||
+      ctype === "token_tile_image" ||
+      ctype === "token-tile-image" ||
+      ctype === "tokentilecapture" ||
+      ctype === "token_tile_capture" ||
+      ctype === "token-tile-capture"
+    ) {
+      return { mode: "tokenTileImage", ...samplerCfg };
+    }
 
     if (ctype === "buffer") {
       const inputId = String(input?.id ?? "").trim();
