@@ -38,7 +38,7 @@ export function resolveShaderWorldLayer(moduleId, cfg, { allowTokenLayer = false
     if (!raw) return "interfacePrimary";
     if (raw === "token") return "interfacePrimary";
     if (raw === "baseEffects") return "belowTokens";
-    if (raw === "belowTiles") return "belowTokens";
+    if (raw === "belowTiles") return "belowTiles";
     if (raw === "effects") return "belowTokens";
     if (raw === "interface") return "interfacePrimary";
     if (raw === "drawingsLayer") return "drawings";
@@ -48,8 +48,11 @@ export function resolveShaderWorldLayer(moduleId, cfg, { allowTokenLayer = false
   const layerName = normalizeLayerName(layerNameRaw);
 
   const interfaceLayer = canvas?.interface?.primary ?? canvas?.interface;
+  const primaryLayer = canvas?.primary ?? canvas?.tiles?.parent ?? interfaceLayer;
 
-  const worldLayer = (layerName === "belowTokens")
+  const worldLayer = (layerName === "belowTiles")
+    ? primaryLayer
+    : (layerName === "belowTokens")
     ? interfaceLayer
     : (layerName === "drawings")
       ? canvas.drawings

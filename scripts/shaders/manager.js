@@ -1818,12 +1818,15 @@ export class ShaderManager {
           ? "interfacePrimary"
           : layerRaw === "token"
             ? "interfacePrimary"
-                    : (layerRaw === "baseEffects" || layerRaw === "belowTiles")
-            ? "belowTokens"
+                    : layerRaw === "belowTiles"
+            ? "belowTiles"
+            : layerRaw === "baseEffects"
+              ? "belowTokens"
             : layerRaw;
     const layer = [
       "inherit",
       "interfacePrimary",
+      "belowTiles",
       "belowTokens",
       "drawings",
     ].includes(layerNormalized)

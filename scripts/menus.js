@@ -1132,6 +1132,7 @@ export function createMenus({ moduleId, shaderManager }) {
       const layerChoices = {
         inherit: "inherit from FX layer",
         interfacePrimary: "interfacePrimary",
+        belowTiles: "Below Tiles (on scene background)",
         belowTokens: "Below Tokens (interface, under token z-order)",
         drawings: "DrawingsLayer (above tokens)",
       };

@@ -103,7 +103,8 @@ Region notes:
 | Option | Type | Notes |
 |---|---|---|
 | `shaderId` | string | Built-in or imported shader id. |
-| `layer` | `inherit \| interfacePrimary \| belowTokens \| drawings` | Render layer override. |
+| `layer` | `inherit \| interfacePrimary \| belowTiles \| belowTokens \| drawings` | Render layer override. |
+| `elevation` | number | Optional draw elevation override. `belowTiles` defaults to `-1`. Alias: `shaderElevation`. |
 | `shape` | `circle \| cone \| line \| rectangle` | Mask shape. |
 | `shapeDirectionDeg` | number | Direction for cone/line/rectangle. |
 | `shapeDistanceUnits` | number/string | Shape distance in scene units. Alias: `distance`. |
@@ -149,6 +150,7 @@ Region notes:
 - `distance -> shapeDistanceUnits`
 - `shaderPreset -> shaderId`
 - `shaderLayer -> layer`
+- `shaderElevation -> elevation`
 - `shaderGradientMask -> useGradientMask`
 - `shaderScale -> scale`
 - `shaderScaleX -> scaleX`
@@ -164,7 +166,7 @@ Layer compatibility aliases are also accepted and normalized:
 - `interface -> interfacePrimary`
 - `effects -> belowTokens`
 - `baseEffects -> belowTokens`
-- `belowTiles -> belowTokens`
+- `belowTiles -> belowTiles`
 - `drawingsLayer -> drawings`
 
 ## Import Payloads

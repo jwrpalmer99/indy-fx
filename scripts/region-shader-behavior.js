@@ -3,6 +3,7 @@ const REGION_SHADER_BEHAVIOR_TYPE = "indy-fx.indyFX";
 const REGION_SHADER_LAYER_CHOICES = {
   inherit: "inherit from FX layer",
   interfacePrimary: "interfacePrimary (above tokens, world space)",
+  belowTiles: "Below Tiles (on scene background)",
   belowTokens: "Below Tokens (interface, under token z-order)",
   drawings: "DrawingsLayer (above tokens, world space)",
 };
@@ -82,10 +83,11 @@ function _normalizeShaderLayerChoice(value, fallback = "inherit") {
   if (raw === "interface") return "interfacePrimary";
   if (raw === "drawingsLayer") return "drawings";
   if (raw === "baseEffects") return "belowTokens";
-  if (raw === "belowTiles") return "belowTokens";
+  if (raw === "belowTiles") return "belowTiles";
   if (
     raw === "inherit" ||
     raw === "interfacePrimary" ||
+    raw === "belowTiles" ||
     raw === "belowTokens" ||
     raw === "drawings"
   ) {

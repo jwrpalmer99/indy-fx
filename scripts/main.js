@@ -2148,6 +2148,7 @@ function resolveInstanceShaderDefinitionOverride(
 const SHADER_LAYER_CHOICES = {
   inherit: "inherit from FX layer",
   interfacePrimary: "interfacePrimary",
+  belowTiles: "Below Tiles (on scene background)",
   belowTokens: "Below Tokens (interface, under token z-order)",
   drawings: "DrawingsLayer (above tokens)"
 };
@@ -2156,7 +2157,7 @@ function normalizeShaderLayerName(value, fallback = "interfacePrimary") {
   const raw = String(value ?? "").trim();
   if (!raw) return fallback;
   if (raw === "token") return "interfacePrimary";
-  if (raw === "belowTiles") return "belowTokens";
+  if (raw === "belowTiles") return "belowTiles";
   if (raw === "baseEffects") return "belowTokens";
   if (raw === "effects") return "belowTokens";
   if (raw === "interface") return "interfacePrimary";
@@ -2181,12 +2182,35 @@ function resolveShaderExplicitZIndex(cfg) {
   return null;
 }
 
+function resolveShaderExplicitElevation(cfg) {
+  const candidates = [cfg?.elevation, cfg?.shaderElevation];
+  for (const candidate of candidates) {
+    const n = Number(candidate);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function resolveShaderContainerElevation(cfg) {
+  const explicitElevation = resolveShaderExplicitElevation(cfg);
+  if (Number.isFinite(explicitElevation)) return explicitElevation;
+  const layerName = resolveConfiguredShaderLayerName(cfg);
+  if (layerName === "belowTiles") return -1;
+  return null;
+}
+
 function resolveShaderContainerZIndex(cfg) {
   const explicitZ = resolveShaderExplicitZIndex(cfg);
   if (Number.isFinite(explicitZ)) return explicitZ;
 
   const layerName = resolveConfiguredShaderLayerName(cfg);
+  const tilesZ = Number(canvas?.tiles?.zIndex);
   const tokensZ = Number(canvas?.tokens?.zIndex);
+
+  if (layerName === "belowTiles") {
+    if (Number.isFinite(tilesZ)) return tilesZ - 1;
+    return 99;
+  }
 
   // Legacy "effects" maps to belowTokens via normalizeShaderLayerName.
   if (layerName === "belowTokens") {
@@ -2202,13 +2226,29 @@ function addShaderContainerToWorldLayer(worldLayer, container, cfg) {
 
   const layerName = resolveConfiguredShaderLayerName(cfg);
   const explicitZ = resolveShaderExplicitZIndex(cfg);
-  const isBelowLayer = !Number.isFinite(explicitZ) && layerName === "belowTokens";
+  const resolvedElevation = resolveShaderContainerElevation(cfg);
+  if (Number.isFinite(resolvedElevation)) {
+    container.elevation = Number(resolvedElevation);
+  }
+  if (!Number.isFinite(explicitZ) && layerName === "belowTiles") {
+    const currentSort = Number(container?.sort);
+    if (!Number.isFinite(currentSort) || currentSort > -1) {
+      container.sort = -1;
+    }
+  }
+  const isBelowLayer = !Number.isFinite(explicitZ) &&
+    (layerName === "belowTokens" || layerName === "belowTiles");
 
   if (isBelowLayer) {
-    const anchorLayer = canvas?.tokens ?? canvas?.tiles;
+    const anchorLayer = layerName === "belowTiles"
+      ? (canvas?.tiles ?? canvas?.tokens)
+      : (canvas?.tokens ?? canvas?.tiles);
 
     debugLog("addShaderContainerToWorldLayer: anchor check", {
       layerName,
+      elevation: Number.isFinite(Number(container?.elevation))
+        ? Number(container.elevation)
+        : null,
       worldLayer: worldLayer?.constructor?.name ?? null,
       anchorLayer: anchorLayer?.constructor?.name ?? null,
       anchorParent: anchorLayer?.parent?.constructor?.name ?? null,
@@ -2245,6 +2285,9 @@ function addShaderContainerToWorldLayer(worldLayer, container, cfg) {
   if (isBelowLayer) {
     debugLog("addShaderContainerToWorldLayer: fallback addChild", {
       layerName,
+      elevation: Number.isFinite(Number(container?.elevation))
+        ? Number(container.elevation)
+        : null,
       worldLayer: worldLayer?.constructor?.name ?? null,
       childIndex: worldLayer?.children?.indexOf?.(container) ?? null,
     });
@@ -4645,6 +4688,8 @@ function normalizeShaderMacroOpts(opts = {}) {
   if (next.zOrder === undefined && next.zIndex !== undefined) next.zOrder = next.zIndex;
   if (next.zIndex === undefined && next.shaderZIndex !== undefined) next.zIndex = next.shaderZIndex;
   if (next.shaderZIndex === undefined && next.zIndex !== undefined) next.shaderZIndex = next.zIndex;
+  if (next.elevation === undefined && next.shaderElevation !== undefined) next.elevation = next.shaderElevation;
+  if (next.shaderElevation === undefined && next.elevation !== undefined) next.shaderElevation = next.elevation;
 
   if (next.debugMode === undefined && next.shaderDebugMode !== undefined) {
     if (typeof next.shaderDebugMode === "number") next.debugMode = next.shaderDebugMode;
