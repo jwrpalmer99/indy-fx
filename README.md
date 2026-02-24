@@ -109,7 +109,8 @@ Imported shader channels (`iChannel0..iChannel3`) support:
 Notes:
 - `tokenTileImage` is placeable-target specific and not suitable for region usage.
 - Preview backgrounds used for scene/placeable capture channels are configurable in module settings.
-- Const/#Define variables in the shader will be exposed in Edit Variables dialog
+- `const`/`#define` variables are exposed in Edit Variables.
+- Custom `uniform` variables are also exposed when annotated, e.g. `uniform float uFoam; // @editable 0.2`.
 - Look at how the example shaders are set up with regard to filling in tokens/tiles and respecting alpha/rotation etc.
 - The majority of shadertoy shaders should import and compile OK - check console log for shader compile issues.
 

@@ -1,3 +1,5 @@
+import { openShaderVariableEditorDialog } from "./shader-variable-editor-dialog.js";
+
 const REGION_SHADER_BEHAVIOR_SUBTYPE = "indyFX";
 const REGION_SHADER_BEHAVIOR_TYPE = "indy-fx.indyFX";
 const REGION_SHADER_LAYER_CHOICES = {
@@ -32,6 +34,7 @@ const REGION_SHADER_BEHAVIOR_SYSTEM_KEYS = [
   "shaderFlow",
   "shaderFlowSpeed",
   "shaderFlowTurbulence",
+  "shaderCustomUniforms",
   "shaderColorA",
   "shaderColorB",
   "shaderCaptureScale",
@@ -114,6 +117,27 @@ function _normalizeHexColor(value, fallback = "FFFFFF") {
     .replace(/[^0-9a-f]/gi, "");
   if (!clean) return fallback6;
   return clean.slice(0, 6).padStart(6, "0").toUpperCase();
+}
+
+function _normalizeCustomUniformMap(value) {
+  if (!value) return {};
+  if (typeof value === "string") {
+    const raw = String(value ?? "").trim();
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return parsed;
+    } catch (_err) {
+      return {};
+    }
+  }
+  if (typeof value === "object" && !Array.isArray(value)) return value;
+  return {};
+}
+
+function _normalizeCustomUniformJson(value) {
+  return JSON.stringify(_normalizeCustomUniformMap(value));
 }
 
 function _escapeHtml(value) {
@@ -314,6 +338,7 @@ function getDefaultRegionShaderBehaviorSystem(moduleId) {
       _getSetting(moduleId, "shaderFlowTurbulence", 0.35),
       0.35,
     ),
+    shaderCustomUniforms: "{}",
     shaderColorA: _normalizeHexColor(
       _getSetting(moduleId, "shaderColorA", "FF4A9A"),
       "FF4A9A",
@@ -448,6 +473,12 @@ function buildRegionShaderBehaviorSystemData(moduleId, opts = {}, { getShaderCho
       source.shaderFlowTurbulence ?? source.flowTurbulence,
       defaults.shaderFlowTurbulence,
     ),
+    shaderCustomUniforms: _normalizeCustomUniformJson(
+      source.shaderCustomUniforms ??
+        source.shaderUniforms ??
+        source.shaderCustomUniformMap ??
+        source.customUniforms,
+    ),
     shaderColorA: _normalizeHexColor(
       source.shaderColorA ?? source.colorA,
       defaults.shaderColorA,
@@ -492,6 +523,8 @@ function registerRegionShaderBehavior({
   moduleId,
   getShaderChoices,
   isBuiltinShader,
+  getImportedRecord = null,
+  updateImportedShader = null,
 } = {}) {
   const cfg = CONFIG?.RegionBehavior;
   const RegionBehaviorTypeBase =
@@ -739,6 +772,13 @@ function registerRegionShaderBehavior({
             label: "Flow turbulence",
             hint: "Adds jitter to outward flow.",
           }),
+          shaderCustomUniforms: new F.StringField({
+            required: true,
+            initial: () => "{}",
+            clean: (value) => _normalizeCustomUniformJson(value),
+            label: "Shader custom uniforms (JSON)",
+            hint: "Internal storage for region-scoped shader uniform overrides.",
+          }),
           shaderColorA: new F.StringField({
             required: true,
             initial: () =>
@@ -898,6 +938,247 @@ function registerRegionShaderBehavior({
         return isBuiltinShaderFn(shaderId);
       }
 
+      _getSelectedShaderId(form) {
+        const presetInput = this._findFieldInput(form, "shaderPreset");
+        return String(presetInput?.value ?? "").trim();
+      }
+
+      _getImportedRecord(shaderId) {
+        const id = String(shaderId ?? "").trim();
+        if (!id) return null;
+        if (typeof getImportedRecord !== "function") return null;
+        try {
+          return getImportedRecord(id) ?? null;
+        } catch (_err) {
+          return null;
+        }
+      }
+
+      _getUpdateImportedShaderFn() {
+        if (typeof updateImportedShader === "function") return updateImportedShader;
+        const fallback = game?.indyFX?.shaders?.updateImportedShader;
+        return typeof fallback === "function" ? fallback.bind(game.indyFX.shaders) : null;
+      }
+
+      _collectBufferSourceEntries(channels, sourceEntries, scope = "iChannel") {
+        if (!channels || typeof channels !== "object") return;
+        for (let i = 0; i < 4; i += 1) {
+          const key = `iChannel${i}`;
+          const node = channels[key] ?? channels[i];
+          if (!node || typeof node !== "object") continue;
+          const mode = String(node.mode ?? "").trim().toLowerCase();
+          const nodeScope = `${scope}.${key}`;
+          if (mode === "buffer" || mode === "bufferself") {
+            sourceEntries.push({
+              key: `bufferSource:${nodeScope}`,
+              label: `${nodeScope.replace(/^iChannel\./, "").replace(/\./g, " -> ")} Buffer`,
+              readSource: () => String(node.source ?? ""),
+              writeSource: (nextSource) => {
+                node.source = String(nextSource ?? "");
+              },
+            });
+          }
+          if (node.channels && typeof node.channels === "object") {
+            this._collectBufferSourceEntries(node.channels, sourceEntries, nodeScope);
+          }
+        }
+      }
+
+      async _openShaderVariableEditor(form) {
+        const shaderId = this._getSelectedShaderId(form);
+        if (!shaderId) {
+          ui.notifications.warn("Choose a shader preset first.");
+          return;
+        }
+        if (isBuiltinShaderFn(shaderId)) {
+          ui.notifications.info("Variable editor from region behavior config supports imported shaders.");
+          return;
+        }
+
+        const record = this._getImportedRecord(shaderId);
+        if (!record) {
+          ui.notifications.warn("Imported shader record not found.");
+          return;
+        }
+
+        let workingSource = String(record.source ?? "");
+        let workingCommonSource = String(record.commonSource ?? "");
+        let workingChannels = foundry.utils.deepClone(record.channels ?? {});
+        let workingDefaults = foundry.utils.deepClone(record.defaults ?? {});
+        const behaviorSystemData = getRegionShaderBehaviorSystemData(
+          moduleId,
+          this.document,
+        );
+        const behaviorUniformOverrides = _normalizeCustomUniformMap(
+          behaviorSystemData?.shaderCustomUniforms,
+        );
+        let workingCustomUniforms = foundry.utils.deepClone(
+          Object.keys(behaviorUniformOverrides).length
+            ? behaviorUniformOverrides
+            : (record?.defaults?.customUniforms ?? {}),
+        );
+
+        const sourceEntries = [
+          {
+            key: "recordSource",
+            label: "Shader Source",
+            readSource: () => workingSource,
+            writeSource: (nextSource) => {
+              workingSource = String(nextSource ?? "");
+            },
+            readUniformValues: () => foundry.utils.deepClone(workingCustomUniforms ?? {}),
+            writeUniformValues: (nextUniformValues) => {
+              workingCustomUniforms =
+                nextUniformValues && typeof nextUniformValues === "object" && !Array.isArray(nextUniformValues)
+                  ? foundry.utils.deepClone(nextUniformValues)
+                  : {};
+            },
+          },
+        ];
+
+        if (workingCommonSource.trim()) {
+          sourceEntries.push({
+            key: "recordCommonSource",
+            label: "Common Source",
+            readSource: () => workingCommonSource,
+            writeSource: (nextSource) => {
+              workingCommonSource = String(nextSource ?? "");
+            },
+            readUniformValues: () => foundry.utils.deepClone(workingCustomUniforms ?? {}),
+            writeUniformValues: (nextUniformValues) => {
+              workingCustomUniforms =
+                nextUniformValues && typeof nextUniformValues === "object" && !Array.isArray(nextUniformValues)
+                  ? foundry.utils.deepClone(nextUniformValues)
+                  : {};
+            },
+          });
+        }
+        this._collectBufferSourceEntries(workingChannels, sourceEntries);
+        for (const sourceEntry of sourceEntries) {
+          if (typeof sourceEntry.readUniformValues === "function") continue;
+          sourceEntry.readUniformValues = () => foundry.utils.deepClone(workingCustomUniforms ?? {});
+          sourceEntry.writeUniformValues = (nextUniformValues) => {
+            workingCustomUniforms =
+              nextUniformValues && typeof nextUniformValues === "object" && !Array.isArray(nextUniformValues)
+                ? foundry.utils.deepClone(nextUniformValues)
+                : {};
+          };
+        }
+
+        const updateImportedShaderFn = this._getUpdateImportedShaderFn();
+        if (typeof updateImportedShaderFn !== "function") {
+          ui.notifications.error("Shader update API unavailable.");
+          return;
+        }
+
+        try {
+          await openShaderVariableEditorDialog({
+            title: `Edit Shader Variables: ${String(record.label ?? record.name ?? shaderId)}`,
+            sourceEntries,
+            onApply: async ({ changed, updatedSourceKeys = [] } = {}) => {
+              if (!changed) return;
+
+              const changedKeys = Array.isArray(updatedSourceKeys)
+                ? updatedSourceKeys.map((key) => String(key ?? ""))
+                : [];
+              const uniformsChanged = changedKeys.some((key) =>
+                key.endsWith(":uniforms"),
+              );
+              const sourceChanged = changedKeys.some(
+                (key) => !key.endsWith(":uniforms"),
+              );
+
+              if (sourceChanged) {
+                await updateImportedShaderFn(shaderId, {
+                  source: workingSource,
+                  commonSource: workingCommonSource,
+                  channels: workingChannels,
+                  defaults: workingDefaults,
+                  autoAssignCapture: Boolean(record?.autoAssignCapture),
+                });
+              }
+
+              if (uniformsChanged && typeof this.document?.update === "function") {
+                await this.document.update({
+                  system: {
+                    shaderCustomUniforms: _normalizeCustomUniformJson(
+                      foundry.utils.deepClone(workingCustomUniforms ?? {}),
+                    ),
+                  },
+                });
+              }
+
+            },
+          });
+        } catch (err) {
+          console.error(`${moduleId} | Region behavior variable editor failed`, err);
+          ui.notifications.error(err?.message ?? "Failed to edit shader variables.");
+        }
+      }
+
+      _injectVariableEditorButton(form) {
+        if (!(form instanceof Element)) return;
+        const presetGroup = this._findFieldGroup(form, "shaderPreset");
+        if (!(presetGroup instanceof Element)) return;
+
+        let controls = form.querySelector('[data-indyfx-region-var-editor="1"]');
+        if (!(controls instanceof HTMLElement)) {
+          controls = document.createElement("div");
+          controls.className = "form-group";
+          controls.dataset.indyfxRegionVarEditor = "1";
+          controls.innerHTML = `
+            <label>Shader variables</label>
+            <div class="form-fields">
+              <button type="button" data-action="indyfx-edit-vars">
+                <i class="fas fa-sliders-h"></i> Edit Variables
+              </button>
+            </div>
+            <p class="notes"></p>
+          `;
+          presetGroup.insertAdjacentElement("afterend", controls);
+        }
+
+        const button = controls.querySelector('[data-action="indyfx-edit-vars"]');
+        const notes = controls.querySelector(".notes");
+        if (!(button instanceof HTMLButtonElement)) return;
+
+        const syncState = () => {
+          const shaderId = this._getSelectedShaderId(form);
+          const importedRecord = shaderId ? this._getImportedRecord(shaderId) : null;
+          const isBuiltin = shaderId ? isBuiltinShaderFn(shaderId) : false;
+          button.disabled = !importedRecord || isBuiltin;
+          if (!(notes instanceof HTMLElement)) return;
+          if (!shaderId) {
+            notes.textContent = "Choose a shader preset to edit variables.";
+            return;
+          }
+          if (isBuiltin) {
+            notes.textContent = "Built-in shaders are edited in code. Select an imported shader to edit variables.";
+            return;
+          }
+          if (!importedRecord) {
+            notes.textContent = "Selected shader source was not found in library.";
+            return;
+          }
+          notes.textContent = "Uniform edits are region-scoped overrides. Source edits update the imported shader globally.";
+        };
+
+        if (button.dataset.indyfxBound !== "1") {
+          button.dataset.indyfxBound = "1";
+          button.addEventListener("click", (event) => {
+            event.preventDefault();
+            void this._openShaderVariableEditor(form);
+          });
+        }
+
+        const presetInput = this._findFieldInput(form, "shaderPreset");
+        if (presetInput instanceof Element && presetInput.dataset.indyfxVarStateBound !== "1") {
+          presetInput.dataset.indyfxVarStateBound = "1";
+          presetInput.addEventListener("change", syncState);
+        }
+        syncState();
+      }
+
       _syncBuiltinButtonState(form, button, notes) {
         const isBuiltin = this._isSelectedShaderBuiltin(form);
         button.disabled = !isBuiltin;
@@ -1008,6 +1289,9 @@ function registerRegionShaderBehavior({
           const group = this._findFieldGroup(form, key);
           if (group) group.style.display = "none";
         }
+        const customUniformGroup = this._findFieldGroup(form, "shaderCustomUniforms");
+        if (customUniformGroup) customUniformGroup.style.display = "none";
+        this._injectVariableEditorButton(form);
       }
     }
 

@@ -10,7 +10,7 @@ This is the editor you open on a specific placed object. These settings control 
 - `Enabled`: Turns the effect on/off without deleting your configuration.
 - `Shader`: Which preset/imported shader to run.
 - `Layer`: Which canvas layer the effect is rendered on. Use this to place the effect visually above/below tokens.
-- `Edit Variables`: Opens variable controls for imported shaders that expose editable constants.
+- `Edit Variables`: Opens controls for editable `const`/`#define` values and annotated uniforms.
 
 ### Mask & Opacity
 - `Gradient Mask`: Soft edge mask. Off = harder clip.
@@ -89,7 +89,7 @@ These match most per-document settings and act as starting defaults when you app
 ### Source Editing
 - `Shader Source`: GLSL source code for the imported shader.
 - `Inject Token Alpha`: Inserts helper code so shader output can follow token/tile alpha.
-- `Edit Variables`: Edits supported constants (`bool`, `float`, `int`, `vec3`, `vec4`) without hand-editing GLSL.
+- `Edit Variables`: Edits supported constants (`bool`, `float`, `int`, `vec3`, `vec4`) and annotated uniforms (for example: `uniform float uSpeed; // @editable 1.0`).
 
 ### Preview
 - `Update Preview`: Rebuilds live preview.

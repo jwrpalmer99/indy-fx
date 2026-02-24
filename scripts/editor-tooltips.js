@@ -70,6 +70,8 @@ const TOOLTIP_BY_KEY = Object.freeze({
 });
 
 const TOOLTIP_BY_ACTION = Object.freeze({
+  "inject-uniforms":
+    "Convert selected const/#define values to editable uniform declarations.",
   "inject-token-alpha":
     "Inject helper code so shader output alpha follows captured token/tile alpha.",
   "edit-shader-variables":

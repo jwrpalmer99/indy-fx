@@ -358,11 +358,13 @@
           <h3 style="margin:0;">Shader Source</h3>
           <div style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;justify-content:flex-end;">
             <button type="button" data-action="edit-common-source" style="white-space:nowrap;">Edit Common</button>
+            <button type="button" data-action="inject-uniforms" style="white-space:nowrap;">Inject Uniforms</button>
             <button type="button" data-action="inject-scene-alpha" style="white-space:nowrap;">Inject Scene Alpha</button>
             <button type="button" data-action="inject-token-alpha" style="white-space:nowrap;">Inject Token Alpha</button>
           </div>
         </div>
         <textarea name="editCommonSource" style="display:none;">{{shader.commonSource}}</textarea>
+        <textarea name="default_customUniforms" style="display:none;"></textarea>
         <div class="form-fields">
           <textarea name="editSource" rows="13" style="width:100%;font-family:monospace;min-height:16rem;">{{shader.source}}</textarea>
         </div>

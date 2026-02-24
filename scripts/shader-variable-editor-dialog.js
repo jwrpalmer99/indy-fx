@@ -83,6 +83,19 @@ function normalizeSourceEntries(sourceEntries = []) {
         : (typeof candidate.setSource === "function" ? candidate.setSource : null);
     const editable = candidate.editable !== false;
     const writable = typeof writeSource === "function";
+    const readUniformValues =
+      typeof candidate.readUniformValues === "function"
+        ? candidate.readUniformValues
+        : (typeof candidate.getUniformValues === "function"
+          ? candidate.getUniformValues
+          : () => ({}));
+    const writeUniformValues =
+      typeof candidate.writeUniformValues === "function"
+        ? candidate.writeUniformValues
+        : (typeof candidate.setUniformValues === "function"
+          ? candidate.setUniformValues
+          : null);
+    const uniformValuesWritable = typeof writeUniformValues === "function";
     entries.push({
       key,
       label,
@@ -93,6 +106,20 @@ function normalizeSourceEntries(sourceEntries = []) {
         if (!editable || !writable) return;
         writeSource(String(nextSource ?? ""));
       },
+      readUniformValues: () => {
+        const map = readUniformValues?.();
+        if (!map || typeof map !== "object" || Array.isArray(map)) return {};
+        return foundry.utils.deepClone(map);
+      },
+      writeUniformValues: (nextUniformValues) => {
+        if (!uniformValuesWritable) return;
+        const payload =
+          nextUniformValues && typeof nextUniformValues === "object" && !Array.isArray(nextUniformValues)
+            ? foundry.utils.deepClone(nextUniformValues)
+            : {};
+        writeUniformValues(payload);
+      },
+      uniformValuesWritable,
     });
   }
   return entries;
@@ -146,7 +173,9 @@ export async function openShaderVariableEditorDialog({
   const sourceGroups = [];
   for (const sourceEntry of normalizedEntries) {
     const sourceText = sourceEntry.readSource();
-    const extracted = extractEditableShaderVariables(sourceText);
+    const extracted = extractEditableShaderVariables(sourceText, {
+      uniformValues: sourceEntry.readUniformValues(),
+    });
     if (!extracted.length) continue;
     const sourceSection = getSourceSection(sourceEntry);
     extracted.sort((a, b) =>
@@ -162,6 +191,8 @@ export async function openShaderVariableEditorDialog({
         sourceKey: sourceEntry.key,
         sourceLabel: sourceEntry.label,
         sourceEditable: sourceEntry.editable,
+        sourceWritable: sourceEntry.writable,
+        sourceUniformWritable: sourceEntry.uniformValuesWritable,
       })),
     });
   }
@@ -182,7 +213,7 @@ export async function openShaderVariableEditorDialog({
   });
 
   if (!sourceGroups.length) {
-    ui.notifications.info("No editable const/#define bool/float/int/vec3/vec4 variables detected.");
+    ui.notifications.info("No editable const/#define/uniform variables detected.");
     return null;
   }
 
@@ -220,7 +251,10 @@ export async function openShaderVariableEditorDialog({
       variables.push(variable);
       const name = String(variable.name ?? "");
       const type = String(variable.type ?? "");
-      const editable = variable.sourceEditable !== false;
+      const editable =
+        variable.declaration === "uniform"
+          ? variable.sourceUniformWritable === true
+          : variable.sourceEditable !== false;
       const disabledAttr = editable ? "" : " disabled";
 
       if (variable.kind === "scalar") {
@@ -319,14 +353,45 @@ export async function openShaderVariableEditorDialog({
 
     const updatedSourceKeys = [];
     for (const sourceEntry of normalizedEntries) {
-      if (!sourceEntry.editable || !sourceEntry.writable) continue;
       const scopedVariables = varsBySourceKey.get(sourceEntry.key) ?? [];
       if (!scopedVariables.length) continue;
-      const sourceText = sourceEntry.readSource();
-      const nextSource = applyEditableShaderVariables(sourceText, scopedVariables);
-      if (nextSource === sourceText) continue;
-      sourceEntry.writeSource(nextSource);
-      updatedSourceKeys.push(sourceEntry.key);
+      const sourceScopedVariables = scopedVariables.filter(
+        (variable) => String(variable?.declaration ?? "").trim().toLowerCase() !== "uniform",
+      );
+      if (sourceScopedVariables.length && sourceEntry.editable && sourceEntry.writable) {
+        const sourceText = sourceEntry.readSource();
+        const nextSource = applyEditableShaderVariables(sourceText, sourceScopedVariables);
+        if (nextSource !== sourceText) {
+          sourceEntry.writeSource(nextSource);
+          updatedSourceKeys.push(sourceEntry.key);
+        }
+      }
+
+      const uniformScopedVariables = scopedVariables.filter(
+        (variable) => String(variable?.declaration ?? "").trim().toLowerCase() === "uniform",
+      );
+      if (uniformScopedVariables.length && sourceEntry.uniformValuesWritable) {
+        const currentUniformValues = sourceEntry.readUniformValues();
+        const nextUniformValues = foundry.utils.deepClone(currentUniformValues);
+        for (const variable of uniformScopedVariables) {
+          const uniformName = String(variable?.name ?? "").trim();
+          if (!uniformName) continue;
+          if (variable?.kind === "vector") {
+            nextUniformValues[uniformName] = Array.isArray(variable?.values)
+              ? variable.values.map((value) => Number(value))
+              : [];
+          } else if (String(variable?.type ?? "").trim().toLowerCase() === "bool") {
+            nextUniformValues[uniformName] = Boolean(variable?.value);
+          } else {
+            const n = Number(variable?.value);
+            nextUniformValues[uniformName] = Number.isFinite(n) ? n : 0;
+          }
+        }
+        if (JSON.stringify(nextUniformValues) !== JSON.stringify(currentUniformValues)) {
+          sourceEntry.writeUniformValues(nextUniformValues);
+          updatedSourceKeys.push(`${sourceEntry.key}:uniforms`);
+        }
+      }
     }
 
     if (typeof onApply === "function") {

@@ -5,6 +5,12 @@ import {
 import { applyEditorSettingTooltips } from "./editor-tooltips.js";
 import { enhanceShaderCodeEditors, disposeShaderCodeEditors } from "./glsl-editor.js";
 import { openShaderVariableEditorDialog } from "./shader-variable-editor-dialog.js";
+import {
+  extractInjectableUniformCandidates,
+  injectSelectedVariablesAsUniforms,
+  formatShaderScalarValue,
+  formatShaderVectorValue,
+} from "./shader-variable-utils.js";
 export function createMenus({ moduleId, shaderManager }) {
   const MODULE_ID = moduleId;
   const isDebugLoggingEnabled = () => {
@@ -979,11 +985,26 @@ export function createMenus({ moduleId, shaderManager }) {
         "preloadShader",
       ]);
       for (const key of shaderManager.getImportedShaderDefaultKeys()) {
+        if (key === "customUniforms") continue;
         const input = root.querySelector(`[name="default_${key}"]`);
         if (!input) continue;
         if (key === "layer") defaults[key] = String(input.value ?? "inherit");
         else if (booleanKeys.has(key)) defaults[key] = input.checked === true;
         else defaults[key] = String(input.value ?? "").trim();
+      }
+      const customUniformsInput = root.querySelector('[name="default_customUniforms"]');
+      if (customUniformsInput instanceof HTMLTextAreaElement) {
+        const raw = String(customUniformsInput.value ?? "").trim();
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              defaults.customUniforms = parsed;
+            }
+          } catch (_err) {
+            // Ignore invalid JSON; preserve previous defaults on save path.
+          }
+        }
       }
       return defaults;
     }
@@ -1834,7 +1855,15 @@ export function createMenus({ moduleId, shaderManager }) {
         alreadyReason: "Scene alpha injection is already present in mainImage.",
       });
     }
-    async _openShaderVariableEditor(root, refreshPreview) {
+    _escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+    _collectShaderSourceInputs(root) {
       const sourceInputs = [];
       const sourceInputByKey = new Map();
       const registerSourceInput = (input, sourceLabel) => {
@@ -1868,6 +1897,293 @@ export function createMenus({ moduleId, shaderManager }) {
         registerSourceInput(input, sourceLabel);
       }
 
+      return sourceInputs;
+    }
+    _resolveCustomUniformsInput(root) {
+      let input = root?.querySelector?.('[name="default_customUniforms"]');
+      if (input instanceof HTMLTextAreaElement) return input;
+      if (!(root instanceof Element)) return null;
+      input = document.createElement("textarea");
+      input.name = "default_customUniforms";
+      input.style.display = "none";
+      root.appendChild(input);
+      return input;
+    }
+    _readCustomUniformValues(root) {
+      const input = this._resolveCustomUniformsInput(root);
+      const raw = String(input?.value ?? "").trim();
+      if (!raw) return {};
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+        return parsed;
+      } catch (_err) {
+        return {};
+      }
+    }
+    _writeCustomUniformValues(root, nextUniformValues) {
+      const input = this._resolveCustomUniformsInput(root);
+      if (!(input instanceof HTMLTextAreaElement)) return false;
+      const payload =
+        nextUniformValues && typeof nextUniformValues === "object" && !Array.isArray(nextUniformValues)
+          ? nextUniformValues
+          : {};
+      const nextText = JSON.stringify(payload);
+      if (String(input.value ?? "") === nextText) return false;
+      input.value = nextText;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+    _getShaderSourceSection(entry) {
+      const key = String(entry?.key ?? "").toLowerCase();
+      const label = String(entry?.label ?? "").toLowerCase();
+      if (key.includes("common") || label.includes("common")) return "common";
+      if (
+        key === "instancesource" ||
+        key === "editsource" ||
+        label.includes("shader source")
+      ) {
+        return "shader";
+      }
+      if (key.includes("buffer") || /ichannel\s*\d+\s*buffer/.test(label)) {
+        return "buffer";
+      }
+      return "other";
+    }
+    _getShaderSourceSectionOrder(section) {
+      if (section === "common") return 0;
+      if (section === "shader") return 1;
+      if (section === "buffer") return 2;
+      return 3;
+    }
+    _getShaderSourceBufferIndex(entry) {
+      const label = String(entry?.label ?? "");
+      const key = String(entry?.key ?? "");
+      const labelMatch = label.match(/iChannel\s*([0-3])\s*Buffer/i);
+      if (labelMatch) return Number(labelMatch[1]);
+      const keyMatch = key.match(/buffer(?:source)?[_-]?([0-3])/i);
+      if (keyMatch) return Number(keyMatch[1]);
+      return 99;
+    }
+    _formatUniformDefaultFromCandidate(candidate) {
+      const type = String(candidate?.type ?? "").trim().toLowerCase();
+      if (candidate?.kind === "vector") {
+        const values = Array.isArray(candidate?.values) ? candidate.values : [];
+        return values.map((value) => formatShaderVectorValue(value)).join(", ");
+      }
+      return formatShaderScalarValue(candidate?.value, type);
+    }
+    async _openInjectUniformsDialog(root, refreshPreview) {
+      const sourceInputs = this._collectShaderSourceInputs(root);
+      if (!sourceInputs.length) {
+        ui.notifications.warn("Shader source editor not found.");
+        return;
+      }
+
+      const groups = [];
+      for (const sourceEntry of sourceInputs) {
+        const sourceText = String(sourceEntry?.input?.value ?? "");
+        const candidates = extractInjectableUniformCandidates(sourceText);
+        if (!candidates.length) continue;
+        groups.push({
+          sourceEntry,
+          section: this._getShaderSourceSection(sourceEntry),
+          candidates,
+        });
+      }
+
+      groups.sort((a, b) => {
+        const bySection =
+          this._getShaderSourceSectionOrder(a.section) -
+          this._getShaderSourceSectionOrder(b.section);
+        if (bySection !== 0) return bySection;
+        if (a.section === "buffer" && b.section === "buffer") {
+          const byChannel =
+            this._getShaderSourceBufferIndex(a.sourceEntry) -
+            this._getShaderSourceBufferIndex(b.sourceEntry);
+          if (byChannel !== 0) return byChannel;
+        }
+        return String(a?.sourceEntry?.label ?? "").localeCompare(
+          String(b?.sourceEntry?.label ?? ""),
+          undefined,
+          { sensitivity: "base" },
+        );
+      });
+
+      if (!groups.length) {
+        ui.notifications.info("No injectable const/#define values found.");
+        return;
+      }
+
+      const sectionTitle = {
+        common: "Common Source",
+        shader: "Shader Source",
+        buffer: "Buffer Sources",
+        other: "Other Sources",
+      };
+      const options = [];
+      let rows = "";
+      let currentSection = "";
+
+      for (const group of groups) {
+        if (group.section !== currentSection) {
+          currentSection = group.section;
+          rows += `
+            <div class="form-group" style="margin-top:0.65rem;">
+              <label style="font-size:1rem;">${this._escapeHtml(sectionTitle[currentSection] ?? "Sources")}</label>
+              <hr style="margin:0.25rem 0 0.45rem 0;opacity:0.5;" />
+            </div>
+          `;
+        }
+
+        if (group.section === "buffer") {
+          rows += `
+            <div class="form-group" style="margin:0.1rem 0 0.25rem 0;">
+              <p class="notes" style="margin:0;opacity:.9;font-weight:600;">${this._escapeHtml(group.sourceEntry.label)}</p>
+            </div>
+          `;
+        }
+
+        for (const candidate of group.candidates) {
+          const optionId = `inject_${options.length}`;
+          options.push({
+            optionId,
+            sourceKey: group.sourceEntry.key,
+            sourceEntry: group.sourceEntry,
+            candidate,
+          });
+          const type = String(candidate?.type ?? "").trim();
+          const declaration = String(candidate?.declaration ?? "").trim();
+          const disabled = String(candidate?.lockedReason ?? "").trim();
+          const disabledAttr = disabled ? " disabled" : "";
+          const defaultText = this._formatUniformDefaultFromCandidate(candidate);
+          rows += `
+            <div class="form-group" style="margin:0.1rem 0;">
+              <label class="checkbox" style="display:flex;align-items:flex-start;gap:0.45rem;">
+                <input type="checkbox" name="${this._escapeHtml(optionId)}"${disabledAttr} />
+                <span>
+                  <strong>${this._escapeHtml(candidate.name)}</strong>
+                  <small style="opacity:.85;">(${this._escapeHtml(type)} from ${this._escapeHtml(declaration)})</small>
+                  <div class="notes" style="margin:0.1rem 0 0 0;">
+                    Default: <code>${this._escapeHtml(defaultText)}</code>
+                  </div>
+                  ${disabled ? `<div class="notes" style="margin:0.1rem 0 0 0;color:#f5c38b;">${this._escapeHtml(disabled)}</div>` : ""}
+                </span>
+              </label>
+            </div>
+          `;
+        }
+      }
+
+      const content = `
+        <form class="indy-fx-inject-uniforms" style="max-height:min(70vh, calc(100vh - 220px));overflow-y:auto;overflow-x:hidden;padding-right:.35rem;">
+          <p class="notes" style="margin:0 0 0.45rem 0;">
+            Select const/#define values to convert into <code>uniform</code> declarations with <code>// @editable</code> defaults.
+          </p>
+          ${rows}
+        </form>
+      `;
+
+      const dialog = new foundry.applications.api.DialogV2({
+        window: { title: "Inject Uniforms", resizable: true },
+        position: {
+          width: 900,
+          height: Math.max(500, Math.floor(window.innerHeight * 0.75)),
+        },
+        content,
+        buttons: [
+          {
+            action: "apply",
+            label: "Apply",
+            icon: "fas fa-check",
+            default: true,
+            callback: (_event, _button, dlg) => {
+              const dialogRoot =
+                resolveElementRoot(dlg?.element) ?? resolveElementRoot(dlg);
+              if (!(dialogRoot instanceof Element)) return;
+              const selectedOptions = options.filter((option) => {
+                const checkbox = dialogRoot.querySelector(
+                  `[name="${option.optionId}"]`,
+                );
+                return checkbox instanceof HTMLInputElement && checkbox.checked === true;
+              });
+              if (!selectedOptions.length) {
+                ui.notifications.warn("Select at least one item to convert.");
+                return false;
+              }
+
+              const selectedBySource = new Map();
+              for (const selected of selectedOptions) {
+                const key = String(selected?.sourceKey ?? "");
+                if (!key) continue;
+                if (!selectedBySource.has(key)) selectedBySource.set(key, []);
+                selectedBySource.get(key).push(selected.candidate);
+              }
+
+              let sourceChangedCount = 0;
+              const currentUniforms = this._readCustomUniformValues(root);
+              const nextUniforms = foundry.utils.deepClone(currentUniforms);
+              let uniformsChanged = false;
+
+              for (const sourceEntry of sourceInputs) {
+                const chosen = selectedBySource.get(sourceEntry.key) ?? [];
+                if (!chosen.length) continue;
+                const result = injectSelectedVariablesAsUniforms(
+                  String(sourceEntry.input?.value ?? ""),
+                  chosen,
+                );
+                if (result.changed && sourceEntry.input instanceof HTMLTextAreaElement) {
+                  sourceEntry.input.value = String(result.source ?? "");
+                  sourceEntry.input.dispatchEvent(
+                    new Event("change", { bubbles: true }),
+                  );
+                  sourceChangedCount += 1;
+                }
+                for (const converted of result.converted ?? []) {
+                  const uniformName = String(converted?.name ?? "").trim();
+                  if (!uniformName || Object.hasOwn(nextUniforms, uniformName)) continue;
+                  if (converted?.kind === "vector") {
+                    nextUniforms[uniformName] = Array.isArray(converted?.values)
+                      ? converted.values.map((value) => Number(value))
+                      : [];
+                  } else if (
+                    String(converted?.type ?? "").trim().toLowerCase() === "bool"
+                  ) {
+                    nextUniforms[uniformName] = Boolean(converted?.value);
+                  } else {
+                    const n = Number(converted?.value);
+                    nextUniforms[uniformName] = Number.isFinite(n) ? n : 0;
+                  }
+                }
+              }
+
+              if (JSON.stringify(nextUniforms) !== JSON.stringify(currentUniforms)) {
+                uniformsChanged = this._writeCustomUniformValues(root, nextUniforms) === true;
+              }
+
+              if (sourceChangedCount > 0 || uniformsChanged) {
+                if (typeof refreshPreview === "function") refreshPreview();
+                ui.notifications.info(
+                  `Converted ${selectedOptions.length} value(s) to uniforms.`,
+                );
+              } else {
+                ui.notifications.info("No source changes were applied.");
+              }
+              return true;
+            },
+          },
+          { action: "cancel", label: "Cancel", icon: "fas fa-times" },
+        ],
+      });
+
+      await dialog.render(true);
+      const dialogRoot =
+        resolveElementRoot(dialog?.element) ?? resolveElementRoot(dialog);
+      ensureDialogVerticalScroll(dialogRoot);
+    }
+    async _openShaderVariableEditor(root, refreshPreview) {
+      const sourceInputs = this._collectShaderSourceInputs(root);
+
       if (!sourceInputs.length) {
         ui.notifications.warn("Shader source editor not found.");
         return;
@@ -1885,6 +2201,10 @@ export function createMenus({ moduleId, shaderManager }) {
             if (entry.input.value === next) return;
             entry.input.value = next;
             entry.input.dispatchEvent(new Event("change", { bubbles: true }));
+          },
+          readUniformValues: () => this._readCustomUniformValues(root),
+          writeUniformValues: (nextUniformValues) => {
+            this._writeCustomUniformValues(root, nextUniformValues);
           },
         })),
         onApply: () => {
@@ -2360,6 +2680,15 @@ export function createMenus({ moduleId, shaderManager }) {
           formEl.style.maxHeight = "none";
           formEl.style.overflowY = "visible";
         }
+        const customUniformsInput = root.querySelector('[name="default_customUniforms"]');
+        if (customUniformsInput instanceof HTMLTextAreaElement) {
+          const seeded = shader?.defaults?.customUniforms;
+          if (seeded && typeof seeded === "object" && !Array.isArray(seeded)) {
+            customUniformsInput.value = JSON.stringify(seeded);
+          } else if (!String(customUniformsInput.value ?? "").trim()) {
+            customUniformsInput.value = "{}";
+          }
+        }
         const previewCtl = this._startEditorShaderPreview(root, shader.id);
         debugLog("editor preview controller created", {
           shaderId: shader.id,
@@ -2413,6 +2742,17 @@ export function createMenus({ moduleId, shaderManager }) {
               void this._openCommonSourceEditor(root, {
                 onChanged: () => refreshPreview(),
               });
+            });
+          }
+        }
+        const injectUniformsBtn = root.querySelector(
+          "[data-action='inject-uniforms']",
+        );
+        if (injectUniformsBtn instanceof HTMLElement) {
+          if (injectUniformsBtn.dataset.indyFxInjectUniformsBound !== "1") {
+            injectUniformsBtn.dataset.indyFxInjectUniformsBound = "1";
+            injectUniformsBtn.addEventListener("click", () => {
+              void this._openInjectUniformsDialog(root, refreshPreview);
             });
           }
         }

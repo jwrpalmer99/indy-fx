@@ -2019,6 +2019,27 @@ function getTemplateShaderDocument(templateId) {
     ?? null;
 }
 
+function isTemplateShaderRenderable(templateOrDoc) {
+  const template =
+    templateOrDoc?.document
+      ? templateOrDoc
+      : (templateOrDoc?.id
+        ? canvas.templates?.get?.(String(templateOrDoc.id))
+        : null);
+  const doc = template?.document ?? templateOrDoc ?? null;
+  if (!doc) return false;
+  if (doc.hidden === true) return false;
+  if (doc.disabled === true) return false;
+  if (doc.enabled === false) return false;
+  if (doc.isEnabled === false) return false;
+  if (template) {
+    if (template.destroyed === true) return false;
+    if (template.visible === false) return false;
+    if (template.renderable === false) return false;
+  }
+  return true;
+}
+
 function getTileShaderDocument(tileId) {
   const resolvedTileId = resolveTileId(tileId);
   if (!resolvedTileId) return null;
@@ -2555,6 +2576,7 @@ function parseDocumentShaderForm(root, currentOpts) {
   const instanceSourceShaderIdInput = root?.querySelector?.('[name="instanceSourceShaderId"]');
   const instanceCommonSourceInput = root?.querySelector?.('[name="instanceCommonSource"]');
   const instanceChannelsJsonInput = root?.querySelector?.('[name="instanceChannelsJson"]');
+  const instanceCustomUniformsJsonInput = root?.querySelector?.('[name="instanceCustomUniformsJson"]');
   const instanceSource = instanceSourceInput instanceof HTMLTextAreaElement
     ? String(instanceSourceInput.value ?? "")
     : "";
@@ -2563,6 +2585,9 @@ function parseDocumentShaderForm(root, currentOpts) {
     : "";
   const instanceChannelsJson = instanceChannelsJsonInput instanceof HTMLTextAreaElement
     ? String(instanceChannelsJsonInput.value ?? "")
+    : "";
+  const instanceCustomUniformsJson = instanceCustomUniformsJsonInput instanceof HTMLTextAreaElement
+    ? String(instanceCustomUniformsJsonInput.value ?? "")
     : "";
   const instanceSourceShaderId = String(instanceSourceShaderIdInput?.value ?? "").trim();
   if (instanceSource.trim() && (!instanceSourceShaderId || instanceSourceShaderId === next.shaderId)) {
@@ -2594,6 +2619,23 @@ function parseDocumentShaderForm(root, currentOpts) {
     }
   } else {
     delete next.instanceChannels;
+  }
+  if (
+    instanceCustomUniformsJson.trim() &&
+    (!instanceSourceShaderId || instanceSourceShaderId === next.shaderId)
+  ) {
+    try {
+      const parsed = JSON.parse(instanceCustomUniformsJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        next.customUniforms = parsed;
+      } else {
+        delete next.customUniforms;
+      }
+    } catch (_err) {
+      delete next.customUniforms;
+    }
+  } else {
+    delete next.customUniforms;
   }
 
   const enabledInput = root?.querySelector?.('[name="enabled"]');
@@ -2679,10 +2721,15 @@ async function openDocumentShaderConfigDialog(app) {
     current?.instanceChannels && typeof current.instanceChannels === "object"
       ? JSON.stringify(current.instanceChannels)
       : "";
+  const currentInstanceCustomUniformsJson =
+    current?.customUniforms && typeof current.customUniforms === "object"
+      ? JSON.stringify(current.customUniforms)
+      : "";
   const currentInstanceSourceShaderId =
     currentInstanceSource.trim() ||
     currentInstanceCommonSource.trim() ||
-    currentInstanceChannelsJson.trim()
+    currentInstanceChannelsJson.trim() ||
+    currentInstanceCustomUniformsJson.trim()
       ? String(current.shaderId ?? "")
       : "";
 
@@ -2699,6 +2746,7 @@ async function openDocumentShaderConfigDialog(app) {
   <textarea name="instanceSource" style="display:none;">${escapeHtml(currentInstanceSource)}</textarea>
   <textarea name="instanceCommonSource" style="display:none;">${escapeHtml(currentInstanceCommonSource)}</textarea>
   <textarea name="instanceChannelsJson" style="display:none;">${escapeHtml(currentInstanceChannelsJson)}</textarea>
+  <textarea name="instanceCustomUniformsJson" style="display:none;">${escapeHtml(currentInstanceCustomUniformsJson)}</textarea>
   <input type="hidden" name="instanceSourceShaderId" value="${escapeHtml(currentInstanceSourceShaderId)}" />
   <div class="form-group"><label>Layer</label><div class="form-fields"><select name="layer">${layerOptions}</select></div></div>
   <div class="form-group"><label>Gradient Mask</label><div class="form-fields">${checkbox("useGradientMask", current.useGradientMask === true)}</div></div>
@@ -2918,6 +2966,9 @@ async function openDocumentShaderConfigDialog(app) {
       : "";
     const instanceCommonSourceInput = form?.querySelector?.('[name="instanceCommonSource"]');
     const instanceChannelsJsonInput = form?.querySelector?.('[name="instanceChannelsJson"]');
+    const instanceCustomUniformsJsonInput = form?.querySelector?.(
+      '[name="instanceCustomUniformsJson"]',
+    );
     const storedSourceShaderId = String(instanceSourceShaderIdInput?.value ?? "").trim();
     let workingSource = (storedSource.trim() && (!storedSourceShaderId || storedSourceShaderId === shaderId))
       ? storedSource
@@ -2932,6 +2983,9 @@ async function openDocumentShaderConfigDialog(app) {
     const storedChannelsJson = instanceChannelsJsonInput instanceof HTMLTextAreaElement
       ? String(instanceChannelsJsonInput.value ?? "")
       : "";
+    const storedCustomUniformsJson = instanceCustomUniformsJsonInput instanceof HTMLTextAreaElement
+      ? String(instanceCustomUniformsJsonInput.value ?? "")
+      : "";
     const parsedStoredChannels = (() => {
       if (!(storedChannelsJson.trim() && (!storedSourceShaderId || storedSourceShaderId === shaderId))) return null;
       try {
@@ -2943,6 +2997,20 @@ async function openDocumentShaderConfigDialog(app) {
     })();
     let workingChannels = foundry.utils.deepClone(
       parsedStoredChannels ?? record?.channels ?? {},
+    );
+    const parsedStoredCustomUniforms = (() => {
+      if (!(storedCustomUniformsJson.trim() && (!storedSourceShaderId || storedSourceShaderId === shaderId))) {
+        return null;
+      }
+      try {
+        const parsed = JSON.parse(storedCustomUniformsJson);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+      } catch (_err) {
+        return null;
+      }
+    })();
+    let workingCustomUniforms = foundry.utils.deepClone(
+      parsedStoredCustomUniforms ?? record?.defaults?.customUniforms ?? {},
     );
 
     const writeInstanceCommonToHost = () => {
@@ -2956,6 +3024,14 @@ async function openDocumentShaderConfigDialog(app) {
     const writeInstanceChannelsToHost = () => {
       if (instanceChannelsJsonInput instanceof HTMLTextAreaElement) {
         instanceChannelsJsonInput.value = JSON.stringify(workingChannels ?? {});
+      }
+      if (instanceSourceShaderIdInput instanceof HTMLInputElement) {
+        instanceSourceShaderIdInput.value = shaderId;
+      }
+    };
+    const writeInstanceCustomUniformsToHost = () => {
+      if (instanceCustomUniformsJsonInput instanceof HTMLTextAreaElement) {
+        instanceCustomUniformsJsonInput.value = JSON.stringify(workingCustomUniforms ?? {});
       }
       if (instanceSourceShaderIdInput instanceof HTMLInputElement) {
         instanceSourceShaderIdInput.value = shaderId;
@@ -2976,6 +3052,14 @@ async function openDocumentShaderConfigDialog(app) {
             instanceSourceShaderIdInput.value = shaderId;
           }
         },
+        readUniformValues: () => foundry.utils.deepClone(workingCustomUniforms ?? {}),
+        writeUniformValues: (nextUniformValues) => {
+          workingCustomUniforms =
+            nextUniformValues && typeof nextUniformValues === "object" && !Array.isArray(nextUniformValues)
+              ? foundry.utils.deepClone(nextUniformValues)
+              : {};
+          writeInstanceCustomUniformsToHost();
+        },
       },
     ];
 
@@ -2987,6 +3071,14 @@ async function openDocumentShaderConfigDialog(app) {
         writeSource: (nextSource) => {
           workingCommonSource = String(nextSource ?? "");
           writeInstanceCommonToHost();
+        },
+        readUniformValues: () => foundry.utils.deepClone(workingCustomUniforms ?? {}),
+        writeUniformValues: (nextUniformValues) => {
+          workingCustomUniforms =
+            nextUniformValues && typeof nextUniformValues === "object" && !Array.isArray(nextUniformValues)
+              ? foundry.utils.deepClone(nextUniformValues)
+              : {};
+          writeInstanceCustomUniformsToHost();
         },
       });
     }
@@ -3022,6 +3114,14 @@ async function openDocumentShaderConfigDialog(app) {
             source: next,
           };
           writeInstanceChannelsToHost();
+        },
+        readUniformValues: () => foundry.utils.deepClone(workingCustomUniforms ?? {}),
+        writeUniformValues: (nextUniformValues) => {
+          workingCustomUniforms =
+            nextUniformValues && typeof nextUniformValues === "object" && !Array.isArray(nextUniformValues)
+              ? foundry.utils.deepClone(nextUniformValues)
+              : {};
+          writeInstanceCustomUniformsToHost();
         },
       });
     }
@@ -3848,6 +3948,75 @@ function syncRegionShaderFromBehavior(regionId, { rebuild = true } = {}) {
   return true;
 }
 
+function refreshRunningRegionShaders({
+  regionId = null,
+  shaderIds = [],
+  reason = "manual-refresh",
+} = {}) {
+  const requestedRegionId = String(regionId ?? "").trim();
+  const changedIds = Array.isArray(shaderIds)
+    ? shaderIds
+        .map((id) => String(id ?? "").trim())
+        .filter((id) => !!id)
+    : [];
+  const changedIdSet = new Set(changedIds);
+
+  const activeEntries = requestedRegionId
+    ? getActiveRegionShaderEntries(requestedRegionId)
+    : Array.from(_activeRegionShader.values());
+
+  if (!activeEntries.length) return 0;
+
+  let refreshedCount = 0;
+  const refreshedBehaviorRegions = new Set();
+  for (const active of activeEntries) {
+    const activeRegionId = String(active?.regionId ?? "").trim();
+    if (requestedRegionId && activeRegionId !== requestedRegionId) continue;
+
+    const activeShaderId = getPersistedShaderId(active?.sourceOpts ?? {});
+    if (changedIdSet.size > 0 && !changedIdSet.has(activeShaderId)) continue;
+
+    if (active?.fromBehavior === true) {
+      if (!activeRegionId || refreshedBehaviorRegions.has(activeRegionId)) continue;
+      refreshedBehaviorRegions.add(activeRegionId);
+      try {
+        syncRegionShaderFromBehavior(activeRegionId, { rebuild: true });
+        refreshedCount += 1;
+      } catch (_err) {
+        // Non-fatal.
+      }
+      continue;
+    }
+
+    try {
+      const sourceOpts = foundry.utils.mergeObject(
+        {},
+        active?.sourceOpts ?? {},
+        { inplace: false },
+      );
+      sourceOpts._skipPersist = true;
+      shaderOffRegion(activeRegionId, {
+        skipPersist: true,
+        fromBehavior: false,
+        effectKey: active.effectKey,
+      });
+      shaderOnRegion(activeRegionId, sourceOpts);
+      refreshedCount += 1;
+    } catch (_err) {
+      // Non-fatal.
+    }
+  }
+
+  debugLog("refreshed running region shaders", {
+    reason: String(reason ?? "manual-refresh"),
+    requestedRegionId: requestedRegionId || null,
+    changedShaderIds: changedIds,
+    activeCount: activeEntries.length,
+    refreshedCount,
+  });
+  return refreshedCount;
+}
+
 function restoreRegionShaderBehaviors() {
   const regions = canvas.regions?.placeables ?? [];
   const regionIds = new Set();
@@ -4037,6 +4206,13 @@ function ensureTemplateShaderFromPersist(templateOrDoc, { reason = "unknown", fo
 
   const persistedShaderId = getPersistedShaderId(opts);
   if (!persistedShaderId) return false;
+
+  if (!isTemplateShaderRenderable(doc)) {
+    if (_activeTemplateShader.has(templateId)) {
+      shaderOffTemplate(templateId, { skipPersist: true });
+    }
+    return false;
+  }
 
   const existing = _activeTemplateShader.get(templateId);
   if (!forceRebuild && _isActiveEntryUsable(existing)) return true;
@@ -4675,6 +4851,8 @@ function normalizeShaderMacroOpts(opts = {}) {
   if (next.shaderCaptureFlipHorizontal === undefined && next.captureFlipHorizontal !== undefined) next.shaderCaptureFlipHorizontal = next.captureFlipHorizontal;
   if (next.captureFlipVertical === undefined && next.shaderCaptureFlipVertical !== undefined) next.captureFlipVertical = next.shaderCaptureFlipVertical;
   if (next.shaderCaptureFlipVertical === undefined && next.captureFlipVertical !== undefined) next.shaderCaptureFlipVertical = next.captureFlipVertical;
+  if (next.customUniforms === undefined && next.shaderCustomUniforms !== undefined) next.customUniforms = next.shaderCustomUniforms;
+  if (next.shaderCustomUniforms === undefined && next.customUniforms !== undefined) next.shaderCustomUniforms = next.customUniforms;
   if (next.displayTimeMs === undefined && next.shaderDisplayTimeMs !== undefined) next.displayTimeMs = next.shaderDisplayTimeMs;
   if (next.easeInMs === undefined && next.shaderEaseInMs !== undefined) next.easeInMs = next.shaderEaseInMs;
   if (next.easeOutMs === undefined && next.shaderEaseOutMs !== undefined) next.easeOutMs = next.shaderEaseOutMs;
@@ -4701,6 +4879,23 @@ function normalizeShaderMacroOpts(opts = {}) {
 
   if (next.colorA !== undefined) next.colorA = parseHexColorLike(next.colorA, 0xFF4A9A);
   if (next.colorB !== undefined) next.colorB = parseHexColorLike(next.colorB, 0xFFB14A);
+  if (next.customUniforms !== undefined) {
+    let map = next.customUniforms;
+    if (typeof map === "string") {
+      try {
+        map = JSON.parse(map);
+      } catch (_err) {
+        map = null;
+      }
+    }
+    if (!map || typeof map !== "object" || Array.isArray(map)) {
+      delete next.customUniforms;
+      delete next.shaderCustomUniforms;
+    } else {
+      next.customUniforms = map;
+      next.shaderCustomUniforms = map;
+    }
+  }
 
   return next;
 }
@@ -5366,6 +5561,7 @@ function shaderOnTemplate(templateId, opts = {}) {
     ui.notifications.warn("No measured template found. Create one first or pass templateId.");
     return;
   }
+  if (!isTemplateShaderRenderable(template)) return;
   if (_activeTemplateShader.has(resolvedTemplateId)) return;
 
   const macroOpts = normalizeShaderMacroOpts(opts);
@@ -5546,6 +5742,9 @@ function shaderOnTemplate(templateId, opts = {}) {
       if (missingTemplateMs < missingTemplateGraceMs) return;
       return shaderOffTemplate(resolvedTemplateId, { skipPersist: true });
     }
+    if (!isTemplateShaderRenderable(liveTemplate)) {
+      return shaderOffTemplate(resolvedTemplateId, { skipPersist: true });
+    }
     missingTemplateMs = 0;
 
     const liveShapeSig = getTemplateShapeSignature(liveTemplate);
@@ -5605,18 +5804,27 @@ function shaderOnTemplate(templateId, opts = {}) {
     }
     if (sceneAreaChannels.length && captureUpdateDt > 0) {
       const captureScale = Math.max(0.01, Number(cfg.captureScale ?? 1.0));
-      const captureRadius = effectExtent * captureScale;
-      const captureRotationDeg = Number.isFinite(Number(cfg.captureRotationDeg))
+      const captureRadiusX = effectExtent * captureScale;
+      const baseDirectionalCaptureRotationDeg =
+        shape === "circle"
+          ? 0
+          : (Number.isFinite(Number(shapeDirectionDeg)) ? Number(shapeDirectionDeg) : 0);
+      const userCaptureRotationDeg = Number.isFinite(Number(cfg.captureRotationDeg))
         ? Number(cfg.captureRotationDeg)
         : 0;
+      const captureRotationDeg = baseDirectionalCaptureRotationDeg + userCaptureRotationDeg;
       const captureFlipHorizontal = parseBooleanLike(cfg.captureFlipHorizontal, false);
       const captureFlipVerticalUser = parseBooleanLike(cfg.captureFlipVertical, false);
       const captureFlipVertical = !captureFlipVerticalUser;
       for (const capture of sceneAreaChannels) {
+        const captureWidth = Math.max(1, Number(capture?.width ?? capture?.size ?? 1));
+        const captureHeight = Math.max(1, Number(capture?.height ?? capture?.size ?? 1));
+        const captureAspect = captureWidth > 0 ? (captureHeight / captureWidth) : 1;
+        const captureRadiusY = Math.max(1, captureRadiusX * captureAspect);
         capture.update({
           centerWorld: liveCenter,
-          radiusWorldX: captureRadius,
-          radiusWorldY: captureRadius * 0.5,
+          radiusWorldX: captureRadiusX,
+          radiusWorldY: captureRadiusY,
           flipX: captureFlipHorizontal,
           flipY: captureFlipVertical,
           rotationDeg: captureRotationDeg,
@@ -6882,7 +7090,9 @@ Hooks.once("init", () => {
   registerRegionShaderBehavior({
     moduleId: MODULE_ID,
     getShaderChoices: () => shaderManager.getShaderChoicesForTarget("region"),
-    isBuiltinShader: (shaderId) => shaderManager.isBuiltinShader(shaderId)
+    isBuiltinShader: (shaderId) => shaderManager.isBuiltinShader(shaderId),
+    getImportedRecord: (shaderId) => shaderManager.getImportedRecord(shaderId),
+    updateImportedShader: (shaderId, payload = {}) => shaderManager.updateImportedShader(shaderId, payload),
   });
   syncImportedShaderLightAnimations({ reason: "init" });
 });
@@ -6899,6 +7109,10 @@ Hooks.on(`${MODULE_ID}.shaderLibraryChanged`, (payload = {}) => {
   refreshImportedLightSources({
     reason: "shader-library-changed",
     changedShaderIds,
+  });
+  refreshRunningRegionShaders({
+    reason: "shader-library-changed",
+    shaderIds: changedShaderIds,
   });
   setTimeout(() => {
     refreshImportedLightSources({
@@ -7085,6 +7299,12 @@ Hooks.once("ready", async () => {
     if (currentSceneId && docSceneId && currentSceneId !== docSceneId) return;
     const templateId = String(template?.document?.id ?? template?.id ?? "").trim();
     if (!templateId) return;
+    if (!isTemplateShaderRenderable(template)) {
+      if (_activeTemplateShader.has(templateId)) {
+        shaderOffTemplate(templateId, { skipPersist: true });
+      }
+      return;
+    }
     const active = _activeTemplateShader.get(templateId);
     if (_isActiveEntryUsable(active)) return;
     setTimeout(() => {
@@ -7126,6 +7346,12 @@ Hooks.once("ready", async () => {
     }, 0);
   });
   Hooks.on("updateMeasuredTemplate", (doc, changed) => {
+    if (!isTemplateShaderRenderable(doc)) {
+      if (_activeTemplateShader.has(doc.id)) {
+        shaderOffTemplate(doc.id, { skipPersist: true });
+      }
+      return;
+    }
     if (!_activeTemplateShader.has(doc.id)) return;
     const shapeKeys = ["t", "distance", "width", "angle", "direction"];
     const needsRebuild = shapeKeys.some((k) => Object.prototype.hasOwnProperty.call(changed ?? {}, k));
@@ -7307,6 +7533,7 @@ Hooks.once("ready", async () => {
     shaderOffRegion: (regionId) => shaderOffRegion(regionId),
     shaderOffRegionBehavior: (regionId, behaviorId, options) => shaderOffRegionBehavior(regionId, behaviorId, options),
     shaderToggleRegion: (regionId, opts) => shaderToggleRegion(regionId, opts),
+    refreshRegionShaders: (options = {}) => refreshRunningRegionShaders(options),
     broadcastShaderOn: (payloadOrTokenId, maybeOpts) => broadcastShaderOn(normalizeTokenBroadcastPayload(payloadOrTokenId, maybeOpts)),
     broadcastShaderOff: (payloadOrTokenId) => broadcastShaderOff(normalizeTokenBroadcastPayload(payloadOrTokenId)),
     broadcastShaderToggle: (payloadOrTokenId, maybeOpts) => broadcastShaderToggle(normalizeTokenBroadcastPayload(payloadOrTokenId, maybeOpts)),

@@ -162,6 +162,7 @@ const IMPORTED_SHADER_DEFAULT_KEYS = [
   "lightBackgroundIntensity",
   "backgroundGlow",
   "preloadShader",
+  "customUniforms",
 ];
 
 function isDebugLoggingEnabled(moduleId = "indy-fx") {
@@ -196,6 +197,57 @@ function roundMs(value) {
 function toFiniteNumber(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function isValidCustomUniformName(name) {
+  const key = String(name ?? "").trim();
+  return /^[A-Za-z_]\w*$/.test(key);
+}
+
+function normalizeCustomUniformValue(value) {
+  if (value === true || value === false) return value;
+  if (Number.isFinite(Number(value))) return Number(value);
+  if (Array.isArray(value)) {
+    const values = value
+      .slice(0, 4)
+      .map((entry) => Number(entry))
+      .filter((entry) => Number.isFinite(entry));
+    if (values.length >= 2) return values;
+    return null;
+  }
+  if (value && typeof value === "object") {
+    const values = ["x", "y", "z", "w"]
+      .map((axis) => Number(value?.[axis]))
+      .filter((entry) => Number.isFinite(entry));
+    if (values.length >= 2) return values.slice(0, 4);
+    return null;
+  }
+  return null;
+}
+
+function normalizeCustomUniformMap(value, fallback = null) {
+  let source = value;
+  if (typeof source === "string" && source.trim()) {
+    try {
+      source = JSON.parse(source);
+    } catch (_err) {
+      source = null;
+    }
+  }
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    source = fallback;
+  }
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return {};
+  }
+  const normalized = {};
+  for (const [name, rawValue] of Object.entries(source)) {
+    if (!isValidCustomUniformName(name)) continue;
+    const valueNormalized = normalizeCustomUniformValue(rawValue);
+    if (valueNormalized === null) continue;
+    normalized[name] = valueNormalized;
+  }
+  return normalized;
 }
 
 function normalizeHexColor(value, fallback = "FFFFFF") {
@@ -1799,6 +1851,7 @@ export class ShaderManager {
       lightBackgroundIntensity: 1.0,
       backgroundGlow: 0.0,
       preloadShader: false,
+      customUniforms: {},
     };
   }
 
@@ -2071,6 +2124,10 @@ export class ShaderManager {
         source.preloadShader === "1" ||
         source.preloadShader === "true" ||
         source.preloadShader === "on",
+      customUniforms: normalizeCustomUniformMap(
+        source.customUniforms,
+        base.customUniforms,
+      ),
     };
 
     return normalized;
@@ -5580,8 +5637,21 @@ export class ShaderManager {
       JSON.stringify(record.channels ?? {});
 
     phaseStart = nowMs();
+    const defaultsSource = (() => {
+      if (defaults === null || defaults === undefined) return record.defaults;
+      if (!defaults || typeof defaults !== "object" || Array.isArray(defaults)) {
+        return defaults;
+      }
+      const mergedDefaults = foundry.utils.deepClone(defaults);
+      if (!Object.prototype.hasOwnProperty.call(mergedDefaults, "customUniforms")) {
+        mergedDefaults.customUniforms = foundry.utils.deepClone(
+          record?.defaults?.customUniforms ?? {},
+        );
+      }
+      return mergedDefaults;
+    })();
     const normalizedDefaults = this.normalizeImportedShaderDefaults(
-      defaults ?? record.defaults,
+      defaultsSource,
       this.getDefaultImportedShaderDefaults(),
     );
     timings.normalizeDefaultsMs = roundMs(nowMs() - phaseStart);
