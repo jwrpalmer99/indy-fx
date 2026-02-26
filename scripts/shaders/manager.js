@@ -12,6 +12,7 @@ import { globeShaderDefinition } from "./builtin/globe.js";
 import { ShaderToyBufferChannel } from "./buffer-channel.js";
 import { PlaceableImageChannel } from "./placeable-image-channel.js";
 import { SceneAreaChannel } from "./scene-channel.js";
+import { syncShaderMouseUniforms } from "../shader-runtime-utils.js";
 import {
   adaptShaderToyFragment,
   extractReferencedChannels,
@@ -2635,6 +2636,7 @@ export class ShaderManager {
         const dt = Math.max(0, Number(dtSeconds) || 0);
         pendingBufferDt += dt;
         timeSeconds += dt;
+        syncShaderMouseUniforms(shader, { runtimeBuffers });
         updatePreviewShaderUniforms(shader, dt, speed, timeSeconds);
       },
       render: (renderer, target = null) => {
@@ -2962,6 +2964,7 @@ export class ShaderManager {
         const dt = Math.max(0, Number(dtSeconds) || 0);
         pendingBufferDt += dt;
         timeSeconds += dt;
+        syncShaderMouseUniforms(shader, { runtimeBuffers });
         updatePreviewShaderUniforms(shader, dt, 1, timeSeconds);
       },
       render: (renderer, target = null) => {

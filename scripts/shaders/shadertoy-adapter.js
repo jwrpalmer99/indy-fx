@@ -820,8 +820,12 @@ function applyCompatibilityRewrites(source) {
         if (/^\d+$/.test(idxExpr)) return full;
 
         // Keep write targets intact; only rewrite read indexing.
+        // Also guard nested write targets like arr[i][j] = ... or arr[i].x = ...
         const tail = String(whole ?? "").slice(Number(offset ?? 0) + full.length);
-        if (/^\s*(?:=|\+=|-=|\*=|\/=|%=|<<=|>>=|&=|\^=|\|=)/.test(tail)) return full;
+        if (
+          /^\s*(?:=|\+=|-=|\*=|\/=|%=|<<=|>>=|&=|\^=|\|=|\+\+|--)/.test(tail) ||
+          /^\s*(?:\[[^\]]+\]|\.[A-Za-z_]\w*)+\s*(?:=|\+=|-=|\*=|\/=|%=|<<=|>>=|&=|\^=|\|=|\+\+|--)/.test(tail)
+        ) return full;
 
         if (size === 1) return `${name}[0]`;
         let selectExpr = `${name}[${size - 1}]`;
@@ -855,8 +859,12 @@ function applyCompatibilityRewrites(source) {
         if (/^\d+$/.test(idxExpr)) return full;
 
         // Keep write targets intact; only rewrite read indexing.
+        // Also guard nested write targets like m[i][j] = ... or m[i].x = ...
         const tail = String(whole ?? "").slice(Number(offset ?? 0) + full.length);
-        if (/^\s*(?:=|\+=|-=|\*=|\/=|%=|<<=|>>=|&=|\^=|\|=)/.test(tail)) return full;
+        if (
+          /^\s*(?:=|\+=|-=|\*=|\/=|%=|<<=|>>=|&=|\^=|\|=|\+\+|--)/.test(tail) ||
+          /^\s*(?:\[[^\]]+\]|\.[A-Za-z_]\w*)+\s*(?:=|\+=|-=|\*=|\/=|%=|<<=|>>=|&=|\^=|\|=|\+\+|--)/.test(tail)
+        ) return full;
 
         if (type === "mat2") return `cpfx_mat2_col(${name}, int(${idxExpr}))`;
         if (type === "mat3") return `cpfx_mat3_col(${name}, int(${idxExpr}))`;

@@ -36,6 +36,7 @@ import {
   createQuadGeometry,
   setupShaderRuntimeChannels,
   createFadeAlphaComputer,
+  syncShaderMouseUniforms,
   updateShaderTimeUniforms,
   destroyShaderRuntimeEntry,
   destroyRegionClusterRuntime
@@ -65,6 +66,38 @@ function debugLog(message, payload = undefined) {
   if (!isDebugLoggingEnabled()) return;
   if (payload === undefined) console.debug(`${MODULE_ID} | ${message}`);
   else console.debug(`${MODULE_ID} | ${message}`, payload);
+}
+
+function getFoundryGenerationNumber() {
+  const directGeneration = Number(
+    game?.release?.generation ??
+      game?.data?.release?.generation ??
+      game?.versionData?.generation,
+  );
+  if (Number.isFinite(directGeneration)) return directGeneration;
+
+  const version = String(
+    game?.release?.version ??
+      game?.version ??
+      "",
+  ).trim();
+  if (
+    version &&
+    typeof foundry?.utils?.isNewerVersion === "function" &&
+    foundry.utils.isNewerVersion(version, "13.999")
+  ) {
+    return 14;
+  }
+  return 13;
+}
+
+function supportsMeasuredTemplateDocuments() {
+  return getFoundryGenerationNumber() < 14;
+}
+
+function getCanvasTemplateLayerSafe() {
+  if (!supportsMeasuredTemplateDocuments()) return null;
+  return canvas?.templates ?? null;
 }
 
 function readShaderFrameFromUniforms(uniforms) {
@@ -748,17 +781,6 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
       ? layer._indyFxRuntimeBuffers
       : [];
     importedTraceBufferCount += runtimeBuffers.length;
-    if (runtimeBuffers.length > 0 && runtimeDrawDt > 0) {
-      const renderer = canvas?.app?.renderer;
-      for (const runtimeBuffer of runtimeBuffers) {
-        try {
-          runtimeBuffer?.update?.(runtimeDrawDt, renderer);
-        } catch (_err) {
-          // Non-fatal.
-        }
-      }
-      importedTraceBufferUpdates += runtimeBuffers.length;
-    }
 
     const classBaseSpeed = toFiniteLightNumber(
       layer?.shader?.constructor?.indyFxBaseSpeed,
@@ -815,7 +837,21 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
       ch2w, ch2h, 1,
       ch3w, ch3h, 1,
     ];
-    uniforms.iMouse = [0, 0, 0, 0];
+    syncShaderMouseUniforms(layer?.shader, {
+      mouseTarget: layer?.mesh ?? null,
+      runtimeBuffers,
+    });
+    if (runtimeBuffers.length > 0 && runtimeDrawDt > 0) {
+      const renderer = canvas?.app?.renderer;
+      for (const runtimeBuffer of runtimeBuffers) {
+        try {
+          runtimeBuffer?.update?.(runtimeDrawDt, renderer);
+        } catch (_err) {
+          // Non-fatal.
+        }
+      }
+      importedTraceBufferUpdates += runtimeBuffers.length;
+    }
     if (runtimeDrawDt > 0) {
       uniforms.uTime = t;
       uniforms.iTime = t;
@@ -1693,6 +1729,26 @@ function isGlobalPointInsidePlaceable(placeable, globalPoint) {
   return false;
 }
 
+function getLayerPlaceablesSafe(layer) {
+  if (!layer) return [];
+  try {
+    const placeables = layer.placeables;
+    if (Array.isArray(placeables)) return placeables;
+  } catch (_err) {
+    // Some v14 builds can throw while resolving layer placeables.
+  }
+
+  const children = layer?.objects?.children;
+  if (!Array.isArray(children)) return [];
+  return children.filter((entry) => {
+    if (!entry || entry.destroyed) return false;
+    const id = entry?.document?.id ?? entry?.id;
+    if (!id) return false;
+    if (entry?.document?.isPreview === true || entry?.isPreview === true) return false;
+    return true;
+  });
+}
+
 function findTopPlaceableAtGlobalPoint(placeables, globalPoint) {
   const list = Array.isArray(placeables) ? placeables : [];
   for (let i = list.length - 1; i >= 0; i -= 1) {
@@ -1762,8 +1818,50 @@ function isWorldPointInsideTemplate(template, worldPoint, globalPoint = null) {
   return false;
 }
 
+function isWorldPointInsideRegion(region, worldPoint, globalPoint = null) {
+  if (!region || !worldPoint) return false;
+  const gp = globalPoint ?? (canvas?.stage ? canvas.stage.toGlobal(new PIXI.Point(worldPoint.x, worldPoint.y)) : null);
+  if (!gp) return false;
+
+  try {
+    if (typeof region.containsPoint === "function" && region.containsPoint(gp)) {
+      return true;
+    }
+  } catch (_err) {
+    // Continue to shape fallbacks.
+  }
+
+  try {
+    const local = region.worldTransform?.applyInverse?.(gp, new PIXI.Point());
+    const shape = region.shape ?? region.hitArea ?? null;
+    if (local && shape && typeof shape.contains === "function" && shape.contains(local.x, local.y)) {
+      return true;
+    }
+  } catch (_err) {
+    // Continue to tree fallback.
+  }
+
+  try {
+    const tree = region?.document?.polygonTree ?? region?.polygonTree ?? null;
+    if (typeof tree?.testPoint === "function" && tree.testPoint({ x: Number(worldPoint.x), y: Number(worldPoint.y) })) {
+      return true;
+    }
+  } catch (_err) {
+    // Continue to bounds fallback.
+  }
+
+  try {
+    const bounds = region.getBounds?.();
+    if (bounds?.contains?.(gp.x, gp.y)) return true;
+  } catch (_err) {
+    return false;
+  }
+
+  return false;
+}
+
 function findTopTokenAtDropPoint(globalPoint, worldPoint) {
-  const tokens = Array.isArray(canvas?.tokens?.placeables) ? canvas.tokens.placeables : [];
+  const tokens = getLayerPlaceablesSafe(canvas?.tokens);
   for (let i = tokens.length - 1; i >= 0; i -= 1) {
     const token = tokens[i];
     if (!token || token.destroyed || token.visible === false) continue;
@@ -1774,7 +1872,7 @@ function findTopTokenAtDropPoint(globalPoint, worldPoint) {
 }
 
 function findTopTileAtDropPoint(globalPoint, worldPoint) {
-  const tiles = Array.isArray(canvas?.tiles?.placeables) ? canvas.tiles.placeables : [];
+  const tiles = getLayerPlaceablesSafe(canvas?.tiles);
   for (let i = tiles.length - 1; i >= 0; i -= 1) {
     const tile = tiles[i];
     if (!tile || tile.destroyed || tile.visible === false) continue;
@@ -1785,7 +1883,7 @@ function findTopTileAtDropPoint(globalPoint, worldPoint) {
 }
 
 function findTopTemplateAtDropPoint(globalPoint, worldPoint) {
-  const templates = Array.isArray(canvas?.templates?.placeables) ? canvas.templates.placeables : [];
+  const templates = getLayerPlaceablesSafe(getCanvasTemplateLayerSafe());
   for (let i = templates.length - 1; i >= 0; i -= 1) {
     const template = templates[i];
     if (!template || template.destroyed || template.visible === false) continue;
@@ -1794,37 +1892,83 @@ function findTopTemplateAtDropPoint(globalPoint, worldPoint) {
   return null;
 }
 
+function findTopRegionAtDropPoint(globalPoint, worldPoint) {
+  const regions = getLayerPlaceablesSafe(canvas?.regions);
+  for (let i = regions.length - 1; i >= 0; i -= 1) {
+    const region = regions[i];
+    if (!region || region.destroyed || region.visible === false) continue;
+    if (globalPoint && isGlobalPointInsidePlaceable(region, globalPoint)) return region;
+    if (isWorldPointInsideRegion(region, worldPoint, globalPoint)) return region;
+  }
+  return null;
+}
+
 function resolveDropShaderTarget(globalPoint, worldPoint) {
   const activeLayer = canvas?.activeLayer;
-  const tokenTarget = findTopTokenAtDropPoint(globalPoint, worldPoint);
-  const tileTarget = findTopTileAtDropPoint(globalPoint, worldPoint);
-  const templateTarget = findTopTemplateAtDropPoint(globalPoint, worldPoint);
-
+  const templateLayer = getCanvasTemplateLayerSafe();
   const activeName = String(
     activeLayer?.documentName ?? activeLayer?.options?.documentName ?? activeLayer?.name ?? "",
   ).toLowerCase();
 
+  let tokenTarget;
+  let tileTarget;
+  let templateTarget;
+  let regionTarget;
+  const resolveTokenTarget = () => {
+    if (tokenTarget !== undefined) return tokenTarget;
+    tokenTarget = findTopTokenAtDropPoint(globalPoint, worldPoint);
+    return tokenTarget;
+  };
+  const resolveTileTarget = () => {
+    if (tileTarget !== undefined) return tileTarget;
+    tileTarget = findTopTileAtDropPoint(globalPoint, worldPoint);
+    return tileTarget;
+  };
+  const resolveTemplateTarget = () => {
+    if (templateTarget !== undefined) return templateTarget;
+    templateTarget = findTopTemplateAtDropPoint(globalPoint, worldPoint);
+    return templateTarget;
+  };
+  const resolveRegionTarget = () => {
+    if (regionTarget !== undefined) return regionTarget;
+    regionTarget = findTopRegionAtDropPoint(globalPoint, worldPoint);
+    return regionTarget;
+  };
+
   if (activeLayer === canvas?.tokens || activeName.includes("token")) {
-    if (tokenTarget) return { targetType: "token", targetId: tokenTarget.id ?? tokenTarget.document?.id ?? null };
+    const target = resolveTokenTarget();
+    if (target) return { targetType: "token", targetId: target.id ?? target.document?.id ?? null };
   }
   if (activeLayer === canvas?.tiles || activeName.includes("tile")) {
-    if (tileTarget) return { targetType: "tile", targetId: tileTarget.id ?? tileTarget.document?.id ?? null };
+    const target = resolveTileTarget();
+    if (target) return { targetType: "tile", targetId: target.id ?? target.document?.id ?? null };
+  }
+  if (activeLayer === canvas?.regions || activeName.includes("region")) {
+    const target = resolveRegionTarget();
+    if (target) return { targetType: "region", targetId: target.id ?? target.document?.id ?? null };
   }
   if (
-    activeLayer === canvas?.templates ||
+    (templateLayer && activeLayer === templateLayer) ||
     activeLayer === canvas?.measure ||
     activeName.includes("template") ||
     activeName.includes("measure")
   ) {
-    if (templateTarget) return { targetType: "template", targetId: templateTarget.id ?? templateTarget.document?.id ?? null };
+    const target = resolveTemplateTarget();
+    if (target) return { targetType: "template", targetId: target.id ?? target.document?.id ?? null };
   }
 
-  if (tokenTarget) return { targetType: "token", targetId: tokenTarget.id ?? tokenTarget.document?.id ?? null };
-  if (tileTarget) return { targetType: "tile", targetId: tileTarget.id ?? tileTarget.document?.id ?? null };
-  if (templateTarget) return { targetType: "template", targetId: templateTarget.id ?? templateTarget.document?.id ?? null };
+  const fallbackTokenTarget = resolveTokenTarget();
+  if (fallbackTokenTarget) return { targetType: "token", targetId: fallbackTokenTarget.id ?? fallbackTokenTarget.document?.id ?? null };
+  const fallbackTileTarget = resolveTileTarget();
+  if (fallbackTileTarget) return { targetType: "tile", targetId: fallbackTileTarget.id ?? fallbackTileTarget.document?.id ?? null };
+  const fallbackRegionTarget = resolveRegionTarget();
+  if (fallbackRegionTarget) return { targetType: "region", targetId: fallbackRegionTarget.id ?? fallbackRegionTarget.document?.id ?? null };
+  const fallbackTemplateTarget = resolveTemplateTarget();
+  if (fallbackTemplateTarget) return { targetType: "template", targetId: fallbackTemplateTarget.id ?? fallbackTemplateTarget.document?.id ?? null };
 
   return { targetType: null, targetId: null };
 }
+
 async function applyDroppedShaderPayload(payload, event) {
   const shaderId = String(payload?.shaderId ?? "").trim();
   if (!shaderId) return;
@@ -1845,12 +1989,17 @@ async function applyDroppedShaderPayload(payload, event) {
 
   const { targetType, targetId } = resolveDropShaderTarget(globalPoint, worldPoint);
   if (!targetType || !targetId) {
-    ui.notifications?.warn?.("Drop onto a token, tile, or template to apply shader.");
+    ui.notifications?.warn?.("Drop onto a token, tile, template, or region to apply shader.");
     return;
   }
 
   if (targetType === "template" && !shaderManager.shaderSupportsTarget(shaderId, "template")) {
     ui.notifications?.warn?.("This shader uses token/tile image channels and cannot be applied to templates.");
+    return;
+  }
+
+  if (targetType === "region" && !shaderManager.shaderSupportsTarget(shaderId, "region")) {
+    ui.notifications?.warn?.("This shader uses token/tile image channels and cannot be applied to regions.");
     return;
   }
 
@@ -1873,6 +2022,9 @@ async function applyDroppedShaderPayload(payload, event) {
     } else if (targetType === "template") {
       await fx.broadcastShaderOffTemplate({ templateId: targetId });
       await fx.broadcastShaderOnTemplate({ templateId: targetId, opts: { ...opts } });
+    } else if (targetType === "region") {
+      await fx.broadcastShaderOffRegion({ regionId: targetId });
+      await fx.broadcastShaderOnRegion({ regionId: targetId, opts: { ...opts } });
     }
   } catch (err) {
     console.error(`${MODULE_ID} | Failed applying dragged shader`, {
@@ -2006,25 +2158,31 @@ function sanitizeShaderPersistOpts(opts = {}) {
 function getTokenShaderDocument(tokenId) {
   const resolvedTokenId = resolveTokenId(tokenId);
   if (!resolvedTokenId) return null;
+  const tokenCollection = getSceneEmbeddedCollectionSafe("Token");
   return canvas.tokens?.get?.(resolvedTokenId)?.document
-    ?? canvas.scene?.tokens?.get?.(resolvedTokenId)
+    ?? tokenCollection?.get?.(resolvedTokenId)
     ?? null;
 }
 
 function getTemplateShaderDocument(templateId) {
+  if (!supportsMeasuredTemplateDocuments()) return null;
   const resolvedTemplateId = resolveTemplateId(templateId);
   if (!resolvedTemplateId) return null;
-  return canvas.templates?.get?.(resolvedTemplateId)?.document
-    ?? canvas.scene?.templates?.get?.(resolvedTemplateId)
+  const templateCollection = getSceneEmbeddedCollectionSafe("MeasuredTemplate");
+  const templateLayer = getCanvasTemplateLayerSafe();
+  return templateLayer?.get?.(resolvedTemplateId)?.document
+    ?? templateCollection?.get?.(resolvedTemplateId)
     ?? null;
 }
 
 function isTemplateShaderRenderable(templateOrDoc) {
+  if (!supportsMeasuredTemplateDocuments()) return false;
+  const templateLayer = getCanvasTemplateLayerSafe();
   const template =
     templateOrDoc?.document
       ? templateOrDoc
       : (templateOrDoc?.id
-        ? canvas.templates?.get?.(String(templateOrDoc.id))
+        ? templateLayer?.get?.(String(templateOrDoc.id))
         : null);
   const doc = template?.document ?? templateOrDoc ?? null;
   if (!doc) return false;
@@ -2043,8 +2201,9 @@ function isTemplateShaderRenderable(templateOrDoc) {
 function getTileShaderDocument(tileId) {
   const resolvedTileId = resolveTileId(tileId);
   if (!resolvedTileId) return null;
+  const tileCollection = getSceneEmbeddedCollectionSafe("Tile");
   return getTilePlaceable(resolvedTileId)?.document
-    ?? canvas.scene?.tiles?.get?.(resolvedTileId)
+    ?? tileCollection?.get?.(resolvedTileId)
     ?? null;
 }
 
@@ -3592,12 +3751,12 @@ function updateSpriteDebugGfx(gfx, radius) {
 let networkController = null;
 
 function getLastSceneTokenId() {
-  const sceneTokens = canvas.scene?.tokens?.contents;
+  const sceneTokens = getSceneEmbeddedContentsSafe("Token");
   if (Array.isArray(sceneTokens) && sceneTokens.length) {
     const last = sceneTokens[sceneTokens.length - 1];
     return last?.id ?? null;
   }
-  const placeables = canvas.tokens?.placeables;
+  const placeables = getLayerPlaceablesSafe(canvas?.tokens);
   if (Array.isArray(placeables) && placeables.length) {
     const last = placeables[placeables.length - 1];
     return last?.id ?? last?.document?.id ?? null;
@@ -3608,13 +3767,60 @@ function getLastSceneTokenId() {
 function resolveTokenId(tokenId) {
   return tokenId ?? getLastSceneTokenId();
 }
+
+function getSceneEmbeddedCollectionSafe(embeddedName, { scene = canvas?.scene } = {}) {
+  if (!scene) return null;
+  const normalizedName = String(embeddedName ?? "").trim();
+  if (!normalizedName) return null;
+  if (normalizedName === "MeasuredTemplate" && !supportsMeasuredTemplateDocuments()) return null;
+
+  if (typeof scene.getEmbeddedCollection === "function") {
+    try {
+      const collection = scene.getEmbeddedCollection(normalizedName);
+      if (collection) return collection;
+    } catch (_err) {
+      // Some v14 builds can throw while resolving scene embedded collection getters.
+    }
+  }
+
+  const fallbackCollectionNames = {
+    Token: "tokens",
+    Tile: "tiles",
+    Region: "regions",
+    AmbientLight: "lights",
+    AmbientSound: "sounds",
+    Drawing: "drawings",
+    Note: "notes",
+    Wall: "walls",
+  };
+  if (supportsMeasuredTemplateDocuments()) {
+    fallbackCollectionNames.MeasuredTemplate = "templates";
+  }
+  const fallbackName = fallbackCollectionNames[normalizedName];
+  if (!fallbackName) return null;
+  try {
+    return scene[fallbackName] ?? null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function getSceneEmbeddedContentsSafe(embeddedName, { scene = canvas?.scene } = {}) {
+  const collection = getSceneEmbeddedCollectionSafe(embeddedName, { scene });
+  if (!collection) return [];
+  if (Array.isArray(collection.contents)) return collection.contents;
+  if (typeof collection.values === "function") return Array.from(collection.values());
+  return [];
+}
+
 function getLastSceneTemplateId() {
-  const sceneTemplates = canvas.scene?.templates?.contents;
+  if (!supportsMeasuredTemplateDocuments()) return null;
+  const sceneTemplates = getSceneEmbeddedContentsSafe("MeasuredTemplate");
   if (Array.isArray(sceneTemplates) && sceneTemplates.length) {
     const last = sceneTemplates[sceneTemplates.length - 1];
     return last?.id ?? null;
   }
-  const placeables = canvas.templates?.placeables;
+  const placeables = getLayerPlaceablesSafe(getCanvasTemplateLayerSafe());
   if (Array.isArray(placeables) && placeables.length) {
     const last = placeables[placeables.length - 1];
     return last?.id ?? last?.document?.id ?? null;
@@ -3693,12 +3899,12 @@ function getShaderGeometryFromTemplate(template, fallbackRadiusUnits) {
 }
 
 function getLastSceneRegionId() {
-  const sceneRegions = canvas.scene?.regions?.contents;
+  const sceneRegions = getSceneEmbeddedContentsSafe("Region");
   if (Array.isArray(sceneRegions) && sceneRegions.length) {
     const last = sceneRegions[sceneRegions.length - 1];
     return last?.id ?? null;
   }
-  const placeables = canvas.regions?.placeables;
+  const placeables = getLayerPlaceablesSafe(canvas?.regions);
   if (Array.isArray(placeables) && placeables.length) {
     const last = placeables[placeables.length - 1];
     return last?.id ?? last?.document?.id ?? null;
@@ -3711,12 +3917,12 @@ function resolveRegionId(regionId) {
 }
 
 function getLastSceneTileId() {
-  const sceneTiles = canvas.scene?.tiles?.contents;
+  const sceneTiles = getSceneEmbeddedContentsSafe("Tile");
   if (Array.isArray(sceneTiles) && sceneTiles.length) {
     const last = sceneTiles[sceneTiles.length - 1];
     return last?.id ?? null;
   }
-  const placeables = canvas.tiles?.placeables;
+  const placeables = getLayerPlaceablesSafe(canvas?.tiles);
   if (Array.isArray(placeables) && placeables.length) {
     const last = placeables[placeables.length - 1];
     return last?.id ?? last?.document?.id ?? null;
@@ -3730,8 +3936,9 @@ function resolveTileId(tileId) {
 
 function getTilePlaceable(tileId) {
   if (!tileId) return null;
+  const tiles = getLayerPlaceablesSafe(canvas?.tiles);
   return canvas.tiles?.get?.(tileId)
-    ?? canvas.tiles?.placeables?.find((t) => (t?.id === tileId || t?.document?.id === tileId))
+    ?? tiles.find((t) => (t?.id === tileId || t?.document?.id === tileId))
     ?? null;
 }
 
@@ -3771,8 +3978,9 @@ function shouldPersistRegionShader(cfg) {
 
 function getRegionPlaceable(regionId) {
   if (!regionId) return null;
+  const regions = getLayerPlaceablesSafe(canvas?.regions);
   return canvas.regions?.get?.(regionId)
-    ?? canvas.regions?.placeables?.find((r) => (r?.id === regionId || r?.document?.id === regionId))
+    ?? regions.find((r) => (r?.id === regionId || r?.document?.id === regionId))
     ?? null;
 }
 
@@ -3780,7 +3988,8 @@ function getRegionDocument(regionOrId) {
   if (!regionOrId) return null;
   if (typeof regionOrId === "string") {
     const region = getRegionPlaceable(regionOrId);
-    return region?.document ?? canvas.scene?.regions?.get?.(regionOrId) ?? null;
+    const regionCollection = getSceneEmbeddedCollectionSafe("Region");
+    return region?.document ?? regionCollection?.get?.(regionOrId) ?? null;
   }
   if (regionOrId?.document) return regionOrId.document;
   if (regionOrId?.behaviors) return regionOrId;
@@ -4018,7 +4227,7 @@ function refreshRunningRegionShaders({
 }
 
 function restoreRegionShaderBehaviors() {
-  const regions = canvas.regions?.placeables ?? [];
+  const regions = getLayerPlaceablesSafe(canvas?.regions);
   const regionIds = new Set();
   for (const region of regions) {
     const regionId = region?.document?.id ?? region?.id;
@@ -4064,14 +4273,11 @@ function _isActiveEntryUsable(entry) {
 }
 
 function getCurrentSceneTemplateDocs() {
-  const fromPlaceables = Array.isArray(canvas?.templates?.placeables)
-    ? canvas.templates.placeables
-      .map((template) => template?.document ?? null)
-      .filter((doc) => !!doc?.id)
-    : [];
-  const fromScene = Array.isArray(canvas.scene?.templates?.contents)
-    ? canvas.scene.templates.contents
-    : [];
+  if (!supportsMeasuredTemplateDocuments()) return [];
+  const fromPlaceables = getLayerPlaceablesSafe(getCanvasTemplateLayerSafe())
+    .map((template) => template?.document ?? null)
+    .filter((doc) => !!doc?.id);
+  const fromScene = getSceneEmbeddedContentsSafe("MeasuredTemplate");
   const byId = new Map();
   for (const doc of fromScene) {
     if (!doc?.id) continue;
@@ -4086,14 +4292,10 @@ function getCurrentSceneTemplateDocs() {
 }
 
 function getCurrentSceneTokenDocs() {
-  const fromPlaceables = Array.isArray(canvas?.tokens?.placeables)
-    ? canvas.tokens.placeables
-      .map((token) => token?.document ?? null)
-      .filter((doc) => !!doc?.id)
-    : [];
-  const fromScene = Array.isArray(canvas.scene?.tokens?.contents)
-    ? canvas.scene.tokens.contents
-    : [];
+  const fromPlaceables = getLayerPlaceablesSafe(canvas?.tokens)
+    .map((token) => token?.document ?? null)
+    .filter((doc) => !!doc?.id);
+  const fromScene = getSceneEmbeddedContentsSafe("Token");
   const byId = new Map();
   for (const doc of fromScene) {
     if (!doc?.id) continue;
@@ -4108,14 +4310,10 @@ function getCurrentSceneTokenDocs() {
 }
 
 function getCurrentSceneTileDocs() {
-  const fromPlaceables = Array.isArray(canvas?.tiles?.placeables)
-    ? canvas.tiles.placeables
-      .map((tile) => tile?.document ?? null)
-      .filter((doc) => !!doc?.id)
-    : [];
-  const fromScene = Array.isArray(canvas.scene?.tiles?.contents)
-    ? canvas.scene.tiles.contents
-    : [];
+  const fromPlaceables = getLayerPlaceablesSafe(canvas?.tiles)
+    .map((tile) => tile?.document ?? null)
+    .filter((doc) => !!doc?.id);
+  const fromScene = getSceneEmbeddedContentsSafe("Tile");
   const byId = new Map();
   for (const doc of fromScene) {
     if (!doc?.id) continue;
@@ -4181,6 +4379,7 @@ function ensureTokenShaderFromPersist(tokenOrDoc, { reason = "unknown", forceReb
 }
 
 function ensureTemplateShaderFromPersist(templateOrDoc, { reason = "unknown", forceRebuild = false } = {}) {
+  if (!supportsMeasuredTemplateDocuments()) return false;
   const doc = templateOrDoc?.document ?? templateOrDoc ?? null;
   const templateId = String(doc?.id ?? "").trim();
   if (!templateId) return false;
@@ -4218,7 +4417,8 @@ function ensureTemplateShaderFromPersist(templateOrDoc, { reason = "unknown", fo
   if (!forceRebuild && _isActiveEntryUsable(existing)) return true;
   if (existing) shaderOffTemplate(templateId, { skipPersist: true });
 
-  if (!canvas.templates?.get?.(templateId)) return false;
+  const templateLayer = getCanvasTemplateLayerSafe();
+  if (!templateLayer?.get?.(templateId)) return false;
   const sourceOpts = sanitizeShaderPersistOpts({
     ...opts,
     shaderId: persistedShaderId,
@@ -4472,8 +4672,7 @@ function clearAllActiveShaderEntries({ reason = "teardown" } = {}) {
 }
 
 function hasAnyPersistedDocumentShaderFlags() {
-  const scene = canvas.scene;
-  if (!scene) return false;
+  if (!canvas?.scene) return false;
   const hasFlag = (docs, flagKey) => {
     const list = Array.isArray(docs) ? docs : [];
     for (const doc of list) {
@@ -4483,9 +4682,9 @@ function hasAnyPersistedDocumentShaderFlags() {
     return false;
   };
   return (
-    hasFlag(scene.tokens?.contents, TOKEN_SHADER_FLAG) ||
-    hasFlag(scene.templates?.contents, TEMPLATE_SHADER_FLAG) ||
-    hasFlag(scene.tiles?.contents, TILE_SHADER_FLAG)
+    hasFlag(getCurrentSceneTokenDocs(), TOKEN_SHADER_FLAG) ||
+    hasFlag(getCurrentSceneTemplateDocs(), TEMPLATE_SHADER_FLAG) ||
+    hasFlag(getCurrentSceneTileDocs(), TILE_SHADER_FLAG)
   );
 }
 
@@ -4571,7 +4770,8 @@ function restorePersistentTokenTemplateTileShaders() {
       summary.template.skipped += 1;
       continue;
     }
-    if (!canvas.templates?.get?.(templateId)) {
+    const templateLayer = getCanvasTemplateLayerSafe();
+    if (!templateLayer?.get?.(templateId)) {
       summary.template.pending += 1;
       continue;
     }
@@ -4590,9 +4790,7 @@ function restorePersistentTokenTemplateTileShaders() {
     }
   }
 
-  const tileDocs = Array.isArray(canvas.scene?.tiles?.contents)
-    ? canvas.scene.tiles.contents
-    : [];
+  const tileDocs = getCurrentSceneTileDocs();
   for (const tileDoc of tileDocs) {
     const tileId = tileDoc?.id;
     if (!tileId) continue;
@@ -5464,6 +5662,10 @@ function shaderOn(tokenId, opts = {}) {
     if (debugGfx) updateDebugGfx(debugGfx, liveTok, worldLayer, effectExtent);
     if (spriteDebugGfx) updateSpriteDebugGfx(spriteDebugGfx, effectExtent);
     if (runtimeBufferChannels.length && drawUpdateDt > 0) {
+      syncShaderMouseUniforms(shader, {
+        mouseTarget: mesh,
+        runtimeBuffers: runtimeBufferChannels,
+      });
       for (const runtimeBuffer of runtimeBufferChannels) {
         runtimeBuffer.update(drawUpdateDt * speedScale);
       }
@@ -5492,7 +5694,9 @@ function shaderOn(tokenId, opts = {}) {
     }
     t += dt;
     if (drawUpdateDt > 0) {
-      updateShaderTimeUniforms(shader, drawUpdateDt, speedScale, t);
+      updateShaderTimeUniforms(shader, drawUpdateDt, speedScale, t, {
+        mouseTarget: mesh,
+      });
     }
     logRuntimeTraceOncePerSecond(runtimeTraceState, "token", {
       tokenId,
@@ -5555,8 +5759,13 @@ function shaderToggle(tokenId, opts = {}) {
 }
 
 function shaderOnTemplate(templateId, opts = {}) {
+  if (!supportsMeasuredTemplateDocuments()) {
+    ui.notifications.warn("Foundry v14+ merged measured templates into regions. Use region shaders instead.");
+    return;
+  }
   const resolvedTemplateId = resolveTemplateId(templateId);
-  const template = canvas.templates?.get(resolvedTemplateId);
+  const templateLayer = getCanvasTemplateLayerSafe();
+  const template = templateLayer?.get?.(resolvedTemplateId);
   if (!template) {
     ui.notifications.warn("No measured template found. Create one first or pass templateId.");
     return;
@@ -5736,7 +5945,7 @@ function shaderOnTemplate(templateId, opts = {}) {
 
   const tickerFn = (delta) => {
     const dtMs = Number.isFinite(canvas.app.ticker.deltaMS) ? canvas.app.ticker.deltaMS : (1000 / 60);
-    const liveTemplate = canvas.templates?.get(resolvedTemplateId);
+    const liveTemplate = templateLayer?.get?.(resolvedTemplateId);
     if (!liveTemplate) {
       missingTemplateMs += Math.max(0, dtMs);
       if (missingTemplateMs < missingTemplateGraceMs) return;
@@ -5798,6 +6007,10 @@ function shaderOnTemplate(templateId, opts = {}) {
     if (debugGfx) updateDebugGfxAtWorld(debugGfx, liveCenter, worldLayer, effectExtent);
     if (spriteDebugGfx) updateSpriteDebugGfx(spriteDebugGfx, effectExtent);
     if (runtimeBufferChannels.length && drawUpdateDt > 0) {
+      syncShaderMouseUniforms(shader, {
+        mouseTarget: mesh,
+        runtimeBuffers: runtimeBufferChannels,
+      });
       for (const runtimeBuffer of runtimeBufferChannels) {
         runtimeBuffer.update(drawUpdateDt * speedScale);
       }
@@ -5835,7 +6048,9 @@ function shaderOnTemplate(templateId, opts = {}) {
 
     t += dt;
     if (drawUpdateDt > 0) {
-      updateShaderTimeUniforms(shader, drawUpdateDt, speedScale, t);
+      updateShaderTimeUniforms(shader, drawUpdateDt, speedScale, t, {
+        mouseTarget: mesh,
+      });
     }
     logRuntimeTraceOncePerSecond(runtimeTraceState, "template", {
       templateId: resolvedTemplateId,
@@ -6150,6 +6365,10 @@ function shaderOnTile(tileId, opts = {}) {
     if (spriteDebugGfx) updateSpriteDebugGfx(spriteDebugGfx, Math.max(liveShaderSize.width, liveShaderSize.height) * 0.5);
 
     if (drawUpdateDt > 0) {
+      syncShaderMouseUniforms(shader, {
+        mouseTarget: mesh,
+        runtimeBuffers: runtimeBufferChannels,
+      });
       for (const runtimeBuffer of runtimeBufferChannels) {
         runtimeBuffer.update(drawUpdateDt * speedScale);
       }
@@ -6202,7 +6421,9 @@ function shaderOnTile(tileId, opts = {}) {
 
     t += dt;
     if (drawUpdateDt > 0) {
-      updateShaderTimeUniforms(shader, drawUpdateDt, speedScale, t);
+      updateShaderTimeUniforms(shader, drawUpdateDt, speedScale, t, {
+        mouseTarget: mesh,
+      });
     }
     logRuntimeTraceOncePerSecond(runtimeTraceState, "tile", {
       tileId: resolvedTileId,
@@ -6270,9 +6491,7 @@ async function deleteAllTokenFX() {
     shaderOff(tokenId, { skipPersist: true });
   }
 
-  const tokenDocs = Array.isArray(canvas.scene?.tokens?.contents)
-    ? canvas.scene.tokens.contents
-    : [];
+  const tokenDocs = getCurrentSceneTokenDocs();
   await Promise.all(tokenDocs.map((doc) => clearShaderFlag(doc, TOKEN_SHADER_FLAG)));
 
   return {
@@ -6287,9 +6506,7 @@ async function deleteAllTemplateFX() {
     shaderOffTemplate(templateId, { skipPersist: true });
   }
 
-  const templateDocs = Array.isArray(canvas.scene?.templates?.contents)
-    ? canvas.scene.templates.contents
-    : [];
+  const templateDocs = getCurrentSceneTemplateDocs();
   await Promise.all(templateDocs.map((doc) => clearShaderFlag(doc, TEMPLATE_SHADER_FLAG)));
 
   return {
@@ -6304,9 +6521,7 @@ async function deleteAllTileFX() {
     shaderOffTile(tileId, { skipPersist: true });
   }
 
-  const tileDocs = Array.isArray(canvas.scene?.tiles?.contents)
-    ? canvas.scene.tiles.contents
-    : [];
+  const tileDocs = getCurrentSceneTileDocs();
   await Promise.all(tileDocs.map((doc) => clearShaderFlag(doc, TILE_SHADER_FLAG)));
 
   return {
@@ -6431,7 +6646,8 @@ function refreshActiveShadersForClientPerformanceSettings({ reason = "client-per
     sourceOpts: foundry.utils.mergeObject({}, entry?.sourceOpts ?? {}, { inplace: false }),
   }));
   for (const { templateId, sourceOpts } of templateEntries) {
-    if (!canvas.templates?.get?.(templateId)) continue;
+    const templateLayer = getCanvasTemplateLayerSafe();
+    if (!templateLayer?.get?.(templateId)) continue;
     try {
       shaderOffTemplate(templateId, { skipPersist: true });
       shaderOnTemplate(templateId, sourceOpts);
@@ -6587,7 +6803,7 @@ function shaderOnRegion(regionId, opts = {}) {
   const regionBounds = computeRegionBounds(regionShapes);
   if (!regionShapes.length || !regionBounds) {
     rootContainer.destroy({ children: true });
-    return ui.notifications.warn("Region has no supported shapes. Supported: rectangle, ellipse/circle, polygon.");
+    return ui.notifications.warn("Region has no renderable geometry.");
   }
 
   const selectedShaderId = cfg.shaderId ?? cfg.shaderMode ?? game.settings.get(MODULE_ID, "shaderPreset");
@@ -6869,6 +7085,10 @@ function shaderOnRegion(regionId, opts = {}) {
       }
 
       if (drawUpdateDt > 0) {
+        syncShaderMouseUniforms(cluster.shader, {
+          mouseTarget: cluster.mesh,
+          runtimeBuffers: clusterRuntimeBuffers,
+        });
         for (const runtimeBuffer of clusterRuntimeBuffers) {
           runtimeBuffer.update(drawUpdateDt * speedScale);
         }
@@ -6899,7 +7119,9 @@ function shaderOnRegion(regionId, opts = {}) {
       }
 
       if (drawUpdateDt > 0) {
-        updateShaderTimeUniforms(cluster.shader, drawUpdateDt, speedScale, nextTime);
+        updateShaderTimeUniforms(cluster.shader, drawUpdateDt, speedScale, nextTime, {
+          mouseTarget: cluster.mesh,
+        });
       }
       if (clusterFrameTrace.length < 4) {
         clusterFrameTrace.push({

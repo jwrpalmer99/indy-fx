@@ -27,6 +27,305 @@ function runtimeDebugLog(message, payload = undefined) {
   else console.debug(`${RUNTIME_DEBUG_MODULE_ID} | ${message}`, payload);
 }
 
+const SHADER_MOUSE_STATE = {
+  listenersBound: false,
+  clientX: Number.NaN,
+  clientY: Number.NaN,
+  downClientX: Number.NaN,
+  downClientY: Number.NaN,
+  hasDownPosition: false,
+  isDown: false,
+};
+
+function updateTrackedPointerPosition(event) {
+  const clientX = Number(event?.clientX);
+  const clientY = Number(event?.clientY);
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+  SHADER_MOUSE_STATE.clientX = clientX;
+  SHADER_MOUSE_STATE.clientY = clientY;
+  return true;
+}
+
+function ensureShaderMouseListeners() {
+  if (SHADER_MOUSE_STATE.listenersBound) return;
+  if (typeof window === "undefined" || !window?.addEventListener) return;
+
+  const onPointerMove = (event) => {
+    updateTrackedPointerPosition(event);
+  };
+  const onPointerDown = (event) => {
+    const button = Number(event?.button ?? 0);
+    if (Number.isFinite(button) && button !== 0) return;
+    if (updateTrackedPointerPosition(event)) {
+      SHADER_MOUSE_STATE.downClientX = SHADER_MOUSE_STATE.clientX;
+      SHADER_MOUSE_STATE.downClientY = SHADER_MOUSE_STATE.clientY;
+      SHADER_MOUSE_STATE.hasDownPosition = true;
+    }
+    SHADER_MOUSE_STATE.isDown = true;
+  };
+  const onPointerUp = (event) => {
+    const button = Number(event?.button ?? 0);
+    if (Number.isFinite(button) && button !== 0) return;
+    updateTrackedPointerPosition(event);
+    SHADER_MOUSE_STATE.isDown = false;
+  };
+  const onBlur = () => {
+    SHADER_MOUSE_STATE.isDown = false;
+  };
+
+  window.addEventListener("pointermove", onPointerMove, true);
+  window.addEventListener("pointerdown", onPointerDown, true);
+  window.addEventListener("pointerup", onPointerUp, true);
+  window.addEventListener("pointercancel", onPointerUp, true);
+  window.addEventListener("blur", onBlur, true);
+  SHADER_MOUSE_STATE.listenersBound = true;
+}
+
+function getRendererGlobalPointFromClient(clientX, clientY) {
+  const x = Number(clientX);
+  const y = Number(clientY);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+  // Prefer Foundry's world mapping to stay accurate across pan/zoom/camera transforms.
+  const worldFromClient = canvas?.canvasCoordinatesFromClient?.({ x, y });
+  const worldX = Number(worldFromClient?.x);
+  const worldY = Number(worldFromClient?.y);
+  if (
+    Number.isFinite(worldX) &&
+    Number.isFinite(worldY) &&
+    canvas?.stage?.toGlobal
+  ) {
+    try {
+      const global = canvas.stage.toGlobal(new PIXI.Point(worldX, worldY));
+      if (Number.isFinite(global?.x) && Number.isFinite(global?.y)) {
+        return new PIXI.Point(global.x, global.y);
+      }
+    } catch (_err) {
+      // Fall through to renderer-space mapping.
+    }
+  }
+
+  const renderer = canvas?.app?.renderer;
+  const view = renderer?.view ?? canvas?.app?.view;
+  if (!renderer || !view) return null;
+  const rect = view.getBoundingClientRect?.();
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+  const gx = (x - rect.left) * (renderer.width / rect.width);
+  const gy = (y - rect.top) * (renderer.height / rect.height);
+  if (!Number.isFinite(gx) || !Number.isFinite(gy)) return null;
+  return new PIXI.Point(gx, gy);
+}
+
+function getRendererGlobalPointFromInteraction() {
+  const renderer = canvas?.app?.renderer;
+  const eventsGlobal = renderer?.events?.pointer?.global;
+  const interactionGlobal = renderer?.plugins?.interaction?.mouse?.global;
+  const global = eventsGlobal ?? interactionGlobal ?? null;
+  const x = Number(global?.x);
+  const y = Number(global?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return new PIXI.Point(x, y);
+}
+
+function resolveShaderResolution(uniforms, fallback = [1, 1]) {
+  const source =
+    Array.isArray(uniforms?.iResolution) && uniforms.iResolution.length >= 2
+      ? uniforms.iResolution
+      : Array.isArray(uniforms?.resolution) && uniforms.resolution.length >= 2
+      ? uniforms.resolution
+      : fallback;
+  const w = Math.max(1, Number(source?.[0]) || Number(fallback?.[0]) || 1);
+  const h = Math.max(1, Number(source?.[1]) || Number(fallback?.[1]) || 1);
+  return [w, h];
+}
+
+function applyShaderUvTransformToMouse(u, v, uniforms) {
+  let stUvX = Number(u);
+  let stUvY = 1 - Number(v);
+  if (!Number.isFinite(stUvX)) stUvX = 0;
+  if (!Number.isFinite(stUvY)) stUvY = 0;
+
+  if (Number(uniforms?.shaderFlipX) > 0.5) stUvX = 1 - stUvX;
+  if (Number(uniforms?.shaderFlipY) > 0.5) stUvY = 1 - stUvY;
+
+  const rotation = Number(uniforms?.shaderRotation);
+  const rot = Number.isFinite(rotation) ? rotation : 0;
+  const scaleX = Math.max(
+    0.0001,
+    Number(uniforms?.shaderScaleXY?.[0]) ||
+      Number(uniforms?.shaderScale) ||
+      1,
+  );
+  const scaleY = Math.max(
+    0.0001,
+    Number(uniforms?.shaderScaleXY?.[1]) ||
+      Number(uniforms?.shaderScale) ||
+      1,
+  );
+
+  const dx = stUvX - 0.5;
+  const dy = stUvY - 0.5;
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  const rx = c * dx - s * dy;
+  const ry = s * dx + c * dy;
+
+  return [
+    (rx / scaleX) + 0.5,
+    (ry / scaleY) + 0.5,
+  ];
+}
+
+function shaderMouseCoordsFromGlobal(globalPoint, mouseTarget, uniforms, resolution) {
+  const [resX, resY] = resolveShaderResolution(
+    { resolution },
+    [1, 1],
+  );
+  const renderer = canvas?.app?.renderer;
+  const defaultU =
+    renderer && renderer.width > 0
+      ? Number(globalPoint?.x) / Number(renderer.width)
+      : 0;
+  const defaultV =
+    renderer && renderer.height > 0
+      ? Number(globalPoint?.y) / Number(renderer.height)
+      : 0;
+  let u = defaultU;
+  let v = defaultV;
+
+  if (mouseTarget?.toLocal && typeof mouseTarget.getLocalBounds === "function") {
+    try {
+      const local = mouseTarget.toLocal(globalPoint);
+      const bounds = mouseTarget.getLocalBounds();
+      const bw = Number(bounds?.width);
+      const bh = Number(bounds?.height);
+      if (
+        Number.isFinite(local?.x) &&
+        Number.isFinite(local?.y) &&
+        Number.isFinite(bw) &&
+        bw > 1e-6 &&
+        Number.isFinite(bh) &&
+        bh > 1e-6
+      ) {
+        u = (Number(local.x) - Number(bounds.x)) / bw;
+        v = (Number(local.y) - Number(bounds.y)) / bh;
+      }
+    } catch (_err) {
+      // Keep renderer-space fallback.
+    }
+  }
+
+  const clampedU = clamp01(u);
+  const clampedV = clamp01(v);
+  const [shaderU, shaderV] = applyShaderUvTransformToMouse(
+    clampedU,
+    clampedV,
+    uniforms,
+  );
+  return [shaderU * resX, shaderV * resY];
+}
+
+function remapShaderToyMouseUniform(mouseUniform, fromResolution, toResolution) {
+  const fromW = Math.max(1e-6, Number(fromResolution?.[0]) || 1);
+  const fromH = Math.max(1e-6, Number(fromResolution?.[1]) || 1);
+  const toW = Math.max(1, Number(toResolution?.[0]) || 1);
+  const toH = Math.max(1, Number(toResolution?.[1]) || 1);
+  const mx = Number(mouseUniform?.[0]) || 0;
+  const my = Number(mouseUniform?.[1]) || 0;
+  const mz = Number(mouseUniform?.[2]) || 0;
+  const mw = Number(mouseUniform?.[3]) || 0;
+  const sign = (mz < 0 || mw < 0) ? -1 : 1;
+  return [
+    (mx / fromW) * toW,
+    (my / fromH) * toH,
+    sign * (Math.abs(mz) / fromW) * toW,
+    sign * (Math.abs(mw) / fromH) * toH,
+  ];
+}
+
+function buildShaderToyMouseUniform(shader, { mouseTarget = null } = {}) {
+  ensureShaderMouseListeners();
+  const uniforms = shader?.uniforms;
+  const prior = Array.isArray(uniforms?.iMouse)
+    ? uniforms.iMouse
+    : [0, 0, 0, 0];
+  const resolution = resolveShaderResolution(uniforms, [1, 1]);
+  const pointerGlobal = Number.isFinite(SHADER_MOUSE_STATE.clientX) && Number.isFinite(SHADER_MOUSE_STATE.clientY)
+    ? getRendererGlobalPointFromClient(
+      SHADER_MOUSE_STATE.clientX,
+      SHADER_MOUSE_STATE.clientY,
+    )
+    : getRendererGlobalPointFromInteraction();
+  if (!pointerGlobal) {
+    return [
+      Number(prior[0]) || 0,
+      Number(prior[1]) || 0,
+      Number(prior[2]) || 0,
+      Number(prior[3]) || 0,
+    ];
+  }
+
+  const pointerDownGlobal =
+    SHADER_MOUSE_STATE.hasDownPosition &&
+    Number.isFinite(SHADER_MOUSE_STATE.downClientX) &&
+    Number.isFinite(SHADER_MOUSE_STATE.downClientY)
+      ? getRendererGlobalPointFromClient(
+        SHADER_MOUSE_STATE.downClientX,
+        SHADER_MOUSE_STATE.downClientY,
+      )
+      : null;
+
+  const [mouseX, mouseY] = shaderMouseCoordsFromGlobal(
+    pointerGlobal,
+    mouseTarget,
+    uniforms,
+    resolution,
+  );
+  let mouseDownX = 0;
+  let mouseDownY = 0;
+  if (pointerDownGlobal) {
+    [mouseDownX, mouseDownY] = shaderMouseCoordsFromGlobal(
+      pointerDownGlobal,
+      mouseTarget,
+      uniforms,
+      resolution,
+    );
+  }
+  const sign = SHADER_MOUSE_STATE.isDown ? 1 : -1;
+  return [mouseX, mouseY, sign * mouseDownX, sign * mouseDownY];
+}
+
+export function syncShaderMouseUniforms(
+  shader,
+  { mouseTarget = null, runtimeBuffers = null } = {},
+) {
+  const uniforms = shader?.uniforms;
+  if (!uniforms || typeof uniforms !== "object") return [0, 0, 0, 0];
+  const mouseUniform = buildShaderToyMouseUniform(shader, { mouseTarget });
+  if ("iMouse" in uniforms) {
+    uniforms.iMouse = mouseUniform;
+  }
+
+  const buffers = Array.isArray(runtimeBuffers) ? runtimeBuffers : [];
+  if (buffers.length > 0) {
+    const sourceResolution = resolveShaderResolution(uniforms, [1, 1]);
+    for (const runtimeBuffer of buffers) {
+      const bufferUniforms = runtimeBuffer?.mesh?.shader?.uniforms;
+      if (!bufferUniforms || !("iMouse" in bufferUniforms)) continue;
+      const bufferResolution = resolveShaderResolution(
+        bufferUniforms,
+        sourceResolution,
+      );
+      bufferUniforms.iMouse = remapShaderToyMouseUniform(
+        mouseUniform,
+        sourceResolution,
+        bufferResolution,
+      );
+    }
+  }
+  return mouseUniform;
+}
+
 export function resolveShaderWorldLayer(moduleId, cfg, { allowTokenLayer = false, tokenTarget = null } = {}) {
   const shaderLayerSetting = cfg.layer ?? game.settings.get(moduleId, "shaderLayer") ?? "inherit";
   const layerNameRaw = shaderLayerSetting === "inherit"
@@ -288,7 +587,15 @@ export function createFadeAlphaComputer(cfg) {
   };
 }
 
-export function updateShaderTimeUniforms(shader, dt, speed, timeTicks) {
+export function updateShaderTimeUniforms(
+  shader,
+  dt,
+  speed,
+  timeTicks,
+  { mouseTarget = null, runtimeBuffers = null } = {},
+) {
+  if (!shader?.uniforms) return;
+  syncShaderMouseUniforms(shader, { mouseTarget, runtimeBuffers });
   const safeDt = Math.max(0, Number(dt) || 0);
   const safeSpeed = Math.max(0, Number(speed) || 0);
   const safeTime = Math.max(0, Number(timeTicks) || 0);

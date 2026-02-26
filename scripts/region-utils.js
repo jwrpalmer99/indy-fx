@@ -55,6 +55,35 @@ function _normalizePointArray(raw) {
     .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
 }
 
+function _buildPolygonShapeFromPoints(points, {
+  id,
+  isHole = false,
+} = {}) {
+  if (!Array.isArray(points) || points.length < 3) return null;
+  const bounds = _pointsBounds(points);
+  if (!Number.isFinite(bounds?.minX) || !Number.isFinite(bounds?.minY) ||
+      !Number.isFinite(bounds?.maxX) || !Number.isFinite(bounds?.maxY)) {
+    return null;
+  }
+  return {
+    id: id ?? null,
+    kind: "polygon",
+    isHole: isHole === true,
+    points,
+    bounds,
+    center: {
+      x: (bounds.minX + bounds.maxX) * 0.5,
+      y: (bounds.minY + bounds.maxY) * 0.5
+    },
+    width: Math.max(2, bounds.maxX - bounds.minX),
+    height: Math.max(2, bounds.maxY - bounds.minY),
+    localMask: {
+      type: "polygon",
+      points: points.map((p) => ({ x: p.x - bounds.minX, y: p.y - bounds.minY }))
+    }
+  };
+}
+
 function _extractRegionShape(rawShape, index) {
   const shape = rawShape && typeof rawShape === "object" ? rawShape : {};
   const type = String(shape.type ?? shape.shape ?? shape.kind ?? "").toLowerCase();
@@ -87,21 +116,10 @@ function _extractRegionShape(rawShape, index) {
       { x: ox + w, y: oy + h },
       { x: ox, y: oy + h }
     ].map((p) => _rotateAround(p, center, rotation));
-    const bounds = _pointsBounds(points);
-    return {
+    return _buildPolygonShapeFromPoints(points, {
       id: `shape-${index}`,
-      kind: "polygon",
-      isHole,
-      points,
-      bounds,
-      center: { x: (bounds.minX + bounds.maxX) * 0.5, y: (bounds.minY + bounds.maxY) * 0.5 },
-      width: Math.max(2, bounds.maxX - bounds.minX),
-      height: Math.max(2, bounds.maxY - bounds.minY),
-      localMask: {
-        type: "polygon",
-        points: points.map((p) => ({ x: p.x - bounds.minX, y: p.y - bounds.minY }))
-      }
-    };
+      isHole
+    });
   }
 
   if (type === "ellipse" || type === "circle") {
@@ -175,24 +193,72 @@ function _extractRegionShape(rawShape, index) {
   const rawPoints = _normalizePointArray(shape.points ?? shape.vertices ?? shape.polygon ?? shape.path);
   if (rawPoints.length >= 3) {
     const points = rawPoints.map((p) => ({ x: p.x + ox, y: p.y + oy }));
-    const bounds = _pointsBounds(points);
-    return {
+    return _buildPolygonShapeFromPoints(points, {
       id: `shape-${index}`,
-      kind: "polygon",
-      isHole,
-      points,
-      bounds,
-      center: { x: (bounds.minX + bounds.maxX) * 0.5, y: (bounds.minY + bounds.maxY) * 0.5 },
-      width: Math.max(2, bounds.maxX - bounds.minX),
-      height: Math.max(2, bounds.maxY - bounds.minY),
-      localMask: {
-        type: "polygon",
-        points: points.map((p) => ({ x: p.x - bounds.minX, y: p.y - bounds.minY }))
-      }
-    };
+      isHole
+    });
   }
 
   return null;
+}
+
+function _extractRegionShapesFromPolygonTree(region) {
+  const tree = region?.document?.polygonTree ?? region?.polygonTree ?? null;
+  if (!tree) return [];
+  const extracted = [];
+  let index = 0;
+
+  const pushNodePolygon = (node) => {
+    if (!node) return;
+    const points = _normalizePointArray(node?.points ?? node?.polygon?.points ?? []);
+    if (points.length < 3) return;
+    const shape = _buildPolygonShapeFromPoints(points, {
+      id: `tree-shape-${index}`,
+      isHole: node?.isHole === true
+    });
+    if (shape) {
+      extracted.push(shape);
+      index += 1;
+    }
+  };
+
+  const walk = (node) => {
+    if (!node) return;
+    pushNodePolygon(node);
+    const children = Array.isArray(node?.children) ? node.children : [];
+    for (const child of children) walk(child);
+  };
+
+  const rootChildren = Array.isArray(tree?.children) ? tree.children : [];
+  if (rootChildren.length) {
+    for (const child of rootChildren) walk(child);
+  } else {
+    walk(tree);
+  }
+  return extracted;
+}
+
+const REGION_BASE_SHAPE_TYPES = new Set([
+  "rectangle",
+  "rect",
+  "circle",
+  "ellipse",
+  "polygon",
+]);
+
+function _hasUnsupportedRegionShapeTypes(shapes) {
+  const list = Array.isArray(shapes) ? shapes : [];
+  for (const rawShape of list) {
+    const type = String(
+      rawShape?.type ??
+      rawShape?.shape ??
+      rawShape?.kind ??
+      "",
+    ).toLowerCase().trim();
+    if (!type) continue;
+    if (!REGION_BASE_SHAPE_TYPES.has(type)) return true;
+  }
+  return false;
 }
 
 function _collectRegionHoleNodes(region) {
@@ -258,6 +324,16 @@ export function extractRegionShapes(region) {
   const extracted = shapes
     .map((shape, index) => _extractRegionShape(shape, index))
     .filter((shape) => !!shape && Number.isFinite(shape.width) && Number.isFinite(shape.height));
+  const hasUnsupportedTypes = _hasUnsupportedRegionShapeTypes(shapes);
+  const partialExtraction = shapes.length > 0 && extracted.length < shapes.length;
+  const shouldUseTreeFallback = hasUnsupportedTypes || partialExtraction || extracted.length === 0;
+
+  if (shouldUseTreeFallback) {
+    const fromTree = _extractRegionShapesFromPolygonTree(region)
+      .filter((shape) => !!shape && Number.isFinite(shape.width) && Number.isFinite(shape.height));
+    if (fromTree.length > 0) return fromTree;
+  }
+
   return inferRegionShapeHolesFromTree(region, extracted);
 }
 
