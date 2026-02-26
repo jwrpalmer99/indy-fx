@@ -47,7 +47,7 @@ function resolveSanitizeColorEnabled(override) {
 function getAdapterVariantKey({ sanitizeColor } = {}) {
   const sc = resolveSanitizeColorEnabled(sanitizeColor) ? "sc1" : "sc0";
   // Bump when adapter code generation changes to avoid stale in-session cache.
-  return `v10|${sc}`;
+  return `v11|${sc}`;
 }
 
 function buildSanitizeColorHelpers(enabled) {
@@ -2310,6 +2310,7 @@ function applyCompatibilityRewrites(source) {
   next = next.replace(/\bouterProduct\s*\(/g, "cpfx_outerProduct(");
 
   // Derivatives are extension-gated in GLSL ES 1.00; route through wrappers.
+  next = next.replace(/\bfwidth\s*\(/g, "cpfx_fwidth(");
   next = next.replace(/\bdFdx\s*\(/g, "cpfx_dFdx(");
   next = next.replace(/\bdFdy\s*\(/g, "cpfx_dFdy(");
 
@@ -3370,28 +3371,28 @@ float cpfx_mod(int a, float b) { return mod(float(a), b); }
 int cpfx_mod(int a, int b) { return int(mod(float(a), float(b))); }
 
 float cpfx_dFdx(float v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdx(v);
 #else
   return 0.0;
 #endif
 }
 vec2 cpfx_dFdx(vec2 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdx(v);
 #else
   return vec2(0.0);
 #endif
 }
 vec3 cpfx_dFdx(vec3 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdx(v);
 #else
   return vec3(0.0);
 #endif
 }
 vec4 cpfx_dFdx(vec4 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdx(v);
 #else
   return vec4(0.0);
@@ -3399,32 +3400,48 @@ vec4 cpfx_dFdx(vec4 v) {
 }
 
 float cpfx_dFdy(float v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdy(v);
 #else
   return 0.0;
 #endif
 }
 vec2 cpfx_dFdy(vec2 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdy(v);
 #else
   return vec2(0.0);
 #endif
 }
 vec3 cpfx_dFdy(vec3 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdy(v);
 #else
   return vec3(0.0);
 #endif
 }
 vec4 cpfx_dFdy(vec4 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdy(v);
 #else
   return vec4(0.0);
 #endif
+}
+float cpfx_derivativeEpsilon() {
+  vec2 px = vec2(1.0) / max(iResolution.xy, vec2(1.0));
+  return max(px.x, px.y);
+}
+float cpfx_fwidth(float v) {
+  return max(abs(cpfx_dFdx(v)) + abs(cpfx_dFdy(v)), cpfx_derivativeEpsilon());
+}
+vec2 cpfx_fwidth(vec2 v) {
+  return max(abs(cpfx_dFdx(v)) + abs(cpfx_dFdy(v)), vec2(cpfx_derivativeEpsilon()));
+}
+vec3 cpfx_fwidth(vec3 v) {
+  return max(abs(cpfx_dFdx(v)) + abs(cpfx_dFdy(v)), vec3(cpfx_derivativeEpsilon()));
+}
+vec4 cpfx_fwidth(vec4 v) {
+  return max(abs(cpfx_dFdx(v)) + abs(cpfx_dFdy(v)), vec4(cpfx_derivativeEpsilon()));
 }
 
 #define texture textureCompat
@@ -4174,28 +4191,28 @@ float cpfx_mod(int a, float b) { return mod(float(a), b); }
 int cpfx_mod(int a, int b) { return int(mod(float(a), float(b))); }
 
 float cpfx_dFdx(float v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdx(v);
 #else
   return 0.0;
 #endif
 }
 vec2 cpfx_dFdx(vec2 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdx(v);
 #else
   return vec2(0.0);
 #endif
 }
 vec3 cpfx_dFdx(vec3 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdx(v);
 #else
   return vec3(0.0);
 #endif
 }
 vec4 cpfx_dFdx(vec4 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdx(v);
 #else
   return vec4(0.0);
@@ -4203,32 +4220,48 @@ vec4 cpfx_dFdx(vec4 v) {
 }
 
 float cpfx_dFdy(float v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdy(v);
 #else
   return 0.0;
 #endif
 }
 vec2 cpfx_dFdy(vec2 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdy(v);
 #else
   return vec2(0.0);
 #endif
 }
 vec3 cpfx_dFdy(vec3 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdy(v);
 #else
   return vec3(0.0);
 #endif
 }
 vec4 cpfx_dFdy(vec4 v) {
-#ifdef GL_OES_standard_derivatives
+#if defined(GL_OES_standard_derivatives) || (__VERSION__ >= 300)
   return dFdy(v);
 #else
   return vec4(0.0);
 #endif
+}
+float cpfx_derivativeEpsilon() {
+  vec2 px = vec2(1.0) / max(iResolution.xy, vec2(1.0));
+  return max(px.x, px.y);
+}
+float cpfx_fwidth(float v) {
+  return max(abs(cpfx_dFdx(v)) + abs(cpfx_dFdy(v)), cpfx_derivativeEpsilon());
+}
+vec2 cpfx_fwidth(vec2 v) {
+  return max(abs(cpfx_dFdx(v)) + abs(cpfx_dFdy(v)), vec2(cpfx_derivativeEpsilon()));
+}
+vec3 cpfx_fwidth(vec3 v) {
+  return max(abs(cpfx_dFdx(v)) + abs(cpfx_dFdy(v)), vec3(cpfx_derivativeEpsilon()));
+}
+vec4 cpfx_fwidth(vec4 v) {
+  return max(abs(cpfx_dFdx(v)) + abs(cpfx_dFdy(v)), vec4(cpfx_derivativeEpsilon()));
 }
 
 #define texture textureCompat
