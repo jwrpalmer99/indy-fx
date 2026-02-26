@@ -1091,8 +1091,12 @@ function createImportedLightShaderClass({
     uniformDefaults.iChannel3 = resolvedChannels.iChannel3;
   }
 
-  return class IndyFxImportedLightShader extends baseShaderClass {
-    static fragmentShader = fragmentShader;
+  const useLegacyFragmentShaderField = getFoundryGenerationNumber() < 14;
+
+  const shaderClass = class IndyFxImportedLightShader extends baseShaderClass {
+    static _createFragmentShader(..._args) {
+      return fragmentShader;
+    }
     static defaultUniforms = uniformDefaults;
     static indyFxBaseSpeed = Math.max(0, resolvedDefaultSpeed);
     static indyFxLightFalloffMode = resolvedDefaultLightFalloffMode;
@@ -1109,6 +1113,15 @@ function createImportedLightShaderClass({
         ? true
         : (baseShaderClass.forceDefaultColor ?? false);
   };
+
+  if (useLegacyFragmentShaderField) {
+    Object.defineProperty(shaderClass, "fragmentShader", {
+      value: fragmentShader,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return shaderClass;
 }
 
 function buildImportedLightAnimationConfig(record, defaults = {}) {
