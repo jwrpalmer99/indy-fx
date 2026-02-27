@@ -18,6 +18,7 @@ uniform float uSpecularity;       // @editable 1.6
 uniform float uShininess;         // @editable 48.0
 uniform float uFoamIntensity;     // @editable 1.0
 uniform float uFoamThreshold;     // @editable 0.18
+uniform float uFoamSpeed;         // @editable 1.0
 uniform float uVortexStrength;    // @editable 0.85
 uniform vec3 uDeepColor;          // @editable 0.01,0.24,0.43
 uniform vec3 uMediumColor;        // @editable 0.07,0.45,0.57
@@ -242,7 +243,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   float flowImpact = max(0.0, dot(flowDir, bankToShallow));
   float speedFactor = max(0.0, uFlowSpeed);
   float speedNorm = clamp(speedFactor / 2.0, 0.0, 1.0);
-  float foamRate = 0.30 + speedFactor * 1.25;
+  float foamSpeed = max(0.0, uFoamSpeed);
+  float foamRate = (0.20 + speedFactor * 0.85) * (0.25 + foamSpeed);
   vec2 flowNormal = vec2(-flowDir.y, flowDir.x);
 
   float slopeFoam = smoothstep(
@@ -255,53 +257,41 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   );
   float interfaceBase = shoreline * shoreVar * (0.42 + 0.58 * slopeFoam);
 
-  // Build foam in flow-space with layered noise to avoid spiral/vortex motifs.
+  // Build shoreline mist in flow-space with softer, cloud-like breakup.
   float along = dot(uv, flowDir);
   float across = dot(uv, flowNormal);
   vec2 flowCoord = vec2(along, across);
-  vec2 jitter = vec2(
-    fbm(flowCoord * vec2(12.0, 9.0) + vec2(uTime * 0.45, -uTime * 0.32)),
-    fbm(flowCoord * vec2(11.0, 10.5) + vec2(-uTime * 0.37, uTime * 0.28))
-  ) - 0.5;
-  vec2 foamDrift = (
-    flowDir * (0.92 + 0.58 * flowImpact) +
-    flowNormal * (0.08 + 0.28 * (1.0 - flowImpact)) +
-    jitter * (0.14 + 0.22 * uTurbulence)
-  ) * (uTime * foamRate);
-
-  vec2 foamAdvA = flowCoord * vec2(29.0, 18.0) -
-    vec2(foamDrift.x * 8.0, foamDrift.y * 7.0) + bankToShallow * 2.4;
-  vec2 foamAdvB = flowCoord.yx * vec2(26.0, 22.0) -
-    vec2(foamDrift.x * 11.5, foamDrift.y * 9.5) - bankToShallow.yx * 1.9;
-  vec2 foamAdvC = (foamAdvA + foamAdvB) * 0.65 + jitter * 4.0 + vec2(5.3, -3.7);
-
-  float foamNoiseA = fbm(foamAdvA + vec2(3.1, -4.2));
-  float foamNoiseB = fbm(foamAdvB + vec2(-6.8, 1.9));
-  float foamNoiseC = fbm(foamAdvC);
-  float filament = smoothstep(0.42, 0.80, foamNoiseA * 0.50 + foamNoiseB * 0.50);
-  float granular = smoothstep(
-    0.50,
-    0.88,
-    foamNoiseA * 0.35 + foamNoiseB * 0.30 + foamNoiseC * 0.35
+  vec2 driftDir = normalize(
+    flowDir * (0.75 + 0.45 * flowImpact) +
+    flowNormal * (0.16 + 0.28 * (1.0 - flowImpact)) +
+    vec2(1e-5, 1e-5)
   );
-  float breakup = 1.0 - smoothstep(0.58, 0.98, abs(foamNoiseB - foamNoiseC) * 1.35);
-  float pulse = 0.72 + 0.28 * fbm(
-    flowCoord * 6.0 - foamDrift * 0.9 +
-    vec2(uTime * (0.4 + speedFactor * 0.8), -uTime * 0.36)
-  );
-  float foamDetail = clamp(filament * granular * breakup * pulse, 0.0, 1.0);
+  vec2 foamDrift = driftDir * (uTime * foamRate);
+
+  vec2 mistUvA = flowCoord * vec2(11.0, 7.5) -
+    foamDrift * vec2(2.8, 2.2) + bankToShallow * 1.6;
+  vec2 mistUvB = flowCoord.yx * vec2(9.2, 8.7) -
+    foamDrift * vec2(3.4, 2.6) - bankToShallow.yx * 1.2 + vec2(3.7, -2.5);
+  vec2 mistUvC = (mistUvA + mistUvB) * 0.62 + vec2(-4.1, 2.9);
+
+  float mistA = fbm(mistUvA);
+  float mistB = fbm(mistUvB);
+  float mistC = fbm(mistUvC);
+  float mistBody = smoothstep(0.30, 0.82, mistA * 0.48 + mistB * 0.34 + mistC * 0.18);
+  float mistWisp = 1.0 - smoothstep(0.12, 0.56, abs(mistA - mistB));
+  float foamDetail = clamp(mistBody * (0.62 + 0.38 * mistWisp), 0.0, 1.0);
   float speedFoamBoost = mix(0.72, 1.30, speedNorm);
   float foam = interfaceBase *
     speedFoamBoost *
-    (0.60 + 0.40 * flowImpact) *
+    (0.68 + 0.32 * flowImpact) *
     foamDetail;
   float churn = shoreline *
-    mix(0.25, 0.95, speedNorm) *
-    (0.25 + 0.75 * flowImpact) *
+    mix(0.20, 0.70, speedNorm) *
+    (0.20 + 0.60 * flowImpact) *
     uVortexStrength *
-    smoothstep(0.40, 0.90, foamNoiseC) *
-    (0.55 + 0.45 * breakup);
-  float foamMask = clamp((foam + churn * 0.35) * uFoamIntensity, 0.0, 1.0);
+    smoothstep(0.45, 0.90, mistC);
+  float foamMask = clamp((foam + churn * 0.20) * uFoamIntensity, 0.0, 1.0);
+  foamMask = smoothstep(0.0, 0.85, foamMask);
 
   // Water body composition:
   // The riverbed is the original scene capture (iChannel0), sampled with refraction.
