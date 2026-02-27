@@ -233,11 +233,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   float eddyBand = sin((eddyNoise * 2.0 - 1.0) * 9.5 + t * 2.2);
   float eddy = 0.5 + 0.5 * eddyBand;
 
-  // Foam locked to terrain/water onlap: always present at contact, then shaped by slope/flow.
-  float shoreWidth = mix(0.015, 0.10, clamp(uFoamThreshold * 2.5, 0.0, 1.0));
-  float shorelineBand = 1.0 - smoothstep(0.0, shoreWidth, abs(rawDepth));
-  float waterSide = smoothstep(-shoreWidth * 0.15, shoreWidth * 0.55, rawDepth);
-  float shoreline = shorelineBand * waterSide;
+  // Foam locked to terrain/water onlap: bank-side band shaped by slope/flow.
+  float shoreWidth = max(0.002, uFoamThreshold);
+  // Bank-side foam band only: primarily rawDepth in [-uFoamThreshold, 0].
+  float shoreline = smoothstep(-shoreWidth, 0.0, rawDepth) *
+    (1.0 - step(0.0, rawDepth));
 
   vec2 bankToShallow = normalize(-terrainGrad + vec2(1e-5, 1e-5));
   float flowImpact = max(0.0, dot(flowDir, bankToShallow));
@@ -247,13 +247,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   float foamRate = (0.20 + speedFactor * 0.85) * (0.25 + foamSpeed);
   vec2 flowNormal = vec2(-flowDir.y, flowDir.x);
 
-  float slopeFoam = smoothstep(
-    uFoamThreshold * 0.03,
-    uFoamThreshold * 0.28 + 0.005,
-    slope
-  );
+  // Keep slope response stable as threshold changes to avoid crystalline artifacts.
+  float slopeFoam = smoothstep(0.004, 0.055, slope);
   float shoreVar = 0.65 + 0.35 * fbm(
-    uv * 18.0 + bankToShallow * 2.2 - flowDir * t * 0.35
+    uv * 18.0 + bankToShallow * 0.6 - flowDir * t * 0.35
   );
   float interfaceBase = shoreline * shoreVar * (0.42 + 0.58 * slopeFoam);
 
@@ -269,9 +266,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 foamDrift = driftDir * (uTime * foamRate);
 
   vec2 mistUvA = flowCoord * vec2(11.0, 7.5) -
-    foamDrift * vec2(2.8, 2.2) + bankToShallow * 1.6;
+    foamDrift * vec2(2.8, 2.2) + bankToShallow * 0.45;
   vec2 mistUvB = flowCoord.yx * vec2(9.2, 8.7) -
-    foamDrift * vec2(3.4, 2.6) - bankToShallow.yx * 1.2 + vec2(3.7, -2.5);
+    foamDrift * vec2(3.4, 2.6) - bankToShallow.yx * 0.35 + vec2(3.7, -2.5);
   vec2 mistUvC = (mistUvA + mistUvB) * 0.62 + vec2(-4.1, 2.9);
 
   float mistA = fbm(mistUvA);
@@ -363,11 +360,15 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   waterBody *= (0.96 + 0.04 * ndl);
 
   vec3 foamColor = vec3(0.95, 0.98, 1.0);
+  float waterFoamMask = foamMask * waterMask * 0.20;
+  float bankFoamMask = foamMask * (1.0 - waterMask);
   vec3 wetResult = waterBody + specCol;
-  wetResult = mix(wetResult, foamColor, foamMask);
+  wetResult = mix(wetResult, foamColor, waterFoamMask);
 
   // Exposed terrain where water is too shallow.
   vec3 finalColor = mix(bed.rgb, wetResult, waterMask);
+  // Draw primary foam on the bank side of the interface.
+  finalColor = mix(finalColor, mix(bed.rgb, foamColor, 0.88), bankFoamMask);
   // Scene-capture alpha may be zero on some paths; keep water visible on regions.
   float finalAlpha = 1.0;
   fragColor = vec4(finalColor, finalAlpha);
