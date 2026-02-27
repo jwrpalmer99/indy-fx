@@ -21,10 +21,20 @@ function isRuntimeDebugEnabled() {
   }
 }
 
+function formatDebugTimestamp() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+
 function runtimeDebugLog(message, payload = undefined) {
   if (!isRuntimeDebugEnabled()) return;
-  if (payload === undefined) console.debug(`${RUNTIME_DEBUG_MODULE_ID} | ${message}`);
-  else console.debug(`${RUNTIME_DEBUG_MODULE_ID} | ${message}`, payload);
+  const prefix = `[${formatDebugTimestamp()}] ${RUNTIME_DEBUG_MODULE_ID} | ${message}`;
+  if (payload === undefined) console.debug(prefix);
+  else console.debug(prefix, payload);
 }
 
 const SHADER_MOUSE_STATE = {

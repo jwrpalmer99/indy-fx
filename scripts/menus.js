@@ -13,6 +13,14 @@ import {
 } from "./shader-variable-utils.js";
 export function createMenus({ moduleId, shaderManager }) {
   const MODULE_ID = moduleId;
+  const formatDebugTimestamp = () => {
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    const ss = String(now.getSeconds()).padStart(2, "0");
+    const ms = String(now.getMilliseconds()).padStart(3, "0");
+    return `${hh}:${mm}:${ss}.${ms}`;
+  };
   const isDebugLoggingEnabled = () => {
     try {
       return game?.settings?.get?.(MODULE_ID, "shaderDebug") === true;
@@ -22,8 +30,9 @@ export function createMenus({ moduleId, shaderManager }) {
   };
   const debugLog = (message, payload = undefined) => {
     if (!isDebugLoggingEnabled()) return;
-    if (payload === undefined) console.debug(`${MODULE_ID} | ${message}`);
-    else console.debug(`${MODULE_ID} | ${message}`, payload);
+    const prefix = `[${formatDebugTimestamp()}] ${MODULE_ID} | ${message}`;
+    if (payload === undefined) console.debug(prefix);
+    else console.debug(prefix, payload);
   };
   const ApplicationV2Base = foundry.applications.api.ApplicationV2;
   const HandlebarsV2Mixin =

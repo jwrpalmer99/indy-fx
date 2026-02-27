@@ -9,6 +9,7 @@ import {
 import { noiseShaderDefinition } from "./builtin/noise.js";
 import { torusShaderDefinition } from "./builtin/torus.js";
 import { globeShaderDefinition } from "./builtin/globe.js";
+import { riverShaderDefinition } from "./builtin/river.js";
 import { ShaderToyBufferChannel } from "./buffer-channel.js";
 import { PlaceableImageChannel } from "./placeable-image-channel.js";
 import { SceneAreaChannel } from "./scene-channel.js";
@@ -23,6 +24,7 @@ const BUILTIN_SHADERS = [
   noiseShaderDefinition,
   torusShaderDefinition,
   globeShaderDefinition,
+  riverShaderDefinition,
 ];
 const DEFAULT_SHADER_ID = "noise";
 const CHANNEL_INDICES = [0, 1, 2, 3];
@@ -119,6 +121,10 @@ const SHADERTOY_MEDIA_REPLACEMENTS = new Map([
 const THUMBNAIL_SIZE = 256;
 const THUMBNAIL_CAPTURE_SECONDS = 1.0;
 const THUMBNAIL_WEBP_QUALITY = 0.78;
+const THUMBNAIL_MAX_RENDER_FRAMES = 2;
+const THUMBNAIL_SLOW_FRAME_ABORT_MS = 500;
+const THUMBNAIL_HEAVY_SOURCE_LENGTH = 12000;
+const THUMBNAIL_HEAVY_FBM_CALLS = 14;
 const BACKGROUND_COMPILE_SIZE = 96;
 const PREVIEW_SCENE_CAPTURE_TEXTURE = "modules/indy-fx/images/indyFX_solid.webp";
 const PREVIEW_PLACEABLE_CAPTURE_TEXTURE = "modules/indy-fx/images/indyFX.webp";
@@ -178,10 +184,160 @@ function isDebugLoggingEnabled(moduleId = "indy-fx") {
   }
 }
 
+function formatDebugTimestamp() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+
 function debugLog(moduleId, message, payload = undefined) {
   if (!isDebugLoggingEnabled(moduleId)) return;
-  if (payload === undefined) console.debug(`${moduleId} | ${message}`);
-  else console.debug(`${moduleId} | ${message}`, payload);
+  const prefix = `[${formatDebugTimestamp()}] ${moduleId} | ${message}`;
+  if (payload === undefined) console.debug(prefix);
+  else console.debug(prefix, payload);
+}
+
+function isVerboseDebugLoggingEnabled(moduleId = "indy-fx") {
+  if (!isDebugLoggingEnabled(moduleId)) return false;
+  try {
+    return globalThis?.INDYFX_DEBUG_VERBOSE === true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function isAdvancedPreviewSamplingEnabled(moduleId = "indy-fx") {
+  if (!isDebugLoggingEnabled(moduleId)) return false;
+  try {
+    return globalThis?.INDYFX_DEBUG_PREVIEW_SAMPLE === true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function isGlCompileProfilingEnabled(moduleId = "indy-fx") {
+  if (!isDebugLoggingEnabled(moduleId)) return false;
+  try {
+    return globalThis?.INDYFX_DEBUG_GL_COMPILE === true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function withGlCompileProfiling(gl, moduleId, context = {}, callback = null) {
+  if (typeof callback !== "function") return null;
+  if (!gl || !isGlCompileProfilingEnabled(moduleId)) return callback();
+  const originalCompileShader =
+    typeof gl.compileShader === "function" ? gl.compileShader.bind(gl) : null;
+  const originalLinkProgram =
+    typeof gl.linkProgram === "function" ? gl.linkProgram.bind(gl) : null;
+  if (!originalCompileShader || !originalLinkProgram) return callback();
+
+  const shaderMeta = new WeakMap();
+  const slowCompileMs = 75;
+  const slowLinkMs = 75;
+
+  let patched = false;
+  try {
+    gl.compileShader = (shader) => {
+      const startedAt = nowMs();
+      const out = originalCompileShader(shader);
+      const ms = roundMs(nowMs() - startedAt);
+      let ok = true;
+      let type = null;
+      let sourceLength = 0;
+      let infoLog = "";
+      try {
+        ok = gl.getShaderParameter(shader, gl.COMPILE_STATUS) === true;
+        type = gl.getShaderParameter(shader, gl.SHADER_TYPE);
+        const source = String(gl.getShaderSource(shader) ?? "");
+        sourceLength = source.length;
+        infoLog = String(gl.getShaderInfoLog(shader) ?? "").trim();
+      } catch (_err) {
+        ok = false;
+      }
+      shaderMeta.set(shader, {
+        ok,
+        ms,
+        type,
+        sourceLength,
+        infoLog,
+      });
+      if (!ok || ms >= slowCompileMs) {
+        debugLog(moduleId, "webgl compileShader timing", {
+          ...context,
+          ms,
+          ok,
+          type,
+          sourceLength,
+          infoLog: infoLog ? infoLog.slice(0, 600) : "",
+        });
+      }
+      return out;
+    };
+
+    gl.linkProgram = (program) => {
+      const startedAt = nowMs();
+      const out = originalLinkProgram(program);
+      const ms = roundMs(nowMs() - startedAt);
+      let ok = true;
+      let infoLog = "";
+      const attachedShaders = [];
+      try {
+        ok = gl.getProgramParameter(program, gl.LINK_STATUS) === true;
+        infoLog = String(gl.getProgramInfoLog(program) ?? "").trim();
+        const attached = gl.getAttachedShaders(program) ?? [];
+        for (const shader of attached) {
+          const meta = shaderMeta.get(shader) ?? {};
+          attachedShaders.push({
+            type: meta.type ?? null,
+            sourceLength: Number(meta.sourceLength ?? 0),
+            compileMs: Number(meta.ms ?? 0),
+            compileOk: meta.ok === true,
+            compileInfoLog:
+              typeof meta.infoLog === "string" && meta.infoLog
+                ? meta.infoLog.slice(0, 300)
+                : "",
+          });
+        }
+      } catch (_err) {
+        ok = false;
+      }
+      if (!ok || ms >= slowLinkMs) {
+        debugLog(moduleId, "webgl linkProgram timing", {
+          ...context,
+          ms,
+          ok,
+          infoLog: infoLog ? infoLog.slice(0, 600) : "",
+          attachedShaders,
+        });
+      }
+      return out;
+    };
+    patched = true;
+  } catch (_err) {
+    return callback();
+  }
+
+  try {
+    return callback();
+  } finally {
+    if (patched) {
+      try {
+        gl.compileShader = originalCompileShader;
+      } catch (_err) {
+        // Best effort restore.
+      }
+      try {
+        gl.linkProgram = originalLinkProgram;
+      } catch (_err) {
+        // Best effort restore.
+      }
+    }
+  }
 }
 
 function nowMs() {
@@ -197,6 +353,60 @@ function roundMs(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
   return Math.round(n * 1000) / 1000;
+}
+
+function drainGlErrors(gl, maxReads = 8) {
+  if (!gl || typeof gl.getError !== "function") return [];
+  const errors = [];
+  const limit = Math.max(1, Math.min(32, Math.round(Number(maxReads) || 8)));
+  for (let i = 0; i < limit; i += 1) {
+    const code = Number(gl.getError());
+    if (!Number.isFinite(code) || code === Number(gl.NO_ERROR)) break;
+    errors.push(code);
+  }
+  return errors;
+}
+
+function countPatternMatches(text, pattern) {
+  const source = String(text ?? "");
+  if (!source) return 0;
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const regex = new RegExp(pattern.source, flags);
+  let count = 0;
+  while (regex.exec(source)) count += 1;
+  return count;
+}
+
+function getThumbnailSourceComplexity(source) {
+  const text = String(source ?? "");
+  return {
+    sourceLength: text.length,
+    fbmCalls: countPatternMatches(text, /\bfbm\s*\(/),
+    textureCalls: countPatternMatches(text, /\btexture\s*\(/),
+    forLoops: countPatternMatches(text, /\bfor\s*\(/),
+  };
+}
+
+function shouldSkipHeavyThumbnailCompile(source, defaults = {}) {
+  try {
+    if (globalThis?.INDYFX_FORCE_THUMBNAIL_COMPILE === true) {
+      return { skip: false, reason: "global-forced", complexity: getThumbnailSourceComplexity(source) };
+    }
+  } catch (_err) {
+    // Ignore.
+  }
+  if (parseBooleanLike(defaults?.forceThumbnailCompile) === true) {
+    return { skip: false, reason: "forced", complexity: getThumbnailSourceComplexity(source) };
+  }
+  const complexity = getThumbnailSourceComplexity(source);
+  const skip =
+    complexity.sourceLength >= THUMBNAIL_HEAVY_SOURCE_LENGTH &&
+    complexity.fbmCalls >= THUMBNAIL_HEAVY_FBM_CALLS;
+  return {
+    skip,
+    reason: skip ? "heavy-source-threshold" : "ok",
+    complexity,
+  };
 }
 
 function toFiniteNumber(value, fallback) {
@@ -598,6 +808,27 @@ function getChannelSamplerDefaults(mode) {
     return { filter: "linear", wrap: "clamp" };
   }
   return { filter: "linear", wrap: "repeat" };
+}
+
+function channelConfigNeedsFullCompatibilityAdapter(channelConfig = {}) {
+  for (const index of CHANNEL_INDICES) {
+    const key = `iChannel${index}`;
+    const entry = channelConfig?.[key] ?? {};
+    const mode = normalizeChannelMode(entry?.mode ?? "none");
+    if (
+      mode === "buffer" ||
+      mode === "bufferSelf" ||
+      mode === "volume" ||
+      mode === "cubemap"
+    ) {
+      return true;
+    }
+    const defaults = getChannelSamplerDefaults(mode);
+    const wrap = normalizeSamplerWrap(entry?.samplerWrap, defaults.wrap);
+    if (wrap !== "clamp") return true;
+    if (parseBooleanLike(entry?.samplerVflip)) return true;
+  }
+  return false;
 }
 
 function applyChannelSamplerToTexture(texture, channelCfg, mode) {
@@ -1216,6 +1447,7 @@ export class ShaderManager {
     this._shaderChoiceCache = null;
     this._shaderChoiceCacheByTarget = new Map();
     this._tokenTileUsageCache = null;
+    this._resolvedShaderDefinitionCache = new Map();
     this._backgroundCompilePending = new Set();
     this._backgroundCompileDone = new Set();
     this._previewCaptureTextureCache = new Map();
@@ -1423,6 +1655,7 @@ export class ShaderManager {
     this._shaderChoiceCache = null;
     this._tokenTileUsageCache = null;
     this._shaderChoiceCacheByTarget.clear();
+    this._resolvedShaderDefinitionCache.clear();
     this._backgroundCompileDone.clear();
   }
 
@@ -1596,6 +1829,7 @@ export class ShaderManager {
       forceOpaqueAlpha = false,
     } = {},
   ) {
+    const shouldSampleAlphaDebug = isAdvancedPreviewSamplingEnabled(this.moduleId);
     let sourceTexture = null;
     let cacheSourceKey = null;
 
@@ -1756,7 +1990,9 @@ export class ShaderManager {
             forceOpaque,
             source: getTextureDebugInfo(sourceTexture, 1024),
             target: getTextureDebugInfo(transformed, 1024),
-            targetAlphaSample: this._debugSampleTextureAlpha(transformed, 16),
+            targetAlphaSample: shouldSampleAlphaDebug
+              ? this._debugSampleTextureAlpha(transformed, 16)
+              : null,
           });
           return transformed;
         }
@@ -1817,7 +2053,9 @@ export class ShaderManager {
         forceOpaque,
         source: getTextureDebugInfo(sourceTexture, 1024),
         target: getTextureDebugInfo(target, 1024),
-        targetAlphaSample: this._debugSampleTextureAlpha(target, 16),
+        targetAlphaSample: shouldSampleAlphaDebug
+          ? this._debugSampleTextureAlpha(target, 16)
+          : null,
       });
       return target;
     } catch (err) {
@@ -2388,6 +2626,9 @@ export class ShaderManager {
     const previewHasBufferPass =
       channelConfigHasMode(previewChannelConfig, "buffer") ||
       channelConfigHasMode(previewChannelConfig, "bufferSelf");
+    const previewForceFullCompatibility =
+      previewHasBufferPass ||
+      channelConfigNeedsFullCompatibilityAdapter(previewChannelConfig);
     const previewDefinition = {
       id: previewRecord.id,
       label: sanitizeName(previewRecord.label ?? previewRecord.name),
@@ -2401,9 +2642,30 @@ export class ShaderManager {
         .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
       fragment: adaptShaderToyFragment(previewComposedSource, {
         sanitizeColor: previewHasBufferPass ? false : undefined,
+        forceFullCompatibility: previewForceFullCompatibility,
       }),
     };
     phaseMs.definitionBuild = perfNow() - tDefinition0;
+    debugLog(this.moduleId, "shader preview adapter profile", {
+      shaderId: previewRecord.id,
+      reason: String(reason || "unspecified"),
+      sourceLength: String(previewComposedSource ?? "").length,
+      fragmentLength: String(previewDefinition.fragment ?? "").length,
+      forceFullCompatibility: previewForceFullCompatibility,
+      hasBufferPass: previewHasBufferPass,
+      channels: CHANNEL_INDICES.map((index) => {
+        const key = `iChannel${index}`;
+        const entry = previewChannelConfig?.[key] ?? {};
+        const mode = normalizeChannelMode(entry?.mode ?? "none");
+        const defaults = getChannelSamplerDefaults(mode);
+        return {
+          key,
+          mode,
+          wrap: normalizeSamplerWrap(entry?.samplerWrap, defaults.wrap),
+          vflip: parseBooleanLike(entry?.samplerVflip),
+        };
+      }),
+    });
 
     const previewUseGradientMask = runtimeDefaults.useGradientMask === true;
     const previewAlpha = Math.max(
@@ -2501,13 +2763,16 @@ export class ShaderManager {
         ? "captureMaskTexture"
         : "solidFallback"
       : "gradientMask";
+    const previewShouldSampleAlpha = isAdvancedPreviewSamplingEnabled(this.moduleId);
     const previewChannelDiagnostics = {};
     for (const index of CHANNEL_INDICES) {
       const key = `iChannel${index}`;
       const tex = shaderResult?.shader?.uniforms?.[key] ?? null;
       previewChannelDiagnostics[key] = {
         texture: getTextureDebugInfo(tex, size),
-        alphaSample: this._debugSampleTextureAlpha(tex, 16),
+        alphaSample: previewShouldSampleAlpha
+          ? this._debugSampleTextureAlpha(tex, 16)
+          : null,
       };
     }
     debugLog(this.moduleId, "shader preview alpha policy", {
@@ -2626,6 +2891,7 @@ export class ShaderManager {
       hasPreviewTarget: !!previewTarget.targetId,
       previewTargetType: previewTarget.targetType ?? null,
       usedLiveScenePreview: !!previewSceneChannel,
+      makeShaderTiming: shaderResult?.timing ?? null,
     });
 
     return {
@@ -2641,15 +2907,27 @@ export class ShaderManager {
       },
       render: (renderer, target = null) => {
         if (!renderer) return;
+        const renderTimingEnabled = isDebugLoggingEnabled(this.moduleId);
+        const renderStartMs = renderTimingEnabled ? nowMs() : 0;
         const bufferDt = pendingBufferDt > 0 ? pendingBufferDt : 1 / 60;
         pendingBufferDt = 0;
+        const bufferUpdateStartMs = renderTimingEnabled ? nowMs() : 0;
         for (const runtimeBuffer of runtimeBuffers) {
           runtimeBuffer.update(bufferDt * Math.max(0, Number(speed) || 0), renderer);
         }
+        const runtimeBufferUpdateMs = renderTimingEnabled
+          ? roundMs(nowMs() - bufferUpdateStartMs)
+          : 0;
+        const drawStartMs = renderTimingEnabled ? nowMs() : 0;
         if (target) renderer.render(container, { renderTexture: target, clear: true });
         else renderer.render(container, { clear: true });
+        const drawMs = renderTimingEnabled ? roundMs(nowMs() - drawStartMs) : 0;
+        const renderTotalMs = renderTimingEnabled ? roundMs(nowMs() - renderStartMs) : 0;
 
-        if (!debugRenderSampleLogged && isDebugLoggingEnabled(this.moduleId)) {
+        if (
+          !debugRenderSampleLogged &&
+          isAdvancedPreviewSamplingEnabled(this.moduleId)
+        ) {
           const sampleSize = Math.max(32, Math.min(256, Math.round(Number(size) || 128)));
           let sampledTexture = target ?? null;
           let sampledOwnTarget = null;
@@ -2717,6 +2995,9 @@ export class ShaderManager {
             shaderId: previewRecord.id,
             reason: String(reason || "unspecified"),
             targetProvided: !!target,
+            runtimeBufferUpdateMs,
+            drawMs,
+            renderTotalMs,
             hasDebugUniform,
             priorDebugMode,
             outputAlphaSample,
@@ -2806,6 +3087,7 @@ export class ShaderManager {
   }
 
   async importImportedShadersPayload(payload, { replace = false } = {}) {
+    const importStartMs = nowMs();
     const source = payload && typeof payload === "object" ? payload : {};
     const incoming = Array.isArray(source)
       ? source
@@ -2814,6 +3096,30 @@ export class ShaderManager {
         : Array.isArray(source.records)
           ? source.records
           : [];
+    const timings = {
+      incomingCount: incoming.length,
+      importedCount: 0,
+      skippedInvalid: 0,
+      totalPerRecordMs: 0,
+      totalValidateSourceMs: 0,
+      totalBuildChannelConfigMs: 0,
+      totalExtractReferencedChannelsMs: 0,
+      totalNormalizeDefaultsMs: 0,
+      persistSettingsMs: 0,
+      persistGameSettingsSetMs: 0,
+      persistCacheInvalidateMs: 0,
+      persistHooksMs: 0,
+      persistPayloadBytes: 0,
+      slowestRecords: [],
+    };
+    const pushSlowRecord = (entry) => {
+      if (!entry || typeof entry !== "object") return;
+      timings.slowestRecords.push(entry);
+      timings.slowestRecords.sort(
+        (a, b) => Number(b?.totalMs ?? 0) - Number(a?.totalMs ?? 0),
+      );
+      if (timings.slowestRecords.length > 5) timings.slowestRecords.length = 5;
+    };
 
     const records = replace ? [] : this.getImportedRecords();
     const existingIndexById = new Map(records.map((entry, index) => [entry.id, index]));
@@ -2822,6 +3128,7 @@ export class ShaderManager {
     let importedCount = 0;
     const changedShaderIds = [];
     for (const raw of incoming) {
+      const recordStartMs = nowMs();
       if (!raw || typeof raw !== "object") continue;
 
       const name = sanitizeName(raw.name ?? raw.label ?? "Imported Shader");
@@ -2829,11 +3136,14 @@ export class ShaderManager {
       const commonSource = this._normalizeCommonSource(raw.commonSource);
 
       let sourceText = "";
+      const validateSourceStartMs = nowMs();
       try {
         sourceText = validateShaderToySource(raw.source);
       } catch (_err) {
+        timings.skippedInvalid += 1;
         continue;
       }
+      timings.totalValidateSourceMs += nowMs() - validateSourceStartMs;
       const composedSource = this._composeShaderSourceWithCommon(
         sourceText,
         commonSource,
@@ -2854,12 +3164,25 @@ export class ShaderManager {
         }
       }
 
+      const buildChannelConfigStartMs = nowMs();
       const channelConfig = this.buildChannelConfig({
         source: composedSource,
         commonSource,
         channels: raw.channels,
         autoAssignCapture: true,
       });
+      timings.totalBuildChannelConfigMs += nowMs() - buildChannelConfigStartMs;
+
+      const extractRefsStartMs = nowMs();
+      const referencedChannels = extractReferencedChannels(composedSource);
+      timings.totalExtractReferencedChannelsMs += nowMs() - extractRefsStartMs;
+
+      const normalizeDefaultsStartMs = nowMs();
+      const defaultsNormalized = this.normalizeImportedShaderDefaults(
+        raw.defaults,
+        this.getDefaultImportedShaderDefaults(),
+      );
+      timings.totalNormalizeDefaultsMs += nowMs() - normalizeDefaultsStartMs;
 
       const normalized = {
         id,
@@ -2867,12 +3190,9 @@ export class ShaderManager {
         label,
         source: sourceText,
         commonSource,
-        referencedChannels: extractReferencedChannels(composedSource),
+        referencedChannels,
         channels: channelConfig,
-        defaults: this.normalizeImportedShaderDefaults(
-          raw.defaults,
-          this.getDefaultImportedShaderDefaults(),
-        ),
+        defaults: defaultsNormalized,
         thumbnail: typeof raw.thumbnail === "string" ? raw.thumbnail : "",
         createdAt: Number.isFinite(Number(raw.createdAt))
           ? Number(raw.createdAt)
@@ -2889,15 +3209,50 @@ export class ShaderManager {
       }
       importedCount += 1;
       changedShaderIds.push(id);
+      timings.importedCount += 1;
+      const recordTotalMs = roundMs(nowMs() - recordStartMs);
+      timings.totalPerRecordMs += recordTotalMs;
+      pushSlowRecord({
+        shaderId: id,
+        sourceLength: String(sourceText ?? "").length,
+        commonSourceLength: String(commonSource ?? "").length,
+        totalMs: recordTotalMs,
+      });
     }
 
     if (changedShaderIds.length > 0 || replace === true) {
-      await this.setImportedRecords(records, {
+      const persistStartMs = nowMs();
+      const persistMetrics = await this.setImportedRecords(records, {
         context: "importImportedShadersPayload",
         changedShaderIds,
         operation: replace ? "import-replace" : "import-merge",
       });
+      timings.persistSettingsMs = roundMs(nowMs() - persistStartMs);
+      timings.persistGameSettingsSetMs = roundMs(
+        Number(persistMetrics?.settingsSetMs ?? 0),
+      );
+      timings.persistCacheInvalidateMs = roundMs(
+        Number(persistMetrics?.cacheInvalidateMs ?? 0),
+      );
+      timings.persistHooksMs = roundMs(Number(persistMetrics?.hooksMs ?? 0));
+      timings.persistPayloadBytes = Number(persistMetrics?.payloadBytes ?? 0);
     }
+    timings.totalValidateSourceMs = roundMs(timings.totalValidateSourceMs);
+    timings.totalBuildChannelConfigMs = roundMs(timings.totalBuildChannelConfigMs);
+    timings.totalExtractReferencedChannelsMs = roundMs(timings.totalExtractReferencedChannelsMs);
+    timings.totalNormalizeDefaultsMs = roundMs(timings.totalNormalizeDefaultsMs);
+    timings.avgPerRecordMs =
+      timings.importedCount > 0
+        ? roundMs(timings.totalPerRecordMs / timings.importedCount)
+        : 0;
+    timings.totalPerRecordMs = roundMs(timings.totalPerRecordMs);
+    timings.totalMs = roundMs(nowMs() - importStartMs);
+    debugLog(this.moduleId, "importImportedShadersPayload timing", {
+      replace,
+      changedShaderCount: changedShaderIds.length,
+      finalRecordCount: records.length,
+      ...timings,
+    });
     return { importedCount, total: records.length };
   }
 
@@ -2942,6 +3297,7 @@ export class ShaderManager {
       iDate: [0, 0, 0, 0],
     });
     const shader = shaderResult.shader;
+    const compileTiming = shaderResult?.timing ?? null;
     const container = new PIXI.Container();
     const geometry = createPreviewGeometry(size);
     const mesh = new PIXI.Mesh(geometry, shader);
@@ -2959,6 +3315,7 @@ export class ShaderManager {
     return {
       size,
       shader,
+      compileTiming,
       container,
       step: (dtSeconds = 1 / 60) => {
         const dt = Math.max(0, Number(dtSeconds) || 0);
@@ -2987,28 +3344,62 @@ export class ShaderManager {
     };
   }
   async _runBackgroundCompile(shaderId, { size = BACKGROUND_COMPILE_SIZE, reason = "" } = {}) {
+    const timingEnabled = isDebugLoggingEnabled(this.moduleId);
+    const totalStartMs = timingEnabled ? nowMs() : 0;
+    const phaseMs = {};
+    const markPhase = (name, startedAt) => {
+      if (!timingEnabled) return;
+      phaseMs[name] = roundMs(nowMs() - startedAt);
+    };
+    let warmCompileTiming = null;
     try {
+      let phaseStartMs = timingEnabled ? nowMs() : 0;
       const renderer = canvas?.app?.renderer;
+      markPhase("resolveRendererMs", phaseStartMs);
       if (!renderer) return;
 
+      phaseStartMs = timingEnabled ? nowMs() : 0;
       const previewSize = Math.max(32, Math.min(512, Math.round(Number(size) || BACKGROUND_COMPILE_SIZE)));
       const preview = this._createWarmCompilePreview(shaderId, previewSize);
+      warmCompileTiming = preview?.compileTiming ?? null;
+      markPhase("createWarmPreviewMs", phaseStartMs);
       if (!preview) return;
 
+      phaseStartMs = timingEnabled ? nowMs() : 0;
       const target = PIXI.RenderTexture.create({ width: previewSize, height: previewSize });
+      markPhase("createTargetMs", phaseStartMs);
       try {
+        phaseStartMs = timingEnabled ? nowMs() : 0;
         preview.step(1 / 60);
+        markPhase("warmStepMs", phaseStartMs);
+        phaseStartMs = timingEnabled ? nowMs() : 0;
         preview.render(renderer, target);
+        markPhase("warmRenderMs", phaseStartMs);
         this._backgroundCompileDone.add(shaderId);
       } finally {
+        phaseStartMs = timingEnabled ? nowMs() : 0;
         preview.destroy();
         target.destroy(true);
+        markPhase("cleanupMs", phaseStartMs);
+      }
+      if (timingEnabled) {
+        debugLog(this.moduleId, "background compile timing", {
+          shaderId,
+          reason,
+          previewSize,
+          totalMs: roundMs(nowMs() - totalStartMs),
+          phaseMs,
+          makeShaderTiming: warmCompileTiming,
+        });
       }
     } catch (err) {
       debugLog(this.moduleId, "background compile failed", {
         shaderId,
         reason,
         message: String(err?.message ?? err),
+        totalMs: timingEnabled ? roundMs(nowMs() - totalStartMs) : undefined,
+        phaseMs: timingEnabled ? phaseMs : undefined,
+        makeShaderTiming: warmCompileTiming,
       });
     } finally {
       this._backgroundCompilePending.delete(shaderId);
@@ -3084,8 +3475,35 @@ export class ShaderManager {
       autoAssignCapture = null,
     } = {},
   ) {
+    const currentRecord = this.getImportedRecord(shaderId);
+    const effectiveSource = this._composeShaderSourceWithCommon(
+      source ?? currentRecord?.source ?? "",
+      commonSource ?? currentRecord?.commonSource ?? "",
+    );
+    const effectiveDefaults =
+      defaults && typeof defaults === "object" && !Array.isArray(defaults)
+        ? defaults
+        : (currentRecord?.defaults ?? {});
+    const skipHeavyCompile = shouldSkipHeavyThumbnailCompile(
+      effectiveSource,
+      effectiveDefaults,
+    );
+    if (skipHeavyCompile.skip) {
+      debugLog(this.moduleId, "thumbnail regenerate skipped heavy source", {
+        shaderId,
+        reason: skipHeavyCompile.reason,
+        thresholds: {
+          sourceLength: THUMBNAIL_HEAVY_SOURCE_LENGTH,
+          fbmCalls: THUMBNAIL_HEAVY_FBM_CALLS,
+        },
+        complexity: skipHeavyCompile.complexity,
+      });
+      return currentRecord ?? null;
+    }
+
     const renderer = this._ensureThumbnailRenderer(size);
     if (!renderer) return null;
+    const gl = renderer?.gl ?? renderer?.context?.gl ?? null;
 
     const captureStartedAt = Date.now();
     const targetSize = Math.max(
@@ -3105,16 +3523,93 @@ export class ShaderManager {
     if (!preview) return null;
 
     try {
-      const frames = Math.max(
+      const requestedFrames = Math.max(
         1,
         Math.round(
           Math.max(0.05, Number(captureSeconds) || THUMBNAIL_CAPTURE_SECONDS) *
             60,
         ),
       );
+      const frames = Math.max(
+        1,
+        Math.min(THUMBNAIL_MAX_RENDER_FRAMES, requestedFrames),
+      );
+      const stepSeconds = Math.max(
+        1 / 240,
+        Math.max(0.05, Number(captureSeconds) || THUMBNAIL_CAPTURE_SECONDS) / frames,
+      );
+      let renderedFrames = 0;
+      let abortReason = "";
+      let abortFrameMs = 0;
+      let abortGlErrors = [];
+      drainGlErrors(gl, 8);
       for (let i = 0; i < frames; i += 1) {
-        preview.step(1 / 60);
-        preview.render(renderer);
+        preview.step(stepSeconds);
+        const frameStartMs = nowMs();
+        try {
+          withGlCompileProfiling(
+            gl,
+            this.moduleId,
+            {
+              scope: "thumbnail-regenerate",
+              shaderId,
+              frame: i,
+              requestedFrames,
+              cappedFrames: frames,
+            },
+            () => preview.render(renderer),
+          );
+        } catch (err) {
+          abortReason = "render-threw";
+          debugLog(this.moduleId, "thumbnail regenerate render failed", {
+            shaderId,
+            frame: i,
+            renderedFrames,
+            error: err?.message ?? String(err),
+          });
+          return null;
+        }
+        renderedFrames += 1;
+        const frameMs = roundMs(nowMs() - frameStartMs);
+        if (frameMs >= THUMBNAIL_SLOW_FRAME_ABORT_MS) {
+          abortReason = "slow-frame";
+          abortFrameMs = frameMs;
+          break;
+        }
+        const frameGlErrors = drainGlErrors(gl, 6);
+        if (frameGlErrors.length > 0) {
+          abortReason = "gl-error";
+          abortGlErrors = frameGlErrors;
+          break;
+        }
+      }
+
+      if (abortReason === "gl-error") {
+        debugLog(this.moduleId, "thumbnail regenerate aborted on gl error", {
+          shaderId,
+          requestedFrames,
+          attemptedFrames: frames,
+          renderedFrames,
+          glErrors: abortGlErrors,
+        });
+        return null;
+      }
+      if (abortReason === "slow-frame") {
+        debugLog(this.moduleId, "thumbnail regenerate capped on slow frame", {
+          shaderId,
+          requestedFrames,
+          attemptedFrames: frames,
+          renderedFrames,
+          slowFrameMs: abortFrameMs,
+        });
+      }
+      if (requestedFrames > frames) {
+        debugLog(this.moduleId, "thumbnail regenerate frame cap applied", {
+          shaderId,
+          requestedFrames,
+          cappedFrames: frames,
+          stepSeconds: roundMs(stepSeconds),
+        });
       }
 
       const renderedCanvas =
@@ -3986,9 +4481,24 @@ export class ShaderManager {
   }
 
   resolveShaderDefinition(shaderId) {
+    const timingEnabled = isDebugLoggingEnabled(this.moduleId);
+    const resolveStartMs = timingEnabled ? nowMs() : 0;
     const resolvedId = this.resolveShaderId(shaderId);
     const builtin = this.builtinById.get(resolvedId);
     if (builtin) return builtin;
+
+    const cacheKey = `${this._shaderLibraryRevision}|${resolvedId}`;
+    const cached = this._resolvedShaderDefinitionCache.get(cacheKey);
+    if (cached && typeof cached === "object") {
+      if (timingEnabled) {
+        debugLog(this.moduleId, "resolveShaderDefinition timing", {
+          shaderId: resolvedId,
+          cacheHit: true,
+          totalMs: roundMs(nowMs() - resolveStartMs),
+        });
+      }
+      return cached;
+    }
 
     const record = this.getImportedRecords().find(
       (entry) => entry.id === resolvedId,
@@ -4000,21 +4510,37 @@ export class ShaderManager {
       commonSource,
     );
     let referencedChannels = [];
+    const refsStartMs = timingEnabled ? nowMs() : 0;
     try {
       referencedChannels = extractReferencedChannels(composedSource);
     } catch (_err) {
       referencedChannels = toArray(record.referencedChannels);
     }
+    const extractReferencedChannelsMs = timingEnabled
+      ? roundMs(nowMs() - refsStartMs)
+      : 0;
 
     const channelConfig = this.getRecordChannelConfig(record);
     const hasBufferPass =
       channelConfigHasMode(channelConfig, "buffer") ||
       channelConfigHasMode(channelConfig, "bufferSelf");
+    const forceFullCompatibility =
+      hasBufferPass || channelConfigNeedsFullCompatibilityAdapter(channelConfig);
 
-    return {
+    const adaptStartMs = timingEnabled ? nowMs() : 0;
+    const fragment = adaptShaderToyFragment(composedSource, {
+      sanitizeColor: hasBufferPass ? false : undefined,
+      forceFullCompatibility,
+    });
+    const adaptFragmentMs = timingEnabled
+      ? roundMs(nowMs() - adaptStartMs)
+      : 0;
+
+    const resolved = {
       id: record.id,
       label: sanitizeName(record.label ?? record.name),
       type: "imported",
+      source: record.source,
       commonSource,
       requiresResolution: true,
       usesNoiseTexture: true,
@@ -4022,10 +4548,25 @@ export class ShaderManager {
       referencedChannels: toArray(referencedChannels)
         .map((v) => Number(v))
         .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
-      fragment: adaptShaderToyFragment(composedSource, {
-        sanitizeColor: hasBufferPass ? false : undefined,
-      }),
+      fragment,
+      _cpfxAdapterTiming: {
+        cacheHit: false,
+        extractReferencedChannelsMs,
+        adaptFragmentMs,
+        totalMs: timingEnabled ? roundMs(nowMs() - resolveStartMs) : 0,
+      },
     };
+    this._resolvedShaderDefinitionCache.set(cacheKey, resolved);
+    if (timingEnabled) {
+      debugLog(this.moduleId, "resolveShaderDefinition timing", {
+        shaderId: resolvedId,
+        cacheHit: false,
+        extractReferencedChannelsMs,
+        adaptFragmentMs,
+        totalMs: roundMs(nowMs() - resolveStartMs),
+      });
+    }
+    return resolved;
   }
 
   buildImportedDefinitionOverride(
@@ -4033,6 +4574,8 @@ export class ShaderManager {
     sourceOverride,
     { referencedChannels = null, commonSource = null, channels = null } = {},
   ) {
+    const timingEnabled = isDebugLoggingEnabled(this.moduleId);
+    const overrideStartMs = timingEnabled ? nowMs() : 0;
     const record = this.getImportedRecord(shaderId);
     if (!record) return null;
 
@@ -4048,9 +4591,13 @@ export class ShaderManager {
       validatedSource,
       overrideCommonSource,
     );
+    const refsStartMs = timingEnabled ? nowMs() : 0;
     const refs = Array.isArray(referencedChannels)
       ? referencedChannels
       : extractReferencedChannels(composedSource);
+    const extractReferencedChannelsMs = timingEnabled
+      ? roundMs(nowMs() - refsStartMs)
+      : 0;
 
     const channelInput =
       channels == null
@@ -4065,8 +4612,19 @@ export class ShaderManager {
     const hasBufferPass =
       channelConfigHasMode(channelConfig, "buffer") ||
       channelConfigHasMode(channelConfig, "bufferSelf");
+    const forceFullCompatibility =
+      hasBufferPass || channelConfigNeedsFullCompatibilityAdapter(channelConfig);
 
-    return {
+    const adaptStartMs = timingEnabled ? nowMs() : 0;
+    const fragment = adaptShaderToyFragment(composedSource, {
+      sanitizeColor: hasBufferPass ? false : undefined,
+      forceFullCompatibility,
+    });
+    const adaptFragmentMs = timingEnabled
+      ? roundMs(nowMs() - adaptStartMs)
+      : 0;
+
+    const definition = {
       id: record.id,
       label: sanitizeName(record.label ?? record.name),
       type: "imported",
@@ -4077,10 +4635,23 @@ export class ShaderManager {
       referencedChannels: toArray(refs)
         .map((v) => Number(v))
         .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
-      fragment: adaptShaderToyFragment(composedSource, {
-        sanitizeColor: hasBufferPass ? false : undefined,
-      }),
+      fragment,
+      _cpfxAdapterTiming: {
+        cacheHit: false,
+        extractReferencedChannelsMs,
+        adaptFragmentMs,
+        totalMs: timingEnabled ? roundMs(nowMs() - overrideStartMs) : 0,
+      },
     };
+    if (timingEnabled) {
+      debugLog(this.moduleId, "buildImportedDefinitionOverride timing", {
+        shaderId: record.id,
+        extractReferencedChannelsMs,
+        adaptFragmentMs,
+        totalMs: roundMs(nowMs() - overrideStartMs),
+      });
+    }
+    return definition;
   }
 
   resolveImportedChannelTexture(channelConfig, depth = 0, options = {}) {
@@ -4131,6 +4702,7 @@ export class ShaderManager {
     const cacheTargetType = String(options?.targetType ?? "").trim().toLowerCase();
     const cacheTargetId = String(options?.targetId ?? "").trim();
     const commonSource = this._normalizeCommonSource(options?.commonSource);
+    const shouldSampleAlpha = isAdvancedPreviewSamplingEnabled(this.moduleId);
     const composedBufferSource =
       mode === "buffer"
         ? this._composeShaderSourceWithCommon(source, commonSource)
@@ -4192,7 +4764,9 @@ export class ShaderManager {
           previewSceneTextureInput: typeof previewSceneTextureInput === "string" ? previewSceneTextureInput : null,
           texture: getTextureDebugInfo(texture, 1024),
           resolution,
-          alphaSample: this._debugSampleTextureAlpha(texture, 16),
+          alphaSample: shouldSampleAlpha
+            ? this._debugSampleTextureAlpha(texture, 16)
+            : null,
         });
         return {
           texture,
@@ -4212,7 +4786,9 @@ export class ShaderManager {
         previewMode: options?.previewMode === true,
         captureResolution: [captureWidth, captureHeight],
         texture: getTextureDebugInfo(texture, IMPORTED_NOISE_TEXTURE_SIZE),
-        alphaSample: this._debugSampleTextureAlpha(texture, 16),
+        alphaSample: shouldSampleAlpha
+          ? this._debugSampleTextureAlpha(texture, 16)
+          : null,
       });
       return {
         texture,
@@ -4297,7 +4873,9 @@ export class ShaderManager {
           includePlaceableRotation,
           texture: getTextureDebugInfo(texture, captureSize),
           resolution,
-          alphaSample: this._debugSampleTextureAlpha(texture, 16),
+          alphaSample: shouldSampleAlpha
+            ? this._debugSampleTextureAlpha(texture, 16)
+            : null,
         });
         return {
           texture,
@@ -4357,7 +4935,9 @@ export class ShaderManager {
           captureFlipVertical,
           texture: getTextureDebugInfo(texture, PLACEABLE_IMAGE_PREVIEW_SIZE),
           resolution,
-          alphaSample: this._debugSampleTextureAlpha(texture, 16),
+          alphaSample: shouldSampleAlpha
+            ? this._debugSampleTextureAlpha(texture, 16)
+            : null,
         });
         return {
           texture,
@@ -4644,19 +5224,42 @@ export class ShaderManager {
     return emptyResult;
   }
   makeShader(cfg) {
+    const timingEnabled = isDebugLoggingEnabled(this.moduleId);
+    const timingStartMs = timingEnabled ? nowMs() : 0;
+    const timingPhases = {};
+    const markTimingPhase = (name, startedAt) => {
+      if (!timingEnabled) return;
+      timingPhases[name] = roundMs(nowMs() - startedAt);
+    };
+
+    let phaseStartMs = timingEnabled ? nowMs() : 0;
     const def = cfg.definitionOverride ?? this.resolveShaderDefinition(cfg.shaderId);
+    markTimingPhase("resolveDefinitionMs", phaseStartMs);
+
+    phaseStartMs = timingEnabled ? nowMs() : 0;
     const fragment = withGlobalAlpha(def.fragment);
+    markTimingPhase("withGlobalAlphaMs", phaseStartMs);
+
+    phaseStartMs = timingEnabled ? nowMs() : 0;
     const uniforms = buildBaseUniforms(cfg);
-    if (def?.type === "imported") {
-      const composedSource = this._composeShaderSourceWithCommon(
-        def?.source ?? "",
-        def?.commonSource ?? "",
-      );
-      const editableDefaults = extractEditableUniformDefaults(composedSource);
+    markTimingPhase("buildBaseUniformsMs", phaseStartMs);
+    let editableUniformCount = 0;
+    let editableUniformAppliedCount = 0;
+    if (def?.type === "imported" || def?.type === "builtin") {
+      const editableStartMs = timingEnabled ? nowMs() : 0;
+      const sourceToScan = def?.type === "imported"
+        ? this._composeShaderSourceWithCommon(def?.source ?? "", def?.commonSource ?? "")
+        : (def?.fragment ?? "");
+      const editableDefaults = extractEditableUniformDefaults(sourceToScan);
+      editableUniformCount = Object.keys(editableDefaults ?? {}).length;
       for (const [name, value] of Object.entries(editableDefaults)) {
         if (Object.prototype.hasOwnProperty.call(uniforms, name)) continue;
         uniforms[name] = value;
+        editableUniformAppliedCount += 1;
       }
+      markTimingPhase("extractEditableUniformsMs", editableStartMs);
+    } else if (timingEnabled) {
+      timingPhases.extractEditableUniformsMs = 0;
     }
     uniforms.iMouse = cfg.iMouse ?? [0, 0, 0, 0];
     uniforms.iTimeDelta = cfg.iTimeDelta ?? 1 / 60;
@@ -4698,7 +5301,10 @@ export class ShaderManager {
     const seenRuntimeBuffers = new Set();
     let runtimeBufferSeq = 0;
     const importedResolveCache = new Map();
+    const importedChannelTimingDetails = [];
     if (def.type === "imported") {
+      const importedChannelsStartMs = timingEnabled ? nowMs() : 0;
+      const shouldSampleChannelAlpha = isAdvancedPreviewSamplingEnabled(this.moduleId);
       uniforms.uTime = cfg.uTime ?? uniforms.time ?? 0;
       uniforms.iTime = uniforms.uTime;
       const channelResolution = [];
@@ -4729,6 +5335,7 @@ export class ShaderManager {
           .filter((v) => Number.isInteger(v) && v >= 0 && v <= 3),
       );
       for (const index of CHANNEL_INDICES) {
+        const channelStartMs = timingEnabled ? nowMs() : 0;
         const key = `iChannel${index}`;
         const channelCfg = def.channelConfig?.[key] ?? {
           mode: "none",
@@ -4817,7 +5424,7 @@ export class ShaderManager {
           volumeSampleParams[index] = params.sampleParams;
           volumeUvParams[index] = params.uvParams;
         }
-        if (isDebugLoggingEnabled(this.moduleId)) {
+        if (isVerboseDebugLoggingEnabled(this.moduleId)) {
           debugLog(this.moduleId, "makeShader imported channel bind", {
             shaderId: def.id,
             previewMode: cfg.previewMode === true,
@@ -4846,7 +5453,9 @@ export class ShaderManager {
             runtimeBufferCount: (resolved.runtimeBuffers ?? []).length,
             runtimeImageChannelCount: (resolved.runtimeImageChannels ?? []).length,
             texture: getTextureDebugInfo(resolved.texture, resolvedWidth || 256),
-            alphaSample: this._debugSampleTextureAlpha(resolved.texture, 16),
+            alphaSample: shouldSampleChannelAlpha
+              ? this._debugSampleTextureAlpha(resolved.texture, 16)
+              : null,
           });
         }
         if (resolved.runtimeCapture) {
@@ -4886,7 +5495,22 @@ export class ShaderManager {
             seq: runtimeBufferSeq++,
           });
         }
+        if (timingEnabled) {
+          importedChannelTimingDetails.push({
+            channel: index,
+            key,
+            requestedMode: normalizeChannelMode(channelCfg?.mode ?? "none"),
+            effectiveMode: normalizeChannelMode(
+              effectiveChannelCfg?.mode ?? channelCfg?.mode ?? "none",
+            ),
+            resolution: [resolvedWidth, resolvedHeight],
+            runtimeCapture: resolved.runtimeCapture === true,
+            runtimeBufferCount: Number((resolved.runtimeBuffers ?? []).length || 0),
+            ms: roundMs(nowMs() - channelStartMs),
+          });
+        }
       }
+      markTimingPhase("resolveImportedChannelsMs", importedChannelsStartMs);
       runtimeBufferChannels.sort((a, b) => {
         const orderA = Number(a?.order ?? Number.MAX_SAFE_INTEGER);
         const orderB = Number(b?.order ?? Number.MAX_SAFE_INTEGER);
@@ -4930,8 +5554,14 @@ export class ShaderManager {
         cpfxVolumeUvParams: volumeUvParams,
       });
     }
+    if (timingEnabled && !Object.prototype.hasOwnProperty.call(timingPhases, "resolveImportedChannelsMs")) {
+      timingPhases.resolveImportedChannelsMs = 0;
+    }
 
+    phaseStartMs = timingEnabled ? nowMs() : 0;
     const shader = PIXI.Shader.from(SHADER_VERT, fragment, uniforms);
+    markTimingPhase("pixiShaderFromMs", phaseStartMs);
+    phaseStartMs = timingEnabled ? nowMs() : 0;
     shader.uniforms.uSampler = cfg.maskTexture
       ? cfg.maskTexture
       : cfg.useGradientMask === true
@@ -4942,6 +5572,46 @@ export class ShaderManager {
         : (def.type === "imported"
           ? getSolidTexture([255, 255, 255, 255], 2)
           : getCircleMaskTexture(512));
+    markTimingPhase("assignMaskTextureMs", phaseStartMs);
+
+    const timing =
+      timingEnabled
+        ? {
+          totalMs: roundMs(nowMs() - timingStartMs),
+          phaseMs: timingPhases,
+          type: String(def?.type ?? ""),
+          previewMode: cfg.previewMode === true,
+          usedDefinitionOverride: !!cfg.definitionOverride,
+          definitionAdapterTiming: def?._cpfxAdapterTiming ?? null,
+          uniformCount: Object.keys(uniforms ?? {}).length,
+          editableUniformCount,
+          editableUniformAppliedCount,
+          fragmentLength: String(fragment ?? "").length,
+          runtimeChannelCount: runtimeChannels.length,
+          runtimeBufferCount: runtimeBufferChannels.length,
+          runtimeImageChannelCount: runtimeImageChannels.length,
+          importedChannelCount: importedChannelTimingDetails.length,
+          importedChannelResolveMs: roundMs(
+            importedChannelTimingDetails.reduce(
+              (sum, entry) => sum + Number(entry?.ms ?? 0),
+              0,
+            ),
+          ),
+          slowestImportedChannels:
+            importedChannelTimingDetails.length > 0
+              ? [...importedChannelTimingDetails]
+                .sort((a, b) => Number(b.ms ?? 0) - Number(a.ms ?? 0))
+                .slice(0, 4)
+              : [],
+        }
+        : null;
+    if (timingEnabled) {
+      debugLog(this.moduleId, "makeShader timing", {
+        shaderId: String(def?.id ?? cfg?.shaderId ?? ""),
+        shaderLabel: String(def?.label ?? ""),
+        ...timing,
+      });
+    }
 
     return {
       shader,
@@ -4951,6 +5621,7 @@ export class ShaderManager {
       runtimeChannels,
       runtimeBufferChannels,
       runtimeImageChannels,
+      timing,
     };
   }
 
@@ -4972,16 +5643,27 @@ export class ShaderManager {
     autoAssignCapture = true,
     defaults = null,
   } = {}) {
+    const importStartMs = nowMs();
+    const timings = {};
+    let phaseStartMs = nowMs();
     const normalizedName = sanitizeName(name);
     const normalizedLabel = sanitizeName(label ?? normalizedName);
+    timings.normalizeNamesMs = roundMs(nowMs() - phaseStartMs);
+
+    phaseStartMs = nowMs();
     const normalizedSource = validateShaderToySource(source);
     const normalizedCommonSource = this._normalizeCommonSource(commonSource);
     const composedSource = this._composeShaderSourceWithCommon(
       normalizedSource,
       normalizedCommonSource,
     );
-    adaptShaderToyFragment(composedSource);
+    timings.validateAndComposeSourceMs = roundMs(nowMs() - phaseStartMs);
 
+    phaseStartMs = nowMs();
+    adaptShaderToyFragment(composedSource);
+    timings.adapterCompileCheckMs = roundMs(nowMs() - phaseStartMs);
+
+    phaseStartMs = nowMs();
     const records = this.getImportedRecords();
     const used = new Set(records.map((entry) => entry.id));
     const base = slugify(normalizedName);
@@ -4990,7 +5672,9 @@ export class ShaderManager {
     while (used.has(id) || this.builtinById.has(id)) {
       id = `${base}-${i++}`;
     }
+    timings.resolveIdMs = roundMs(nowMs() - phaseStartMs);
 
+    phaseStartMs = nowMs();
     const record = {
       id,
       name: normalizedName,
@@ -5011,14 +5695,36 @@ export class ShaderManager {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
+    timings.buildRecordMs = roundMs(nowMs() - phaseStartMs);
 
+    phaseStartMs = nowMs();
     records.push(record);
-    await this.setImportedRecords(records, {
+    const persistMetrics = await this.setImportedRecords(records, {
       context: "importShaderToy",
       changedShaderIds: [id],
       operation: "create",
     });
+    timings.persistSettingsMs = roundMs(nowMs() - phaseStartMs);
+    timings.persistGameSettingsSetMs = roundMs(
+      Number(persistMetrics?.settingsSetMs ?? 0),
+    );
+    timings.persistCacheInvalidateMs = roundMs(
+      Number(persistMetrics?.cacheInvalidateMs ?? 0),
+    );
+    timings.persistHooksMs = roundMs(Number(persistMetrics?.hooksMs ?? 0));
+    timings.persistPayloadBytes = Number(persistMetrics?.payloadBytes ?? 0);
+
+    phaseStartMs = nowMs();
     this._queueImportedShaderThumbnailRegeneration(id);
+    timings.queueThumbnailMs = roundMs(nowMs() - phaseStartMs);
+    timings.totalMs = roundMs(nowMs() - importStartMs);
+    debugLog(this.moduleId, "importShaderToy timing", {
+      shaderId: id,
+      sourceLength: String(normalizedSource ?? "").length,
+      commonSourceLength: String(normalizedCommonSource ?? "").length,
+      composedSourceLength: String(composedSource ?? "").length,
+      ...timings,
+    });
     return this.getImportedRecord(id) ?? record;
   }
 

@@ -62,10 +62,61 @@ function isDebugLoggingEnabled() {
   }
 }
 
+function formatDebugTimestamp() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+
 function debugLog(message, payload = undefined) {
   if (!isDebugLoggingEnabled()) return;
-  if (payload === undefined) console.debug(`${MODULE_ID} | ${message}`);
-  else console.debug(`${MODULE_ID} | ${message}`, payload);
+  const prefix = `[${formatDebugTimestamp()}] ${MODULE_ID} | ${message}`;
+  if (payload === undefined) console.debug(prefix);
+  else console.debug(prefix, payload);
+}
+
+function perfNowMs() {
+  try {
+    if (typeof globalThis?.performance?.now === "function") {
+      return globalThis.performance.now();
+    }
+  } catch (_err) {
+    // Fall through.
+  }
+  return Date.now();
+}
+
+function roundMs(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 1000) / 1000;
+}
+
+const IMPORTED_LIGHT_TIMING_LOG_MIN_TOTAL_MS = 25;
+const IMPORTED_LIGHT_TIMING_LOG_MIN_ADAPT_MS = 20;
+const _importedLightTimingLoggedKeys = new Set();
+
+function shouldLogImportedLightShaderTiming({
+  shaderId = "",
+  layerType = "",
+  totalMs = 0,
+  adaptFragmentMs = 0,
+} = {}) {
+  if (!isDebugLoggingEnabled()) return false;
+  const verbose = globalThis?.INDYFX_DEBUG_VERBOSE === true;
+  if (verbose) return true;
+  const isSlow =
+    Number(totalMs) >= IMPORTED_LIGHT_TIMING_LOG_MIN_TOTAL_MS ||
+    Number(adaptFragmentMs) >= IMPORTED_LIGHT_TIMING_LOG_MIN_ADAPT_MS;
+  if (!isSlow) return false;
+  const key = `${String(shaderId ?? "").trim()}|${String(layerType ?? "").trim()}`;
+  if (!key) return true;
+  if (_importedLightTimingLoggedKeys.has(key)) return false;
+  _importedLightTimingLoggedKeys.add(key);
+  return true;
 }
 
 function getFoundryGenerationNumber() {
@@ -98,57 +149,6 @@ function supportsMeasuredTemplateDocuments() {
 function getCanvasTemplateLayerSafe() {
   if (!supportsMeasuredTemplateDocuments()) return null;
   return canvas?.templates ?? null;
-}
-
-function readShaderFrameFromUniforms(uniforms) {
-  const frame = Number(uniforms?.iFrame);
-  return Number.isFinite(frame) ? frame : null;
-}
-
-function collectRuntimeBufferFrames(runtimeBuffers = [], limit = 8) {
-  if (!Array.isArray(runtimeBuffers) || runtimeBuffers.length === 0) return [];
-  const max = Math.max(1, Math.floor(Number(limit) || 8));
-  const frames = [];
-  for (let i = 0; i < runtimeBuffers.length && i < max; i += 1) {
-    const runtimeBuffer = runtimeBuffers[i];
-    const uniforms = runtimeBuffer?.mesh?.shader?.uniforms;
-    const base = runtimeBuffer?.texture?.baseTexture ?? null;
-    frames.push({
-      index: i,
-      frame: readShaderFrameFromUniforms(uniforms),
-      width: Number(
-        runtimeBuffer?.width ??
-          base?.realWidth ??
-          runtimeBuffer?.texture?.width ??
-          0,
-      ) || 0,
-      height: Number(
-        runtimeBuffer?.height ??
-          base?.realHeight ??
-          runtimeBuffer?.texture?.height ??
-          0,
-      ) || 0,
-      renderTextureType: runtimeBuffer?._renderTextureType ?? null,
-      samplerInternal: runtimeBuffer?._samplerInternal ?? null,
-      updateMs: Number(runtimeBuffer?._lastUpdateMs ?? 0) || 0,
-    });
-  }
-  return frames;
-}
-
-function logRuntimeTraceOncePerSecond(
-  traceState,
-  label,
-  payload,
-  stampKey = "_indyFxRuntimeTraceLastMs",
-) {
-  if (!isDebugLoggingEnabled()) return;
-  if (!traceState || typeof traceState !== "object") return;
-  const nowMs = Date.now();
-  const lastMs = Number(traceState[stampKey]);
-  if (Number.isFinite(lastMs) && (nowMs - lastMs) < 1000) return;
-  traceState[stampKey] = nowMs;
-  debugLog(`runtime trace | ${label}`, payload);
 }
 
 const INDYFX_LIGHT_ANIMATION_PREFIX = `${MODULE_ID}.light.`;
@@ -770,9 +770,6 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
   source._indyFxFoundryDimRadius = radii.dimRadius;
   source._indyFxFoundryRawRadii = radii?.raw ?? null;
   const frameRate = runtimeDrawDt > 0 ? (1 / runtimeDrawDt) : 60;
-  const importedTraceLayers = [];
-  let importedTraceBufferCount = 0;
-  let importedTraceBufferUpdates = 0;
 
   for (const layer of layerEntries) {
     const uniforms = layer?.shader?.uniforms;
@@ -780,7 +777,6 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     const runtimeBuffers = Array.isArray(layer?._indyFxRuntimeBuffers)
       ? layer._indyFxRuntimeBuffers
       : [];
-    importedTraceBufferCount += runtimeBuffers.length;
 
     const classBaseSpeed = toFiniteLightNumber(
       layer?.shader?.constructor?.indyFxBaseSpeed,
@@ -850,7 +846,6 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
           // Non-fatal.
         }
       }
-      importedTraceBufferUpdates += runtimeBuffers.length;
     }
     if (runtimeDrawDt > 0) {
       uniforms.uTime = t;
@@ -959,29 +954,7 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     uniforms.cpfxForceOpaqueCaptureAlpha = 0;
     uniforms.debugMode = 0;
     uniforms.attenuation = falloff.attenuation;
-
-    if (importedTraceLayers.length < 6) {
-      importedTraceLayers.push({
-        layerType: classLayerType || "coloration",
-        mainFrame: readShaderFrameFromUniforms(uniforms),
-        runtimeBufferCount: runtimeBuffers.length,
-        runtimeBufferFrames: collectRuntimeBufferFrames(runtimeBuffers, 4),
-      });
-    }
   }
-
-  logRuntimeTraceOncePerSecond(source, "imported-light", {
-    sourceId: String(source?.object?.id ?? source?.id ?? ""),
-    dtSeconds: Number(dtSeconds.toFixed(6)),
-    drawUpdateDt: Number(runtimeDrawDt.toFixed(6)),
-    shaderTimeDeltaDt: Number((runtimeDrawDt * speedScale).toFixed(6)),
-    drawFpsApprox: runtimeDrawDt > 0 ? Number((1 / runtimeDrawDt).toFixed(2)) : 0,
-    hasRuntimeBuffers,
-    runtimeBufferCount: importedTraceBufferCount,
-    runtimeBufferUpdates: importedTraceBufferUpdates,
-    sourceFrameCounter: Math.max(0, toFiniteLightNumber(source?._indyFxLightFrameCounter, 0)),
-    layers: importedTraceLayers,
-  });
 
 }
 
@@ -1009,6 +982,8 @@ function createImportedLightShaderClass({
   defaultLightBackgroundIntensity = 1,
   defaultBackgroundGlow = 0,
 } = {}) {
+  const timingEnabled = isDebugLoggingEnabled();
+  const classBuildStartMs = timingEnabled ? perfNowMs() : 0;
   const normalizedLayerType = normalizeImportedLightLayerType(layerType);
   const baseShaderClass = resolveAdaptiveLightShaderClass(normalizedLayerType);
   if (!baseShaderClass) return null;
@@ -1017,6 +992,7 @@ function createImportedLightShaderClass({
   if (!sourceText) return null;
 
   let fragmentShader;
+  const adaptStartMs = timingEnabled ? perfNowMs() : 0;
   try {
     fragmentShader = adaptShaderToyLightFragment(sourceText, {
       layerType: normalizedLayerType,
@@ -1029,6 +1005,9 @@ function createImportedLightShaderClass({
     });
     return null;
   }
+  const adaptFragmentMs = timingEnabled
+    ? roundMs(perfNowMs() - adaptStartMs)
+    : 0;
 
   const uniformDefaults = buildImportedLightAdapterUniformDefaults(
     baseShaderClass.defaultUniforms,
@@ -1119,6 +1098,26 @@ function createImportedLightShaderClass({
       value: fragmentShader,
       writable: true,
       configurable: true,
+    });
+  }
+  if (timingEnabled) {
+    const totalBuildMs = roundMs(perfNowMs() - classBuildStartMs);
+    const shouldLogTiming = shouldLogImportedLightShaderTiming({
+      shaderId: String(shaderId ?? ""),
+      layerType: normalizedLayerType,
+      totalMs: totalBuildMs,
+      adaptFragmentMs,
+    });
+    if (!shouldLogTiming) return shaderClass;
+    debugLog("imported light shader class timing", {
+      shaderId: String(shaderId ?? ""),
+      shaderLabel: String(shaderLabel ?? ""),
+      layerType: normalizedLayerType,
+      sourceLength: sourceText.length,
+      fragmentLength: String(fragmentShader ?? "").length,
+      adaptFragmentMs,
+      totalMs: totalBuildMs,
+      useLegacyFragmentShaderField,
     });
   }
   return shaderClass;
@@ -5593,7 +5592,6 @@ function shaderOn(tokenId, opts = {}) {
   let tokenRotationDebugLastLogMs = -1;
   const captureThrottleState = {};
   const drawThrottleState = {};
-  const runtimeTraceState = {};
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
   if ("globalAlpha" in shader.uniforms) {
     shader.uniforms.globalAlpha = computeFadeAlpha(0);
@@ -5711,19 +5709,6 @@ function shaderOn(tokenId, opts = {}) {
         mouseTarget: mesh,
       });
     }
-    logRuntimeTraceOncePerSecond(runtimeTraceState, "token", {
-      tokenId,
-      shaderId: selectedShaderId,
-      dtSeconds: Number(dt.toFixed(6)),
-      drawUpdateDt: Number(drawUpdateDt.toFixed(6)),
-      captureUpdateDt: Number(captureUpdateDt.toFixed(6)),
-      shaderTimeDeltaDt: Number((drawUpdateDt * speedScale).toFixed(6)),
-      drawFpsApprox: drawUpdateDt > 0 ? Number((1 / drawUpdateDt).toFixed(2)) : 0,
-      runtimeBufferCount: runtimeBufferChannels.length,
-      runtimeBufferUpdates: drawUpdateDt > 0 ? runtimeBufferChannels.length : 0,
-      mainPassFrame: readShaderFrameFromUniforms(shader?.uniforms),
-      runtimeBufferFrames: collectRuntimeBufferFrames(runtimeBufferChannels, 6),
-    });
   };
 
   canvas.app.ticker.add(tickerFn);
@@ -5947,7 +5932,6 @@ function shaderOnTemplate(templateId, opts = {}) {
   let elapsedMs = 0;
   const captureThrottleState = {};
   const drawThrottleState = {};
-  const runtimeTraceState = {};
   let missingTemplateMs = 0;
   const missingTemplateGraceMs = 2000;
   let templateShapeSignature = getTemplateShapeSignature(template);
@@ -6065,19 +6049,6 @@ function shaderOnTemplate(templateId, opts = {}) {
         mouseTarget: mesh,
       });
     }
-    logRuntimeTraceOncePerSecond(runtimeTraceState, "template", {
-      templateId: resolvedTemplateId,
-      shaderId: selectedShaderId,
-      dtSeconds: Number(dt.toFixed(6)),
-      drawUpdateDt: Number(drawUpdateDt.toFixed(6)),
-      captureUpdateDt: Number(captureUpdateDt.toFixed(6)),
-      shaderTimeDeltaDt: Number((drawUpdateDt * speedScale).toFixed(6)),
-      drawFpsApprox: drawUpdateDt > 0 ? Number((1 / drawUpdateDt).toFixed(2)) : 0,
-      runtimeBufferCount: runtimeBufferChannels.length,
-      runtimeBufferUpdates: drawUpdateDt > 0 ? runtimeBufferChannels.length : 0,
-      mainPassFrame: readShaderFrameFromUniforms(shader?.uniforms),
-      runtimeBufferFrames: collectRuntimeBufferFrames(runtimeBufferChannels, 6),
-    });
   };
 
   canvas.app.ticker.add(tickerFn);
@@ -6306,7 +6277,6 @@ function shaderOnTile(tileId, opts = {}) {
   let elapsedMs = 0;
   const captureThrottleState = {};
   const drawThrottleState = {};
-  const runtimeTraceState = {};
   let captureDebugLastMs = 0;
   let tileShapeSignature = getTileShapeSignature(tile);
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
@@ -6438,19 +6408,6 @@ function shaderOnTile(tileId, opts = {}) {
         mouseTarget: mesh,
       });
     }
-    logRuntimeTraceOncePerSecond(runtimeTraceState, "tile", {
-      tileId: resolvedTileId,
-      shaderId: selectedShaderId,
-      dtSeconds: Number(dt.toFixed(6)),
-      drawUpdateDt: Number(drawUpdateDt.toFixed(6)),
-      captureUpdateDt: Number(captureUpdateDt.toFixed(6)),
-      shaderTimeDeltaDt: Number((drawUpdateDt * speedScale).toFixed(6)),
-      drawFpsApprox: drawUpdateDt > 0 ? Number((1 / drawUpdateDt).toFixed(2)) : 0,
-      runtimeBufferCount: runtimeBufferChannels.length,
-      runtimeBufferUpdates: drawUpdateDt > 0 ? runtimeBufferChannels.length : 0,
-      mainPassFrame: readShaderFrameFromUniforms(shader?.uniforms),
-      runtimeBufferFrames: collectRuntimeBufferFrames(runtimeBufferChannels, 6),
-    });
   };
 
   canvas.app.ticker.add(tickerFn);
@@ -6911,7 +6868,7 @@ function shaderOnRegion(regionId, opts = {}) {
       shader.uniforms.shaderScale = scalarScale;
     }
     if (logScaleDebug) {
-      console.debug(`${MODULE_ID} | region scale adjust`, {
+      console.debug(`[${formatDebugTimestamp()}] ${MODULE_ID} | region scale adjust`, {
         regionId: resolvedRegionId,
         clusterIndex,
         clusterSize: {
@@ -6979,7 +6936,6 @@ function shaderOnRegion(regionId, opts = {}) {
   let elapsedMs = 0;
   const captureThrottleState = {};
   const drawThrottleState = {};
-  const runtimeTraceState = {};
   let regionShapeSignature = getRegionShapeSignature(region);
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
   for (const cluster of clusterStates) {
@@ -7066,15 +7022,11 @@ function shaderOnRegion(regionId, opts = {}) {
       }
     }
 
-    let runtimeBufferCount = 0;
-    let runtimeBufferUpdates = 0;
-    const clusterFrameTrace = [];
     for (let i = 0; i < clusterStates.length; i += 1) {
       const cluster = clusterStates[i];
       const clusterRuntimeBuffers = Array.isArray(cluster?.runtimeBufferChannels)
         ? cluster.runtimeBufferChannels
         : [];
-      runtimeBufferCount += clusterRuntimeBuffers.length;
       const clusterBounds = useTreeComponents
         ? getRegionComponentBounds(liveComponents[i])
         : computeRegionBounds(liveGroups[i]);
@@ -7105,7 +7057,6 @@ function shaderOnRegion(regionId, opts = {}) {
         for (const runtimeBuffer of clusterRuntimeBuffers) {
           runtimeBuffer.update(drawUpdateDt * speedScale);
         }
-        runtimeBufferUpdates += clusterRuntimeBuffers.length;
       }
 
       if (cluster.sceneAreaChannels.length && captureUpdateDt > 0) {
@@ -7136,30 +7087,7 @@ function shaderOnRegion(regionId, opts = {}) {
           mouseTarget: cluster.mesh,
         });
       }
-      if (clusterFrameTrace.length < 4) {
-        clusterFrameTrace.push({
-          clusterIndex: i,
-          mainPassFrame: readShaderFrameFromUniforms(cluster?.shader?.uniforms),
-          runtimeBufferCount: clusterRuntimeBuffers.length,
-          runtimeBufferFrames: collectRuntimeBufferFrames(clusterRuntimeBuffers, 3),
-        });
-      }
     }
-
-    logRuntimeTraceOncePerSecond(runtimeTraceState, "region", {
-      regionId: resolvedRegionId,
-      shaderId: selectedShaderId,
-      effectKey,
-      dtSeconds: Number(dt.toFixed(6)),
-      drawUpdateDt: Number(drawUpdateDt.toFixed(6)),
-      captureUpdateDt: Number(captureUpdateDt.toFixed(6)),
-      shaderTimeDeltaDt: Number((drawUpdateDt * speedScale).toFixed(6)),
-      drawFpsApprox: drawUpdateDt > 0 ? Number((1 / drawUpdateDt).toFixed(2)) : 0,
-      clusterCount: clusterStates.length,
-      runtimeBufferCount,
-      runtimeBufferUpdates,
-      clusterFrames: clusterFrameTrace,
-    });
 
     t = nextTime;
   };

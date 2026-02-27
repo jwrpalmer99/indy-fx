@@ -64,6 +64,8 @@ Now when you apply to a token only the non-transparent will be filled.
 - Drag/drop a card onto a token/tile/template to apply.
 - Import/Export library from the library window.
 - If no imported shaders exist, Indy FX can prompt to import bundled examples from `scripts/shaders.json`.
+- Additional import-ready example: `scripts/examples/river-heightmap-flow.json`
+  (raw GLSL source is in `scripts/examples/river-heightmap-flow.glsl`).
 
 ### Apply to Tokens/Tiles/Templates
 - Drag/drop from Shader Library.

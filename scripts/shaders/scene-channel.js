@@ -1,3 +1,12 @@
+function formatDebugTimestamp() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+
 export class SceneAreaChannel {
   constructor(sizeOrWidth = 512, heightOrOptions = null, maybeOptions = null) {
     let options = maybeOptions ?? {};
@@ -16,6 +25,9 @@ export class SceneAreaChannel {
     this._tmpLocal = new PIXI.Point();
     this._tmpGlobal = new PIXI.Point();
     this._lastDebugLogAt = 0;
+    this._lastRenderErrorLogAt = 0;
+    this._renderErrorCount = 0;
+    this._renderRetryAfterMs = 0;
     this.sourceContainer = options?.sourceContainer ?? null;
     this.texture = PIXI.RenderTexture.create({
       width: safeWidth,
@@ -38,6 +50,8 @@ export class SceneAreaChannel {
   } = {}) {
     if (!this.texture || !canvas?.app?.renderer || !canvas?.stage) return;
     if (!centerWorld) return;
+    const nowMs = Date.now();
+    if (nowMs < this._renderRetryAfterMs) return;
 
     const radiusX = Number.isFinite(radiusWorldX) ? radiusWorldX : radiusWorld;
     const radiusY = Number.isFinite(radiusWorldY) ? radiusWorldY : radiusWorld;
@@ -96,14 +110,34 @@ export class SceneAreaChannel {
       excludeDisplayObject.visible = false;
     }
 
-    canvas.app.renderer.render(stage, {
-      renderTexture: this.texture,
-      clear: true,
-      transform: this._matrix
-    });
-
-    if (excludeDisplayObject) {
-      excludeDisplayObject.visible = prevVisible;
+    try {
+      canvas.app.renderer.render(stage, {
+        renderTexture: this.texture,
+        clear: true,
+        transform: this._matrix
+      });
+      this._renderErrorCount = 0;
+      this._renderRetryAfterMs = 0;
+    } catch (err) {
+      this._renderErrorCount = Math.min(this._renderErrorCount + 1, 8);
+      const backoffMs = Math.min(5000, 250 * (2 ** (this._renderErrorCount - 1)));
+      this._renderRetryAfterMs = Date.now() + backoffMs;
+      if ((nowMs - this._lastRenderErrorLogAt) > 1000) {
+        this._lastRenderErrorLogAt = nowMs;
+        console.warn(
+          `[${formatDebugTimestamp()}] indy-fx | scene capture render failed; retrying in ${backoffMs}ms`,
+          {
+            message: String(err?.message ?? err ?? "Unknown scene capture error"),
+            width: this.width,
+            height: this.height,
+            renderErrorCount: this._renderErrorCount,
+          },
+        );
+      }
+    } finally {
+      if (excludeDisplayObject) {
+        excludeDisplayObject.visible = prevVisible;
+      }
     }
   }
 
@@ -127,7 +161,7 @@ export class SceneAreaChannel {
     this._lastDebugLogAt = now;
     const worldAspect = payload.radiusY > 0 ? (payload.radiusX / payload.radiusY) : 0;
     const textureAspect = this.height > 0 ? (this.width / this.height) : 0;
-    console.debug("indy-fx | scene capture update", {
+    console.debug(`[${formatDebugTimestamp()}] indy-fx | scene capture update`, {
       textureResolution: [this.width, this.height],
       textureAspect,
       worldRadius: [payload.radiusX, payload.radiusY],

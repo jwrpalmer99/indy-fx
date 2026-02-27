@@ -47,7 +47,7 @@ function resolveSanitizeColorEnabled(override) {
 function getAdapterVariantKey({ sanitizeColor } = {}) {
   const sc = resolveSanitizeColorEnabled(sanitizeColor) ? "sc1" : "sc0";
   // Bump when adapter code generation changes to avoid stale in-session cache.
-  return `v11|${sc}`;
+  return `v12|${sc}`;
 }
 
 function buildSanitizeColorHelpers(enabled) {
@@ -2710,18 +2710,158 @@ export function extractReferencedChannels(source) {
   return result.slice();
 }
 
-export function adaptShaderToyFragment(source, { sanitizeColor } = {}) {
+export function adaptShaderToyFragment(source, options = {}) {
+  const sanitizeColor = options?.sanitizeColor;
+  const forceFullCompatibility = options?.forceFullCompatibility === true;
   const validated = getValidatedShaderSourceCached(source);
-  const cacheKey = `${getAdapterVariantKey({ sanitizeColor })}|${validated}`;
+  const shouldUseLeanProfile = (value) => {
+    const text = stripCommentsForChannelScan(String(value ?? ""));
+    if (!text) return false;
+    const blockers = [
+      /\btexelFetch\s*\(/,
+      /\btextureSize\s*\(/,
+      /\btextureLod\s*\(/,
+      /\btextureGrad\s*\(/,
+      /\b(?:sampler3D|sampler2DArray|samplerCubeArray)\b/,
+      /\bmat[234]x[234]\b/,
+      /\b(?:transpose|inverse|outerProduct)\s*\(/,
+      /\b(?:uint|uvec[234]|floatBitsToUint|uintBitsToFloat)\b/,
+      /\bswitch\s*\(/,
+      /\bfor\s*\(\s*float\b/,
+      /<<|>>|\^/,
+      /\b(?:dFdx|dFdy|fwidth|tanh|sinh|cosh|round)\s*\(/,
+      /\bcpfx_[A-Za-z_]\w*/,
+    ];
+    for (const blocker of blockers) {
+      if (blocker.test(text)) return false;
+    }
+    return true;
+  };
+
+  const sanitizeColorFlag = sanitizeColor;
+  const useLeanAdapter = !forceFullCompatibility && shouldUseLeanProfile(validated);
+  const cacheKey = `${getAdapterVariantKey({ sanitizeColor: sanitizeColorFlag })}|${
+    useLeanAdapter ? "lean1" : "full1"
+  }|${validated}`;
   const cached = getCachedLru(_fragmentCache, cacheKey);
   if (typeof cached === "string") return cached;
-  const body = getCompatibilityRewrittenSourceCached(validated, { sanitizeColor });
+  const body = useLeanAdapter
+    ? validated
+    : getCompatibilityRewrittenSourceCached(validated, {
+      sanitizeColor: sanitizeColorFlag,
+    });
   const compatMacros = buildCompatMacroPreamble(body);
-  const sanitizeColorEnabled = resolveSanitizeColorEnabled(sanitizeColor);
+  const sanitizeColorEnabled = resolveSanitizeColorEnabled(sanitizeColorFlag);
   const sanitizeColorHelpers = buildSanitizeColorHelpers(sanitizeColorEnabled);
   const sanitizeColorStage = sanitizeColorEnabled
     ? "  shaderColor = cpfx_sanitizeColor(shaderColor);"
     : "";
+
+  if (useLeanAdapter) {
+    const fragmentLean = `
+#ifdef GL_OES_standard_derivatives
+#extension GL_OES_standard_derivatives : enable
+#endif
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying vec2 vTextureCoord;
+uniform sampler2D uSampler;
+uniform sampler2D iChannel0;
+uniform sampler2D iChannel1;
+uniform sampler2D iChannel2;
+uniform sampler2D iChannel3;
+uniform vec4 iMouse;
+uniform float uTime;
+uniform float iTime;
+uniform float iTimeDelta;
+uniform float iFrame;
+uniform float iFrameRate;
+uniform vec4 iDate;
+uniform vec3 iChannelResolution[4];
+uniform vec3 iResolution;
+uniform float debugMode;
+uniform float intensity;
+uniform vec2 shaderScaleXY;
+uniform float shaderRotation;
+uniform float shaderFlipX;
+uniform float shaderFlipY;
+uniform float cpfxPreserveTransparent;
+uniform float cpfxForceOpaqueCaptureAlpha;
+uniform vec2 resolution;
+${compatMacros}
+
+vec2 cpfxFragCoord;
+#define gl_FragCoord vec4(cpfxFragCoord, 0.0, 1.0)
+
+const float cpfx_PI = 3.14159265359;
+vec2 cpfx_rotate(vec2 p, float a) {
+  float c = cos(a);
+  float s = sin(a);
+  return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+${sanitizeColorHelpers}
+${buildNumericSafetyHelpers(body)}
+vec4 textureCompat(sampler2D s, vec2 uv) { return texture2D(s, uv); }
+vec4 textureCompat(sampler2D s, vec2 uv, float bias) { return texture2D(s, uv, bias); }
+vec4 textureCompat(sampler2D s, vec3 dir) {
+  vec3 n = normalize(dir);
+  float u = atan(n.z, n.x) / (2.0 * cpfx_PI) + 0.5;
+  float v = asin(clamp(n.y, -1.0, 1.0)) / cpfx_PI + 0.5;
+  return texture2D(s, vec2(u, v));
+}
+vec4 textureCompat(sampler2D s, vec3 dir, float bias) { return textureCompat(s, dir); }
+#define texture textureCompat
+
+${body}
+
+void main() {
+  vec2 stUvRaw = vec2(vTextureCoord.x, 1.0 - vTextureCoord.y);
+  if (shaderFlipX > 0.5) stUvRaw.x = 1.0 - stUvRaw.x;
+  if (shaderFlipY > 0.5) stUvRaw.y = 1.0 - stUvRaw.y;
+  vec2 stUv = cpfx_rotate(stUvRaw - 0.5, shaderRotation) / max(shaderScaleXY, vec2(0.0001)) + 0.5;
+  vec2 fragCoord = stUv * resolution;
+  cpfxFragCoord = fragCoord;
+  vec4 base = texture2D(uSampler, vTextureCoord);
+  if (debugMode > 0.5 && debugMode < 1.5) {
+    gl_FragColor = vec4(stUv, 0.0, 1.0);
+    return;
+  }
+  if (debugMode > 1.5 && debugMode < 2.5) {
+    gl_FragColor = vec4(vec3(base.a), base.a);
+    return;
+  }
+  vec4 shaderColor = vec4(0.0, 0.0, 0.0, 1.0);
+  mainImage(shaderColor, fragCoord);
+${sanitizeColorStage}
+  float srcAlpha = shaderColor.a;
+  if (debugMode > 2.5 && debugMode < 3.5) {
+    gl_FragColor = vec4(vec3(srcAlpha), srcAlpha);
+    return;
+  }
+  if (cpfxForceOpaqueCaptureAlpha > 0.5 && srcAlpha <= 0.0001) srcAlpha = 1.0;
+  if (cpfxPreserveTransparent < 0.5 && srcAlpha <= 0.0001) srcAlpha = 1.0;
+  if (debugMode > 3.5 && debugMode < 4.5) {
+    gl_FragColor = vec4(vec3(srcAlpha), srcAlpha);
+    return;
+  }
+  float a = clamp(base.a * srcAlpha, 0.0, 1.0);
+  if (debugMode > 4.5 && debugMode < 5.5) {
+    gl_FragColor = vec4(vec3(a), a);
+    return;
+  }
+  gl_FragColor = vec4(shaderColor.rgb * a * intensity, a);
+}`;
+    return setCachedLru(
+      _fragmentCache,
+      cacheKey,
+      fragmentLean,
+      ADAPTER_CACHE_LIMITS.fragment,
+    );
+  }
+
   const fragment = `
 #ifdef GL_OES_standard_derivatives
 #extension GL_OES_standard_derivatives : enable

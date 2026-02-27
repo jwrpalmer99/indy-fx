@@ -121,10 +121,20 @@ function isDebugLoggingEnabled(moduleId = "indy-fx") {
   }
 }
 
+function formatDebugTimestamp() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+
 function debugLog(moduleId, message, payload = undefined) {
   if (!isDebugLoggingEnabled(moduleId)) return;
-  if (payload === undefined) console.debug(`${moduleId} | ${message}`);
-  else console.debug(`${moduleId} | ${message}`, payload);
+  const prefix = `[${formatDebugTimestamp()}] ${moduleId} | ${message}`;
+  if (payload === undefined) console.debug(prefix);
+  else console.debug(prefix, payload);
 }
 
 const MISSING_SOURCE_RETRY_DELAY_MS = 250;
@@ -443,7 +453,7 @@ export class PlaceableImageChannel {
       currentSrc: this._currentSrc || null,
     };
     if (extra && typeof extra === "object") Object.assign(payload, extra);
-    console.debug(`${this.moduleId} | placeable-image-channel`, payload);
+    console.debug(`[${formatDebugTimestamp()}] ${this.moduleId} | placeable-image-channel`, payload);
   }
 
   _cancelMissingSourceRetry() {

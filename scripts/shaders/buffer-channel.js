@@ -146,10 +146,20 @@ function isBufferDebugEnabled() {
   }
 }
 
+function formatDebugTimestamp() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+
 function debugBufferLog(message, payload = undefined) {
   if (!isBufferDebugEnabled()) return;
-  if (payload === undefined) console.debug(`${MODULE_ID} | ${message}`);
-  else console.debug(`${MODULE_ID} | ${message}`, payload);
+  const prefix = `[${formatDebugTimestamp()}] ${MODULE_ID} | ${message}`;
+  if (payload === undefined) console.debug(prefix);
+  else console.debug(prefix, payload);
 }
 
 function getTextureSize(texture, fallback = 2) {
