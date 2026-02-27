@@ -1908,7 +1908,13 @@ function findTopRegionAtDropPoint(globalPoint, worldPoint) {
   const regions = getLayerPlaceablesSafe(canvas?.regions);
   for (let i = regions.length - 1; i >= 0; i -= 1) {
     const region = regions[i];
-    if (!region || region.destroyed || region.visible === false) continue;
+    if (!region || region.destroyed) continue;
+
+    // Regions may report visible=false when their scene control is inactive.
+    // Keep drag-drop targeting available by testing geometry regardless.
+    const docHidden = region?.document?.hidden === true || region?.document?.disabled === true;
+    if (docHidden) continue;
+
     if (globalPoint && isGlobalPointInsidePlaceable(region, globalPoint)) return region;
     if (isWorldPointInsideRegion(region, worldPoint, globalPoint)) return region;
   }

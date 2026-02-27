@@ -1,8 +1,9 @@
-// River Over Depth Map (top-down)
+// River Over Separate Height Map (top-down)
 // Usage in Indy FX:
 // 1) Import/create a shader and paste this source.
 // 2) Set iChannel0 to your riverbed texture (token/tile image or scene capture).
-// 3) Tune uniforms in Edit Variables (all @editable fields below).
+// 3) Set iChannel1 to a heightmap texture aligned to the scene (same size/aspect as the scene capture).
+// 4) Tune uniforms in Edit Variables (all @editable fields below).
 
 uniform float uFlowAngleDeg;      // @editable 24.0 @tip "Flow direction in degrees." @order 1
 uniform float uFlowSpeed;         // @editable 0.28 @tip "Overall river flow speed." @order 2
@@ -45,36 +46,19 @@ float luma(vec3 c) {
 float depthMapFromRgb(vec3 c) {
   vec3 w = uDepthWeights;
   float wsumAbs = abs(w.x) + abs(w.y) + abs(w.z);
-  // Signed channel weighting remains available for manual tuning.
-  float weighted = wsumAbs > 0.00001
+  // Signed channel weights are supported; positive-only weights behave as before.
+  float d = wsumAbs > 0.00001
     ? dot(c - vec3(0.5), w) / wsumAbs + 0.5
     : luma(c);
-
-  // High-contrast river detector: require both visible blue and blue dominance
-  // over the warm channels. uRedFix/uGreenFix act as suppression weights here.
-  float redSuppress = max(0.0, uRedFix);
-  float greenSuppress = max(0.0, uGreenFix);
-  float warmSuppressedBlue = c.b - (c.r * redSuppress + c.g * greenSuppress);
-  float bluePresence = smoothstep(0.06, 0.72, c.b);
-  float blueDominance = smoothstep(0.01, 0.20, warmSuppressedBlue);
-  float riverMask = bluePresence * blueDominance;
-  riverMask = smoothstep(0.15, 0.85, riverMask);
-  riverMask = pow(clamp(riverMask, 0.0, 1.0), 0.65);
-
-  // Non-blue terrain should fall away faster than river pixels, but keep a path
-  // for manual RGB weighting to still matter when tuning unusual captures.
-  float blueWeight = max(bluePresence, riverMask);
-  float d = mix(weighted * 0.45, max(weighted, riverMask), blueWeight);
-
   float g = max(0.01, uDepthGamma);
   float depthLinear = pow(clamp(d, 0.0, 1.0), g);
-
-  // Final leak suppression for obviously non-blue land.
-  float landLeak =
-    max(c.r - c.b, 0.0) * redSuppress +
-    max(c.g - c.b, 0.0) * greenSuppress;
-  depthLinear = clamp(depthLinear - landLeak * 0.20, 0.0, 1.0);
-
+  
+  // Keep land correction gentle so depth weights remain meaningful.
+  float warmVsBlue = max(c.r - c.b, 0.0);
+  float greenVsBlue = max(c.g - c.b, 0.0);
+  depthLinear -= warmVsBlue * uRedFix + greenVsBlue * uGreenFix;
+  
+  depthLinear = clamp(depthLinear, 0.0, 1.0);
   // Direct mapping: brighter weighted values map to deeper terrain.
   return depthLinear;
 }
@@ -131,7 +115,7 @@ float fbm(vec2 p) {
 }
 
 float sampleDepth(vec2 uv) {
-  return depthMapFromRgb(texture(iChannel0, uv).rgb);
+  return depthMapFromRgb(texture(iChannel1, uv).rgb);
 }
 
 vec2 flowWarp(vec2 p, vec2 flowDir, float t, float turb) {
@@ -190,7 +174,8 @@ vec3 computeSurfaceNormal(vec2 uv, vec2 flowDir, float t, float normalIntensity,
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 uv = fragCoord.xy / iResolution.xy;
   vec4 bed = texture(iChannel0, uv);
-  float bedDepthMap = depthMapFromRgb(bed.rgb);
+  vec4 heightMap = texture(iChannel1, uv);
+  float bedDepthMap = depthMapFromRgb(heightMap.rgb);
 
   float t = uTime * max(0.0, uFlowSpeed);
   vec2 flowDir = normalize(rot2(radians(uFlowAngleDeg)) * vec2(1.0, 0.0));
