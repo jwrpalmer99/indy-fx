@@ -149,6 +149,103 @@ function resolveShaderResolution(uniforms, fallback = [1, 1]) {
   return [w, h];
 }
 
+function resolveSceneUvRect() {
+  const dims = canvas?.dimensions ?? canvas?.scene?.dimensions ?? {};
+  const rect = dims?.sceneRect ?? dims?.rect ?? null;
+  const x = Number(rect?.x ?? dims?.sceneX ?? dims?.x ?? 0);
+  const y = Number(rect?.y ?? dims?.sceneY ?? dims?.y ?? 0);
+  const width = Number(rect?.width ?? dims?.sceneWidth ?? dims?.width ?? 0);
+  const height = Number(rect?.height ?? dims?.sceneHeight ?? dims?.height ?? 0);
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+    return null;
+  }
+  return {
+    x: Number.isFinite(x) ? x : 0,
+    y: Number.isFinite(y) ? y : 0,
+    width,
+    height,
+  };
+}
+
+function toSceneUvFromWorldPoint(worldPoint, sceneRect) {
+  if (!sceneRect) return null;
+  const wx = Number(worldPoint?.x);
+  const wy = Number(worldPoint?.y);
+  if (!Number.isFinite(wx) || !Number.isFinite(wy)) return null;
+  return [
+    (wx - sceneRect.x) / Math.max(1e-6, sceneRect.width),
+    1.0 - ((wy - sceneRect.y) / Math.max(1e-6, sceneRect.height)),
+  ];
+}
+
+function syncUniformSceneUvTransform(uniforms, origin, axisU, axisV) {
+  if (!uniforms || typeof uniforms !== "object") return;
+  if ("cpfxSceneUvOrigin" in uniforms) uniforms.cpfxSceneUvOrigin = origin;
+  if ("cpfxSceneUvAxisU" in uniforms) uniforms.cpfxSceneUvAxisU = axisU;
+  if ("cpfxSceneUvAxisV" in uniforms) uniforms.cpfxSceneUvAxisV = axisV;
+}
+
+function syncShaderSceneUvUniforms(shader, { mouseTarget = null, runtimeBuffers = null } = {}) {
+  const uniforms = shader?.uniforms;
+  if (!uniforms || typeof uniforms !== "object") return;
+
+  let origin = [0, 1];
+  let axisU = [1, 0];
+  let axisV = [0, -1];
+
+  const sceneRect = resolveSceneUvRect();
+  if (
+    sceneRect &&
+    mouseTarget?.toGlobal &&
+    typeof mouseTarget.getLocalBounds === "function" &&
+    canvas?.stage?.toLocal
+  ) {
+    try {
+      const bounds = mouseTarget.getLocalBounds();
+      const bx = Number(bounds?.x);
+      const by = Number(bounds?.y);
+      const bw = Number(bounds?.width);
+      const bh = Number(bounds?.height);
+      if (
+        Number.isFinite(bx) &&
+        Number.isFinite(by) &&
+        Number.isFinite(bw) &&
+        bw > 1e-6 &&
+        Number.isFinite(bh) &&
+        bh > 1e-6
+      ) {
+        const tlGlobal = mouseTarget.toGlobal(new PIXI.Point(bx, by));
+        const trGlobal = mouseTarget.toGlobal(new PIXI.Point(bx + bw, by));
+        const blGlobal = mouseTarget.toGlobal(new PIXI.Point(bx, by + bh));
+
+        const tlWorld = canvas.stage.toLocal(tlGlobal);
+        const trWorld = canvas.stage.toLocal(trGlobal);
+        const blWorld = canvas.stage.toLocal(blGlobal);
+
+        const tlUv = toSceneUvFromWorldPoint(tlWorld, sceneRect);
+        const trUv = toSceneUvFromWorldPoint(trWorld, sceneRect);
+        const blUv = toSceneUvFromWorldPoint(blWorld, sceneRect);
+        if (tlUv && trUv && blUv) {
+          origin = tlUv;
+          axisU = [trUv[0] - tlUv[0], trUv[1] - tlUv[1]];
+          axisV = [blUv[0] - tlUv[0], blUv[1] - tlUv[1]];
+        }
+      }
+    } catch (_err) {
+      // Leave the default local UV mapping in place.
+    }
+  }
+
+  syncUniformSceneUvTransform(uniforms, origin, axisU, axisV);
+
+  const buffers = Array.isArray(runtimeBuffers) ? runtimeBuffers : [];
+  for (const runtimeBuffer of buffers) {
+    const bufferUniforms = runtimeBuffer?.mesh?.shader?.uniforms;
+    if (!bufferUniforms || typeof bufferUniforms !== "object") continue;
+    syncUniformSceneUvTransform(bufferUniforms, origin, axisU, axisV);
+  }
+}
+
 function applyShaderUvTransformToMouse(u, v, uniforms) {
   let stUvX = Number(u);
   let stUvY = 1 - Number(v);
@@ -605,6 +702,7 @@ export function updateShaderTimeUniforms(
   { mouseTarget = null, runtimeBuffers = null } = {},
 ) {
   if (!shader?.uniforms) return;
+  syncShaderSceneUvUniforms(shader, { mouseTarget, runtimeBuffers });
   syncShaderMouseUniforms(shader, { mouseTarget, runtimeBuffers });
   const safeDt = Math.max(0, Number(dt) || 0);
   const safeSpeed = Math.max(0, Number(speed) || 0);

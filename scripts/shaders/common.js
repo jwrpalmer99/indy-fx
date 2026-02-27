@@ -75,6 +75,9 @@ const RESERVED_UNIFORM_NAMES = new Set([
   "cpfxSamplerWrap1",
   "cpfxSamplerWrap2",
   "cpfxSamplerWrap3",
+  "cpfxSceneUvOrigin",
+  "cpfxSceneUvAxisU",
+  "cpfxSceneUvAxisV",
 ]);
 
 function isValidCustomUniformName(name) {
@@ -168,6 +171,10 @@ export function buildBaseUniforms(cfg) {
     shaderFlipX: flipHorizontal ? 1.0 : 0.0,
     shaderFlipY: flipVertical ? 1.0 : 0.0,
     cpfxBufferValueClamp: toFiniteNumber(cfg.cpfxBufferValueClamp, 0),
+    // Default to local effect UV mapping until runtime can replace this with a scene-aligned transform.
+    cpfxSceneUvOrigin: [0, 1],
+    cpfxSceneUvAxisU: [1, 0],
+    cpfxSceneUvAxisV: [0, -1],
     colorA: hexToRgb01(cfg.colorA ?? 0xFF4A9A),
     colorB: hexToRgb01(cfg.colorB ?? 0xFFB14A)
   };

@@ -69,20 +69,22 @@ mat2 rot2(float a) {
   return mat2(c, -s, s, c);
 }
 
-vec2 patternScaleVec() {
-  float aspect = iResolution.x / max(iResolution.y, 1.0);
-  float s = max(0.001, uPatternScale);
-  return vec2(aspect * s, s);
+float patternScalePx() {
+  // Use local pixel space so pattern density stays consistent across differently sized regions.
+  return max(0.001, uPatternScale) / 512.0;
 }
 
-vec2 toPatternUv(vec2 uv) {
-  // Keep procedural patterns square on non-square targets.
-  return (uv - 0.5) * patternScaleVec() + 0.5;
+vec2 toPatternUv(vec2 fragCoordPx) {
+  return fragCoordPx * patternScalePx();
 }
 
 vec2 toPatternDir(vec2 dir) {
-  // Re-normalize directional vectors in pattern space so angle reads consistently.
-  return normalize(dir * patternScaleVec() + vec2(1e-5, 1e-5));
+  return normalize(dir + vec2(1e-5, 1e-5));
+}
+
+vec2 patternTexelStep() {
+  float s = patternScalePx();
+  return vec2(s, s);
 }
 
 float hash12(vec2 p) {
@@ -114,8 +116,8 @@ float fbm(vec2 p) {
   return v;
 }
 
-float sampleDepth(vec2 uv) {
-  return depthMapFromRgb(texture(iChannel1, uv).rgb);
+float sampleDepthRaw(vec2 rawUv) {
+  return depthMapFromRgb(texture(iChannel1, cpfx_sceneUvFromRaw(rawUv)).rgb);
 }
 
 vec2 flowWarp(vec2 p, vec2 flowDir, float t, float turb) {
@@ -162,7 +164,7 @@ float surfaceField(vec2 uv, vec2 flowDir, float t, float turb) {
 }
 
 vec3 computeSurfaceNormal(vec2 uv, vec2 flowDir, float t, float normalIntensity, float turb) {
-  vec2 e = vec2(1.0 / iResolution.x, 1.0 / iResolution.y) * patternScaleVec();
+  vec2 e = patternTexelStep();
   float hL = surfaceField(uv - vec2(e.x, 0.0), flowDir, t, turb);
   float hR = surfaceField(uv + vec2(e.x, 0.0), flowDir, t, turb);
   float hD = surfaceField(uv - vec2(0.0, e.y), flowDir, t, turb);
@@ -173,13 +175,14 @@ vec3 computeSurfaceNormal(vec2 uv, vec2 flowDir, float t, float normalIntensity,
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 uv = fragCoord.xy / iResolution.xy;
+  vec2 rawUv = cpfx_rawUv();
   vec4 bed = texture(iChannel0, uv);
-  vec4 heightMap = texture(iChannel1, uv);
+  vec4 heightMap = texture(iChannel1, cpfx_sceneUvFromRaw(rawUv));
   float bedDepthMap = depthMapFromRgb(heightMap.rgb);
 
   float t = uTime * max(0.0, uFlowSpeed);
   vec2 flowDir = normalize(rot2(radians(uFlowAngleDeg)) * vec2(1.0, 0.0));
-  vec2 uvP = toPatternUv(uv);
+  vec2 uvP = toPatternUv(fragCoord.xy);
   vec2 flowDirP = toPatternDir(flowDir);
   vec3 N = computeSurfaceNormal(uvP, flowDirP, t, max(0.01, uNormalIntensity), max(0.0, uTurbulence));
 
@@ -212,10 +215,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
   // Terrain slope for shoreline foam.
   vec2 texel = vec2(1.0 / iResolution.x, 1.0 / iResolution.y);
-  float hL = sampleDepth(uv - vec2(texel.x, 0.0));
-  float hR = sampleDepth(uv + vec2(texel.x, 0.0));
-  float hD = sampleDepth(uv - vec2(0.0, texel.y));
-  float hU = sampleDepth(uv + vec2(0.0, texel.y));
+  float hL = sampleDepthRaw(rawUv - vec2(texel.x, 0.0));
+  float hR = sampleDepthRaw(rawUv + vec2(texel.x, 0.0));
+  float hD = sampleDepthRaw(rawUv - vec2(0.0, texel.y));
+  float hU = sampleDepthRaw(rawUv + vec2(0.0, texel.y));
   vec2 terrainGrad = vec2(hR - hL, hU - hD);
   float slope = length(terrainGrad);
 

@@ -2791,6 +2791,9 @@ uniform float shaderFlipY;
 uniform float cpfxPreserveTransparent;
 uniform float cpfxForceOpaqueCaptureAlpha;
 uniform vec2 resolution;
+uniform vec2 cpfxSceneUvOrigin;
+uniform vec2 cpfxSceneUvAxisU;
+uniform vec2 cpfxSceneUvAxisV;
 ${compatMacros}
 
 vec2 cpfxFragCoord;
@@ -2801,6 +2804,20 @@ vec2 cpfx_rotate(vec2 p, float a) {
   float c = cos(a);
   float s = sin(a);
   return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+vec2 cpfx_rawUv() {
+  return vec2(vTextureCoord.x, 1.0 - vTextureCoord.y);
+}
+vec2 cpfx_sceneUvFromRaw(vec2 rawUv) {
+  vec2 uv = vec2(rawUv.x, 1.0 - rawUv.y);
+  return clamp(
+    cpfxSceneUvOrigin + uv.x * cpfxSceneUvAxisU + uv.y * cpfxSceneUvAxisV,
+    vec2(0.0),
+    vec2(1.0)
+  );
+}
+vec2 cpfx_sceneUv() {
+  return cpfx_sceneUvFromRaw(cpfx_rawUv());
 }
 ${sanitizeColorHelpers}
 ${buildNumericSafetyHelpers(body)}
@@ -2924,6 +2941,9 @@ uniform float shaderFlipY;
 uniform float cpfxPreserveTransparent;
 uniform float cpfxForceOpaqueCaptureAlpha;
 uniform vec2 resolution;
+uniform vec2 cpfxSceneUvOrigin;
+uniform vec2 cpfxSceneUvAxisU;
+uniform vec2 cpfxSceneUvAxisV;
 ${compatMacros}
 
 vec2 cpfxFragCoord;
@@ -2935,6 +2955,20 @@ vec2 cpfx_rotate(vec2 p, float a) {
   float c = cos(a);
   float s = sin(a);
   return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+vec2 cpfx_rawUv() {
+  return vec2(vTextureCoord.x, 1.0 - vTextureCoord.y);
+}
+vec2 cpfx_sceneUvFromRaw(vec2 rawUv) {
+  vec2 uv = vec2(rawUv.x, 1.0 - rawUv.y);
+  return clamp(
+    cpfxSceneUvOrigin + uv.x * cpfxSceneUvAxisU + uv.y * cpfxSceneUvAxisV,
+    vec2(0.0),
+    vec2(1.0)
+  );
+}
+vec2 cpfx_sceneUv() {
+  return cpfx_sceneUvFromRaw(cpfx_rawUv());
 }
 ${sanitizeColorHelpers}
 
@@ -3743,6 +3777,9 @@ uniform float cpfxPreserveTransparent;
 uniform float cpfxForceOpaqueCaptureAlpha;
 uniform float cpfxBufferValueClamp;
 uniform vec2 resolution;
+uniform vec2 cpfxSceneUvOrigin;
+uniform vec2 cpfxSceneUvAxisU;
+uniform vec2 cpfxSceneUvAxisV;
 ${compatMacros}
 
 vec2 cpfxFragCoord;
@@ -3754,6 +3791,20 @@ vec2 cpfx_rotate(vec2 p, float a) {
   float c = cos(a);
   float s = sin(a);
   return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+vec2 cpfx_rawUv() {
+  return vec2(vTextureCoord.x, 1.0 - vTextureCoord.y);
+}
+vec2 cpfx_sceneUvFromRaw(vec2 rawUv) {
+  vec2 uv = vec2(rawUv.x, 1.0 - rawUv.y);
+  return clamp(
+    cpfxSceneUvOrigin + uv.x * cpfxSceneUvAxisU + uv.y * cpfxSceneUvAxisV,
+    vec2(0.0),
+    vec2(1.0)
+  );
+}
+vec2 cpfx_sceneUv() {
+  return cpfx_sceneUvFromRaw(cpfx_rawUv());
 }
 ${sanitizeColorHelpers}
 ${bufferOutputSafetyHelpers}
