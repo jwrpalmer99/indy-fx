@@ -113,6 +113,13 @@ Notes:
 - Preview backgrounds used for scene/placeable capture channels are configurable in module settings.
 - `const`/`#define` variables are exposed in Edit Variables.
 - Custom `uniform` variables are also exposed when annotated, e.g. `uniform float uFoam; // @editable 0.2`.
+- You can prioritize display order with `@order` on `uniform`, `const`, and `#define`, e.g.
+  `uniform float uFoam; // @editable 0.2 @order 1` or `const float WAVE = 0.5; // @order 2`.
+  In Edit Variables, entries with `@order` are shown first by ascending order value;
+  entries without `@order` are listed alphabetically after them.
+- You can add per-variable tooltips with `@tip`, e.g.
+  `uniform float uFoam; // @editable 0.2 @tip "Shoreline foam density"` or
+  `#define WAVE_SPEED 1.2 // @tip "Controls small-wave drift speed"`.
 - Look at how the example shaders are set up with regard to filling in tokens/tiles and respecting alpha/rotation etc.
 - The majority of shadertoy shaders should import and compile OK - check console log for shader compile issues.
 

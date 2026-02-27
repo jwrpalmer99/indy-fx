@@ -11,7 +11,102 @@ function parseEditableAnnotation(commentText) {
   const text = String(commentText ?? "");
   const m = text.match(/@(?:editable|indyfx)\b\s*(?:=|:)?\s*([^\r\n]*)/i);
   if (!m) return null;
-  return String(m[1] ?? "").trim();
+  // Allow chaining annotations in a single comment, e.g.:
+  // @editable 0.5 @order 1
+  return String(m[1] ?? "")
+    .replace(/\s+@\w[\s\S]*$/i, "")
+    .trim();
+}
+
+function parseOrderAnnotation(commentText) {
+  const text = String(commentText ?? "");
+  const m = text.match(/@order\b\s*(?:=|:)?\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function unescapeAnnotationText(text) {
+  return String(text ?? "")
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\r/g, "\r")
+    .replace(/\\([\\'"`"])/g, "$1");
+}
+
+function parseTipAnnotation(commentText) {
+  const text = String(commentText ?? "");
+  const m = text.match(/@tip\b\s*(?:=|:)?\s*([^\r\n]*)/i);
+  if (!m) return null;
+  const raw = String(m[1] ?? "").trim();
+  if (!raw) return "";
+
+  if (raw.startsWith('"')) {
+    const quoted = raw.match(/^"((?:\\.|[^"\\])*)"/);
+    if (quoted) return unescapeAnnotationText(quoted[1]);
+  } else if (raw.startsWith("'")) {
+    const quoted = raw.match(/^'((?:\\.|[^'\\])*)'/);
+    if (quoted) return unescapeAnnotationText(quoted[1]);
+  }
+
+  return raw.replace(/\s+@\w[\s\S]*$/i, "").trim();
+}
+
+function extractInlineCommentText(lineText) {
+  const text = String(lineText ?? "");
+  const i = text.indexOf("//");
+  if (i < 0) return "";
+  return text.slice(i + 2);
+}
+
+function extractStandaloneCommentText(lineText) {
+  const m = String(lineText ?? "").match(/^\s*\/\/(.*)\s*$/);
+  if (!m) return "";
+  return String(m[1] ?? "");
+}
+
+function extractStatementAnnotationMeta(sourceText, statementIndex) {
+  const text = String(sourceText ?? "");
+  const idx = Math.max(0, Math.min(Number(statementIndex) || 0, text.length));
+
+  const lineStartRaw = text.lastIndexOf("\n", idx);
+  const lineStart = lineStartRaw === -1 ? 0 : lineStartRaw + 1;
+  const lineEndRaw = text.indexOf("\n", idx);
+  const lineEnd = lineEndRaw === -1 ? text.length : lineEndRaw;
+  const lineText = text.slice(lineStart, lineEnd);
+  const inlineCommentText = extractInlineCommentText(lineText);
+
+  let previousCommentText = "";
+  if (lineStart > 0) {
+    const prevLineEnd = lineStart - 1;
+    const prevLineStartRaw = text.lastIndexOf("\n", prevLineEnd - 1);
+    const prevLineStart = prevLineStartRaw === -1 ? 0 : prevLineStartRaw + 1;
+    const prevLineText = text.slice(prevLineStart, prevLineEnd);
+    previousCommentText = extractStandaloneCommentText(prevLineText);
+  }
+
+  let order = parseOrderAnnotation(inlineCommentText);
+  if (!Number.isFinite(order)) order = parseOrderAnnotation(previousCommentText);
+  let tip = parseTipAnnotation(inlineCommentText);
+  if (tip === null) tip = parseTipAnnotation(previousCommentText);
+
+  return { order, tip };
+}
+
+function compareEditableVariableDisplayOrder(a, b) {
+  const aOrder = Number(a?.order);
+  const bOrder = Number(b?.order);
+  const aHasOrder = Number.isFinite(aOrder);
+  const bHasOrder = Number.isFinite(bOrder);
+  if (aHasOrder && bHasOrder) {
+    const byOrder = aOrder - bOrder;
+    if (byOrder !== 0) return byOrder;
+  } else if (aHasOrder !== bHasOrder) {
+    return aHasOrder ? -1 : 1;
+  }
+  return String(a?.name ?? "").localeCompare(String(b?.name ?? ""), undefined, {
+    sensitivity: "base",
+  });
 }
 
 function parseNumberList(rawValue) {
@@ -88,12 +183,15 @@ function extractEditableUniformVariables(source, uniformValues = null) {
     const name = String(m[2] ?? "").trim();
     if (!type || !name) continue;
 
-    let annotation = parseEditableAnnotation(m[3]);
-    if (annotation === null) {
-      const previousLine = lineIndex > 0 ? String(lines[lineIndex - 1] ?? "") : "";
-      const previousComment = previousLine.match(/^\s*\/\/(.*)\s*$/);
-      if (previousComment) annotation = parseEditableAnnotation(previousComment[1]);
-    }
+    const inlineComment = String(m[3] ?? "");
+    const previousLine = lineIndex > 0 ? String(lines[lineIndex - 1] ?? "") : "";
+    const previousCommentText = extractStandaloneCommentText(previousLine);
+    let annotation = parseEditableAnnotation(inlineComment);
+    let order = parseOrderAnnotation(inlineComment);
+    let tip = parseTipAnnotation(inlineComment);
+    if (annotation === null) annotation = parseEditableAnnotation(previousCommentText);
+    if (!Number.isFinite(order)) order = parseOrderAnnotation(previousCommentText);
+    if (tip === null) tip = parseTipAnnotation(previousCommentText);
     if (annotation === null) continue;
 
     const currentRaw = values[name];
@@ -110,6 +208,8 @@ function extractEditableUniformVariables(source, uniformValues = null) {
         type,
         name,
         values: normalized,
+        order,
+        tip,
       });
       continue;
     }
@@ -124,6 +224,8 @@ function extractEditableUniformVariables(source, uniformValues = null) {
       type,
       name,
       value: normalizeUniformScalarValue(type, currentRaw, defaultValue),
+      order,
+      tip,
     });
   }
 
@@ -296,7 +398,7 @@ export function hexToVecRgb(hex) {
 }
 
 export function extractEditableShaderVariables(source, { uniformValues = null } = {}) {
-  const text = String(source ?? "");
+  const text = String(source ?? "").replace(/\r\n/g, "\n");
   const result = [];
   const seen = new Set();
 
@@ -308,12 +410,15 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
     const key = `${type}:${name}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    const { order, tip } = extractStatementAnnotationMeta(text, m.index);
     result.push({
       kind: "scalar",
       declaration: "const",
       type,
       name,
       value: Number(m[3]),
+      order,
+      tip,
     });
   }
 
@@ -326,12 +431,15 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
     const key = `bool:${name}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    const { order, tip } = extractStatementAnnotationMeta(text, m.index);
     result.push({
       kind: "scalar",
       declaration: "const",
       type: "bool",
       name,
       value: parsed,
+      order,
+      tip,
     });
   }
 
@@ -354,12 +462,15 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
     if (!values.every((v) => Number.isFinite(v))) continue;
 
     seen.add(key);
+    const { order, tip } = extractStatementAnnotationMeta(text, m.index);
     result.push({
       kind: "vector",
       declaration: "const",
       type,
       name,
       values,
+      order,
+      tip,
     });
   }
 
@@ -384,12 +495,15 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       const key = `define:${type}:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      const { order, tip } = extractStatementAnnotationMeta(text, m.index);
       result.push({
         kind: "vector",
         declaration: "define",
         type,
         name,
         values,
+        order,
+        tip,
       });
       continue;
     }
@@ -404,12 +518,15 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       const key = `define:${type}:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      const { order, tip } = extractStatementAnnotationMeta(text, m.index);
       result.push({
         kind: "scalar",
         declaration: "define",
         type,
         name,
         value,
+        order,
+        tip,
       });
       continue;
     }
@@ -421,12 +538,15 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       const key = `define:bool:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      const { order, tip } = extractStatementAnnotationMeta(text, m.index);
       result.push({
         kind: "scalar",
         declaration: "define",
         type: "bool",
         name,
         value,
+        order,
+        tip,
       });
       continue;
     }
@@ -436,12 +556,15 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       const key = `define:bool:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      const { order, tip } = extractStatementAnnotationMeta(text, m.index);
       result.push({
         kind: "scalar",
         declaration: "define",
         type: "bool",
         name,
         value: plainBool,
+        order,
+        tip,
       });
       continue;
     }
@@ -457,12 +580,15 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       const key = `define:${type}:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      const { order, tip } = extractStatementAnnotationMeta(text, m.index);
       result.push({
         kind: "scalar",
         declaration: "define",
         type,
         name,
         value,
+        order,
+        tip,
       });
     }
   }
@@ -474,12 +600,12 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
     result.push(uniformVariable);
   }
 
-  result.sort((a, b) =>
-    String(a.name).localeCompare(String(b.name), undefined, {
-      sensitivity: "base",
-    }),
-  );
+  result.sort(compareEditableVariableDisplayOrder);
   return result;
+}
+
+export function compareShaderVariableDisplayOrder(a, b) {
+  return compareEditableVariableDisplayOrder(a, b);
 }
 
 export function extractInjectableUniformCandidates(source) {

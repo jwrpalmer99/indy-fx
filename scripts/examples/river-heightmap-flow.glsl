@@ -4,37 +4,38 @@
 // 2) Set iChannel0 to your riverbed texture (token/tile image or scene capture).
 // 3) Tune uniforms in Edit Variables (all @editable fields below).
 
-uniform float uFlowAngleDeg;      // @editable 24.0
-uniform float uFlowSpeed;         // @editable 0.28
-uniform float uTurbulence;        // @editable 1.0
-uniform float uWaterLevel;        // @editable 0.85
-uniform float uTransparency;      // @editable 0.42
-uniform float uRefraction;        // @editable 0.05
-uniform float uDiffraction;       // @editable 0.0025
-uniform float uRefractionFlow;    // @editable 0.55
-uniform float uIor;               // @editable 1.333
-uniform float uNormalIntensity;   // @editable 1.7
-uniform float uSpecularity;       // @editable 1.6
-uniform float uShininess;         // @editable 48.0
-uniform float uFoamIntensity;     // @editable 1.0
-uniform float uFoamThreshold;     // @editable 0.18
-uniform float uFoamSpeed;         // @editable 1.0
-uniform float uVortexStrength;    // @editable 0.85
-uniform vec3 uDeepColor;          // @editable 0.01,0.24,0.43
-uniform vec3 uMediumColor;        // @editable 0.07,0.45,0.57
-uniform vec3 uShallowColor;       // @editable 0.30,0.74,0.67
-uniform vec3 uDepthWeights;       // @editable 0.0,0.4,1.0
-uniform float uDepthGamma;        // @editable 1.0
-uniform float uFixLand;           // @editable 1.0
-uniform float uDebugHeightVsWater;  // @editable 0.0
-uniform float uSiltIntensity;     // @editable 0.35
-uniform float uSiltScale;         // @editable 12.0
-uniform float uSiltSpeed;         // @editable 1.0
-uniform float uSiltContrast;      // @editable 0.55
-uniform float uSiltShallowBias;   // @editable 0.65
-uniform float uSiltDepthBias;     // @editable 0.25
-uniform vec3 uSiltColorA;         // @editable 0.53,0.59,0.42
-uniform vec3 uSiltColorB;         // @editable 0.34,0.43,0.30
+uniform float uFlowAngleDeg;      // @editable 24.0 @tip "Flow direction in degrees."
+uniform float uFlowSpeed;         // @editable 0.28 @tip "Overall river flow speed."
+uniform float uTurbulence;        // @editable 1.0 @tip "Amount of flow distortion and chaos."
+uniform float uPatternScale;      // @editable 1.0 @tip "Global scale for waves, foam, and silt patterns."
+uniform float uWaterLevel;        // @editable 0.85 @tip "Waterline threshold against depth map."
+uniform float uTransparency;      // @editable 0.42 @tip "Visibility of refracted riverbed through water."
+uniform float uRefraction;        // @editable 0.05 @tip "Base refraction distortion strength."
+uniform float uDiffraction;       // @editable 0.0025 @tip "Chromatic fringe amount around refraction."
+uniform float uRefractionFlow;    // @editable 0.55 @tip "Extra flow-driven refraction strength."
+uniform float uIor;               // @editable 1.333 @tip "Index of refraction used for physical bend."
+uniform float uNormalIntensity;   // @editable 1.7 @tip "Strength of surface normal perturbation."
+uniform float uSpecularity;       // @editable 1.6 @tip "Specular highlight intensity."
+uniform float uShininess;         // @editable 48.0 @tip "Specular highlight sharpness."
+uniform float uFoamIntensity;     // @editable 1.0 @tip "Overall shoreline foam intensity."
+uniform float uFoamThreshold;     // @editable 0.18 @tip "Width of shoreline foam band near waterline."
+uniform float uFoamSpeed;         // @editable 1.0 @tip "How fast foam patterns evolve over time."
+uniform float uVortexStrength;    // @editable 0.85 @tip "Extra turbulent churn contribution to foam."
+uniform vec3 uDeepColor;          // @editable 0.01,0.24,0.43 @tip "Tint color used in deepest water."
+uniform vec3 uMediumColor;        // @editable 0.07,0.45,0.57 @tip "Tint color used in mid-depth water."
+uniform vec3 uShallowColor;       // @editable 0.30,0.74,0.67 @tip "Tint color used in shallow water."
+uniform vec3 uDepthWeights;       // @editable 0.0,0.4,1.0 @tip "RGB channel weights used to derive depth."
+uniform float uDepthGamma;        // @editable 1.0 @tip "Gamma curve applied to depth mapping."
+uniform float uFixLand;           // @editable 1.0 @tip "Enable heuristic correction to suppress land flooding."
+uniform float uDebugHeightVsWater;  // @editable 0.0 @tip "Show depth/waterline debug visualization."
+uniform float uSiltIntensity;     // @editable 0.35 @tip "Overall strength of suspended silt plumes."
+uniform float uSiltScale;         // @editable 12.0 @tip "Scale of silt plume patterns."
+uniform float uSiltSpeed;         // @editable 1.0 @tip "Advection speed of silt through flow."
+uniform float uSiltContrast;      // @editable 0.55 @tip "Contrast of silt cloud breakup."
+uniform float uSiltShallowBias;   // @editable 0.65 @tip "Bias silt placement toward shallow water."
+uniform float uSiltDepthBias;     // @editable 0.25 @tip "Target depth where silt is emphasized."
+uniform vec3 uSiltColorA;         // @editable 0.53,0.59,0.42 @tip "Primary silt tint color."
+uniform vec3 uSiltColorB;         // @editable 0.34,0.43,0.30 @tip "Secondary silt tint color."
 
 float luma(vec3 c) {
   return dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -64,6 +65,22 @@ mat2 rot2(float a) {
   float c = cos(a);
   float s = sin(a);
   return mat2(c, -s, s, c);
+}
+
+vec2 patternScaleVec() {
+  float aspect = iResolution.x / max(iResolution.y, 1.0);
+  float s = max(0.001, uPatternScale);
+  return vec2(aspect * s, s);
+}
+
+vec2 toPatternUv(vec2 uv) {
+  // Keep procedural patterns square on non-square targets.
+  return (uv - 0.5) * patternScaleVec() + 0.5;
+}
+
+vec2 toPatternDir(vec2 dir) {
+  // Re-normalize directional vectors in pattern space so angle reads consistently.
+  return normalize(dir * patternScaleVec() + vec2(1e-5, 1e-5));
 }
 
 float hash12(vec2 p) {
@@ -143,7 +160,7 @@ float surfaceField(vec2 uv, vec2 flowDir, float t, float turb) {
 }
 
 vec3 computeSurfaceNormal(vec2 uv, vec2 flowDir, float t, float normalIntensity, float turb) {
-  vec2 e = vec2(1.0 / iResolution.x, 1.0 / iResolution.y);
+  vec2 e = vec2(1.0 / iResolution.x, 1.0 / iResolution.y) * patternScaleVec();
   float hL = surfaceField(uv - vec2(e.x, 0.0), flowDir, t, turb);
   float hR = surfaceField(uv + vec2(e.x, 0.0), flowDir, t, turb);
   float hD = surfaceField(uv - vec2(0.0, e.y), flowDir, t, turb);
@@ -159,7 +176,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
   float t = uTime * max(0.0, uFlowSpeed);
   vec2 flowDir = normalize(rot2(radians(uFlowAngleDeg)) * vec2(1.0, 0.0));
-  vec3 N = computeSurfaceNormal(uv, flowDir, t, max(0.01, uNormalIntensity), max(0.0, uTurbulence));
+  vec2 uvP = toPatternUv(uv);
+  vec2 flowDirP = toPatternDir(flowDir);
+  vec3 N = computeSurfaceNormal(uvP, flowDirP, t, max(0.01, uNormalIntensity), max(0.0, uTurbulence));
 
   // Depth-map-derived water depth.
   float rawDepth = uWaterLevel + bedDepthMap - 1.0;
@@ -203,8 +222,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec3 viewDir = vec3(0.0, 0.0, 1.0);
   vec3 refrV = refract(-viewDir, N, eta);
   vec2 physOffset = (refrV.xy / max(0.20, refrV.z + 0.20)) * uRefraction;
-  float flowDistA = surfaceField(uv * 1.35 + flowDir * 0.23, flowDir, t * 1.10, max(0.0, uTurbulence));
-  float flowDistB = surfaceField(uv * 1.28 + flowDir.yx * vec2(-0.31, 0.17), flowDir, t * 0.94, max(0.0, uTurbulence));
+  float flowDistA = surfaceField(uvP * 1.35 + flowDirP * 0.23, flowDirP, t * 1.10, max(0.0, uTurbulence));
+  float flowDistB = surfaceField(uvP * 1.28 + flowDirP.yx * vec2(-0.31, 0.17), flowDirP, t * 0.94, max(0.0, uTurbulence));
   float flowRefractStrength =
     (0.015 + 0.030 * clamp(uRefraction, 0.0, 1.5)) *
     max(0.0, uRefractionFlow);
@@ -228,7 +247,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   waterColor = mix(waterColor, uDeepColor, dMidToDeep);
 
   // Eddies and vortices in the flow field.
-  vec2 flowUV = uv * 9.0 - flowDir * t * 0.75;
+  vec2 flowUV = uvP * 9.0 - flowDirP * t * 0.75;
   float eddyNoise = fbm(flowUV + vec2(4.7, -2.1));
   float eddyBand = sin((eddyNoise * 2.0 - 1.0) * 9.5 + t * 2.2);
   float eddy = 0.5 + 0.5 * eddyBand;
@@ -240,35 +259,36 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     (1.0 - step(0.0, rawDepth));
 
   vec2 bankToShallow = normalize(-terrainGrad + vec2(1e-5, 1e-5));
-  float flowImpact = max(0.0, dot(flowDir, bankToShallow));
+  vec2 bankToShallowP = toPatternDir(bankToShallow);
+  float flowImpact = max(0.0, dot(flowDirP, bankToShallowP));
   float speedFactor = max(0.0, uFlowSpeed);
   float speedNorm = clamp(speedFactor / 2.0, 0.0, 1.0);
   float foamSpeed = max(0.0, uFoamSpeed);
   float foamRate = (0.20 + speedFactor * 0.85) * (0.25 + foamSpeed);
-  vec2 flowNormal = vec2(-flowDir.y, flowDir.x);
+  vec2 flowNormal = vec2(-flowDirP.y, flowDirP.x);
 
   // Keep slope response stable as threshold changes to avoid crystalline artifacts.
   float slopeFoam = smoothstep(0.004, 0.055, slope);
   float shoreVar = 0.65 + 0.35 * fbm(
-    uv * 18.0 + bankToShallow * 0.6 - flowDir * t * 0.35
+    uvP * 18.0 + bankToShallowP * 0.6 - flowDirP * t * 0.35
   );
   float interfaceBase = shoreline * shoreVar * (0.42 + 0.58 * slopeFoam);
 
   // Build shoreline mist in flow-space with softer, cloud-like breakup.
-  float along = dot(uv, flowDir);
-  float across = dot(uv, flowNormal);
+  float along = dot(uvP, flowDirP);
+  float across = dot(uvP, flowNormal);
   vec2 flowCoord = vec2(along, across);
   vec2 driftDir = normalize(
-    flowDir * (0.75 + 0.45 * flowImpact) +
+    flowDirP * (0.75 + 0.45 * flowImpact) +
     flowNormal * (0.16 + 0.28 * (1.0 - flowImpact)) +
     vec2(1e-5, 1e-5)
   );
   vec2 foamDrift = driftDir * (uTime * foamRate);
 
   vec2 mistUvA = flowCoord * vec2(11.0, 7.5) -
-    foamDrift * vec2(2.8, 2.2) + bankToShallow * 0.45;
+    foamDrift * vec2(2.8, 2.2) + bankToShallowP * 0.45;
   vec2 mistUvB = flowCoord.yx * vec2(9.2, 8.7) -
-    foamDrift * vec2(3.4, 2.6) - bankToShallow.yx * 0.35 + vec2(3.7, -2.5);
+    foamDrift * vec2(3.4, 2.6) - bankToShallowP.yx * 0.35 + vec2(3.7, -2.5);
   vec2 mistUvC = (mistUvA + mistUvB) * 0.62 + vec2(-4.1, 2.9);
 
   float mistA = fbm(mistUvA);
@@ -314,11 +334,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   float siltSpeed = max(0.0, uSiltSpeed);
   float turb = max(0.0, uTurbulence);
   float siltTravel = t * (0.20 + 0.80 * siltSpeed);
-  vec2 plumeDir = normalize(flowDir + vec2(1e-5, 1e-5));
-  vec2 plumeBase = uv * (0.20 * siltScale);
+  vec2 plumeDir = normalize(flowDirP + vec2(1e-5, 1e-5));
+  vec2 plumeBase = uvP * (0.20 * siltScale);
   vec2 plumeWarp = flowWarp(
     plumeBase * 0.55 + vec2(2.7, -1.9),
-    flowDir,
+    flowDirP,
     t * 0.55 + 0.9,
     turb
   ) * (0.45 + 0.35 * turb);

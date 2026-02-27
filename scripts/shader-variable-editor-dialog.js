@@ -1,6 +1,7 @@
 import { applyEditorSettingTooltips } from "./editor-tooltips.js";
 import {
   applyEditableShaderVariables,
+  compareShaderVariableDisplayOrder,
   extractEditableShaderVariables,
   formatShaderScalarValue,
   formatShaderVectorValue,
@@ -178,11 +179,7 @@ export async function openShaderVariableEditorDialog({
     });
     if (!extracted.length) continue;
     const sourceSection = getSourceSection(sourceEntry);
-    extracted.sort((a, b) =>
-      String(a?.name ?? "").localeCompare(String(b?.name ?? ""), undefined, {
-        sensitivity: "base",
-      }),
-    );
+    extracted.sort(compareShaderVariableDisplayOrder);
     sourceGroups.push({
       sourceEntry,
       section: sourceSection,
@@ -251,6 +248,8 @@ export async function openShaderVariableEditorDialog({
       variables.push(variable);
       const name = String(variable.name ?? "");
       const type = String(variable.type ?? "");
+      const tip = String(variable.tip ?? "").trim();
+      const tipAttr = tip ? ` title="${escapeHtml(tip)}"` : "";
       const editable =
         variable.declaration === "uniform"
           ? variable.sourceUniformWritable === true
@@ -262,10 +261,10 @@ export async function openShaderVariableEditorDialog({
           const isChecked = Boolean(variable.value);
           rows += `
             <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
-              <label>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
+              <label${tipAttr}>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
               <div class="form-fields">
-                <label class="checkbox" style="gap:.35rem;">
-                  <input type="checkbox" name="var_${index}_value"${isChecked ? " checked" : ""}${disabledAttr} />
+                <label class="checkbox" style="gap:.35rem;"${tipAttr}>
+                  <input type="checkbox" name="var_${index}_value"${isChecked ? " checked" : ""}${disabledAttr}${tipAttr} />
                   Enabled
                 </label>
               </div>
@@ -274,9 +273,9 @@ export async function openShaderVariableEditorDialog({
         } else {
           rows += `
             <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
-              <label>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
+              <label${tipAttr}>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
               <div class="form-fields">
-                <input type="number" name="var_${index}_value" value="${escapeHtml(formatShaderScalarValue(variable.value, type))}" step="${type === "int" ? "1" : "0.001"}"${disabledAttr} />
+                <input type="number" name="var_${index}_value" value="${escapeHtml(formatShaderScalarValue(variable.value, type))}" step="${type === "int" ? "1" : "0.001"}"${disabledAttr}${tipAttr} />
               </div>
             </div>
           `;
@@ -291,15 +290,15 @@ export async function openShaderVariableEditorDialog({
       const componentInputs = values
         .map(
           (value, componentIndex) =>
-            `<input type="number" name="var_${index}_c${componentIndex}" value="${escapeHtml(formatShaderVectorValue(value))}" step="0.001"${disabledAttr} />`,
+            `<input type="number" name="var_${index}_c${componentIndex}" value="${escapeHtml(formatShaderVectorValue(value))}" step="0.001"${disabledAttr}${tipAttr} />`,
         )
         .join("");
 
       rows += `
         <div class="form-group" data-var-index="${index}" data-var-kind="vector" data-var-type="${escapeHtml(type)}">
-          <label>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
+          <label${tipAttr}>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
           <div class="form-fields" style="gap:0.35rem;align-items:center;flex-wrap:wrap;">
-            <input type="color" name="var_${index}_color" value="${escapeHtml(colorHex)}"${disabledAttr} />
+            <input type="color" name="var_${index}_color" value="${escapeHtml(colorHex)}"${disabledAttr}${tipAttr} />
             ${componentInputs}
           </div>
         </div>
