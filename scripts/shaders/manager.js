@@ -1232,7 +1232,11 @@ function parseEditableAnnotation(commentText) {
   const text = String(commentText ?? "");
   const m = text.match(/@(?:editable|indyfx)\b\s*(?:=|:)?\s*([^\r\n]*)/i);
   if (!m) return null;
-  return String(m[1] ?? "").trim();
+  // Allow chained annotations in one comment, e.g.:
+  // @editable 0.5 @tip "..." @order 1
+  return String(m[1] ?? "")
+    .replace(/\s+@\w[\s\S]*$/i, "")
+    .trim();
 }
 
 function parseEditableBoolLiteral(value) {

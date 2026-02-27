@@ -94,8 +94,16 @@ function extractStatementAnnotationMeta(sourceText, statementIndex) {
 }
 
 function compareEditableVariableDisplayOrder(a, b) {
-  const aOrder = Number(a?.order);
-  const bOrder = Number(b?.order);
+  const aRawOrder = a?.order;
+  const bRawOrder = b?.order;
+  const aOrder =
+    aRawOrder === null || aRawOrder === undefined || aRawOrder === ""
+      ? NaN
+      : Number(aRawOrder);
+  const bOrder =
+    bRawOrder === null || bRawOrder === undefined || bRawOrder === ""
+      ? NaN
+      : Number(bRawOrder);
   const aHasOrder = Number.isFinite(aOrder);
   const bHasOrder = Number.isFinite(bOrder);
   if (aHasOrder && bHasOrder) {

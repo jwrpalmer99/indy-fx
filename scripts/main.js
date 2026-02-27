@@ -7341,6 +7341,8 @@ Hooks.on("getSceneControlButtons", (controls) => {
     "tokens",
     "tile",
     "tiles",
+    "region",
+    "regions",
     "template",
     "templates",
     "measure",
