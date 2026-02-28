@@ -7,6 +7,30 @@ function formatDebugTimestamp() {
   return `${hh}:${mm}:${ss}.${ms}`;
 }
 
+function multiplyMatrices(left, right, out = new PIXI.Matrix()) {
+  const la = Number(left?.a ?? 1);
+  const lb = Number(left?.b ?? 0);
+  const lc = Number(left?.c ?? 0);
+  const ld = Number(left?.d ?? 1);
+  const ltx = Number(left?.tx ?? 0);
+  const lty = Number(left?.ty ?? 0);
+  const ra = Number(right?.a ?? 1);
+  const rb = Number(right?.b ?? 0);
+  const rc = Number(right?.c ?? 0);
+  const rd = Number(right?.d ?? 1);
+  const rtx = Number(right?.tx ?? 0);
+  const rty = Number(right?.ty ?? 0);
+  out.set(
+    la * ra + lc * rb,
+    lb * ra + ld * rb,
+    la * rc + lc * rd,
+    lb * rc + ld * rd,
+    la * rtx + lc * rty + ltx,
+    lb * rtx + ld * rty + lty,
+  );
+  return out;
+}
+
 export class SceneAreaChannel {
   constructor(sizeOrWidth = 512, heightOrOptions = null, maybeOptions = null) {
     let options = maybeOptions ?? {};
@@ -22,13 +46,18 @@ export class SceneAreaChannel {
     this.height = safeHeight;
     this.size = Math.max(safeWidth, safeHeight);
     this._matrix = new PIXI.Matrix();
+    this._renderMatrix = new PIXI.Matrix();
     this._tmpLocal = new PIXI.Point();
     this._tmpGlobal = new PIXI.Point();
     this._lastDebugLogAt = 0;
     this._lastRenderErrorLogAt = 0;
     this._renderErrorCount = 0;
     this._renderRetryAfterMs = 0;
+    this.captureMode = String(options?.captureMode ?? "sceneCapture").trim() === "sceneCaptureRaw"
+      ? "sceneCaptureRaw"
+      : "sceneCapture";
     this.sourceContainer = options?.sourceContainer ?? null;
+    this._rawSourceSprite = null;
     this.texture = PIXI.RenderTexture.create({
       width: safeWidth,
       height: safeHeight,
@@ -58,15 +87,18 @@ export class SceneAreaChannel {
     if (!Number.isFinite(radiusX) || !Number.isFinite(radiusY) || radiusX <= 0 || radiusY <= 0) return;
 
     const stage = canvas.stage;
-    // Render from stage for robust scene capture behavior.
-    // Build capture transform in screen-space so camera pan/zoom are respected.
+    let renderTarget = stage;
+    let renderTransform = this._matrix;
+    let rawSource = null;
+    // Standard scene capture renders the composited stage in screen-space so
+    // the current camera pan/zoom are reflected in the sampled area.
     this._tmpLocal.set(centerWorld.x, centerWorld.y);
     const center = stage.toGlobal(this._tmpLocal, this._tmpGlobal);
     const zoom = Math.max(0.0001, Math.abs(stage.worldTransform?.a ?? 1));
-    const radiusScreenX = Math.max(2, radiusX * zoom);
-    const radiusScreenY = Math.max(2, radiusY * zoom);
-    const scaleXAbs = this.width / (radiusScreenX * 2);
-    const scaleYAbs = this.height / (radiusScreenY * 2);
+    const radiusRenderX = Math.max(2, radiusX * zoom);
+    const radiusRenderY = Math.max(2, radiusY * zoom);
+    const scaleXAbs = this.width / (radiusRenderX * 2);
+    const scaleYAbs = this.height / (radiusRenderY * 2);
     const scaleX = (flipX ? -1 : 1) * scaleXAbs;
     const scaleY = (flipY ? -1 : 1) * scaleYAbs;
     const rotation = Number.isFinite(Number(rotationDeg))
@@ -90,18 +122,55 @@ export class SceneAreaChannel {
       ty
     );
 
+    if (this.captureMode === "sceneCaptureRaw") {
+      const primaryTexture = canvas?.primary?.renderTexture ?? null;
+      const primarySprite = canvas?.primary?.sprite ?? null;
+      const primaryBase = primaryTexture?.baseTexture ?? null;
+      const primaryValid =
+        !!primaryTexture &&
+        !!primarySprite &&
+        (primaryBase?.valid !== false);
+      if (primaryValid) {
+        if (!this._rawSourceSprite) {
+          this._rawSourceSprite = new PIXI.Sprite(primaryTexture);
+        } else if (this._rawSourceSprite.texture !== primaryTexture) {
+          this._rawSourceSprite.texture = primaryTexture;
+        }
+        const rawSprite = this._rawSourceSprite;
+        rawSprite.position.copyFrom?.(primarySprite.position) ?? rawSprite.position.set(primarySprite.x ?? 0, primarySprite.y ?? 0);
+        rawSprite.scale.copyFrom?.(primarySprite.scale) ?? rawSprite.scale.set(primarySprite.scale?.x ?? 1, primarySprite.scale?.y ?? 1);
+        rawSprite.pivot.copyFrom?.(primarySprite.pivot) ?? rawSprite.pivot.set(primarySprite.pivot?.x ?? 0, primarySprite.pivot?.y ?? 0);
+        rawSprite.skew.copyFrom?.(primarySprite.skew) ?? rawSprite.skew.set(primarySprite.skew?.x ?? 0, primarySprite.skew?.y ?? 0);
+        if (rawSprite.anchor && primarySprite.anchor) {
+          rawSprite.anchor.copyFrom?.(primarySprite.anchor) ?? rawSprite.anchor.set(primarySprite.anchor.x ?? 0, primarySprite.anchor.y ?? 0);
+        }
+        rawSprite.rotation = Number(primarySprite.rotation ?? 0);
+        rawSprite.alpha = Number(primarySprite.alpha ?? 1);
+        rawSprite.visible = true;
+        rawSprite.renderable = true;
+        rawSprite.blendMode = primarySprite.blendMode ?? PIXI.BLEND_MODES.NORMAL;
+        const parentWorld = primarySprite.parent?.worldTransform ?? PIXI.Matrix.IDENTITY;
+        renderTransform = multiplyMatrices(this._matrix, parentWorld, this._renderMatrix);
+        renderTarget = rawSprite;
+        rawSource = "primaryRenderTextureClone";
+      }
+    }
+
     this._logCaptureDebug({
       centerWorld,
       radiusX,
       radiusY,
       zoom,
-      radiusScreenX,
-      radiusScreenY,
+      radiusScreenX: radiusRenderX,
+      radiusScreenY: radiusRenderY,
       scaleX,
       scaleY,
       rotationDeg,
       flipX,
       flipY,
+      captureMode: this.captureMode,
+      renderTarget: renderTarget?.constructor?.name ?? null,
+      rawSource,
     });
 
     let prevVisible = null;
@@ -111,10 +180,10 @@ export class SceneAreaChannel {
     }
 
     try {
-      canvas.app.renderer.render(stage, {
+      canvas.app.renderer.render(renderTarget, {
         renderTexture: this.texture,
         clear: true,
-        transform: this._matrix
+        transform: renderTransform
       });
       this._renderErrorCount = 0;
       this._renderRetryAfterMs = 0;
@@ -142,6 +211,8 @@ export class SceneAreaChannel {
   }
 
   destroy() {
+    this._rawSourceSprite?.destroy?.({ texture: false, baseTexture: false });
+    this._rawSourceSprite = null;
     this.texture?.destroy(true);
     this.texture = null;
   }
@@ -170,6 +241,9 @@ export class SceneAreaChannel {
       zoom: payload.zoom,
       screenRadius: [payload.radiusScreenX, payload.radiusScreenY],
       scale: [payload.scaleX, payload.scaleY],
+      captureMode: payload.captureMode ?? this.captureMode,
+      renderTarget: payload.renderTarget ?? null,
+      rawSource: payload.rawSource ?? null,
       flipX: payload.flipX === true,
       flipY: payload.flipY === true,
       rotationDeg: Number.isFinite(Number(payload.rotationDeg))

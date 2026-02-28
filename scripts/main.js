@@ -526,9 +526,10 @@ function buildImportedLightChannelUniformDefaults({
         to: "sceneCapture",
       });
     }
-    if (modeRaw === "scenecapture") {
+    if (modeRaw === "scenecapture" || modeRaw === "scenecaptureraw") {
       // In light shaders, scene capture is provided by Foundry as primaryTexture.
-      // Keep this channel null so syncImportedLightShaderToyUniforms binds primaryTexture at runtime.
+      // Raw capture currently falls back to the same light-provided primaryTexture.
+      // Keep this channel null so syncImportedLightShaderToyUniforms binds it at runtime.
       result[key] = null;
       continue;
     }
@@ -602,7 +603,7 @@ function buildImportedLightRuntimeChannels({
     if (modeRaw !== modeOriginal) {
       effectiveCfg = { ...cfgRaw, mode: "sceneCapture" };
     }
-    if (modeRaw === "scenecapture") {
+    if (modeRaw === "scenecapture" || modeRaw === "scenecaptureraw") {
       textures[key] = null;
       continue;
     }

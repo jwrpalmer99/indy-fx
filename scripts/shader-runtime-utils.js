@@ -664,9 +664,13 @@ export function setupShaderRuntimeChannels(
   const sceneAreaChannels = [];
   const runtimeBufferChannels = [];
   const runtimeImageChannels = [];
-  const sceneCaptureByResolution = new Map();
+  const sceneCaptureByKey = new Map();
   const resolvedCaptureResolutionScale =
     normalizeCaptureResolutionScale(captureResolutionScale);
+  const normalizeRuntimeCaptureMode = (mode) =>
+    String(mode ?? "").trim() === "sceneCaptureRaw"
+      ? "sceneCaptureRaw"
+      : "sceneCapture";
 
   const getBaseCaptureResolution = (runtimeChannel, channelIndex) => {
     const fallbackSize = Math.max(
@@ -706,6 +710,7 @@ export function setupShaderRuntimeChannels(
   for (const runtimeChannel of shaderResult.runtimeChannels ?? []) {
     const channelIndex = runtimeChannel?.channel;
     if (!Number.isInteger(channelIndex) || channelIndex < 0 || channelIndex > 3) continue;
+    const captureMode = normalizeRuntimeCaptureMode(runtimeChannel?.mode);
     const [baseWidth, baseHeight] = getBaseCaptureResolution(runtimeChannel, channelIndex);
     const captureWidth = Math.max(
       16,
@@ -715,15 +720,16 @@ export function setupShaderRuntimeChannels(
       16,
       Math.round(baseHeight * resolvedCaptureResolutionScale),
     );
-    const captureKey = `${captureWidth}x${captureHeight}`;
+    const captureKey = `${captureMode}:${captureWidth}x${captureHeight}`;
 
     let wasCreated = false;
-    let capture = sceneCaptureByResolution.get(captureKey);
+    let capture = sceneCaptureByKey.get(captureKey);
     if (!capture) {
       capture = new SceneAreaChannel(captureWidth, captureHeight, {
+        captureMode,
         sourceContainer: captureSourceContainer
       });
-      sceneCaptureByResolution.set(captureKey, capture);
+      sceneCaptureByKey.set(captureKey, capture);
       sceneAreaChannels.push(capture);
       wasCreated = true;
     }
@@ -750,6 +756,7 @@ export function setupShaderRuntimeChannels(
       targetId: debugContext?.targetId ?? null,
       shaderId: debugContext?.shaderId ?? shaderResult?.shaderId ?? null,
       channel: channelIndex,
+      captureMode,
       captureResolutionScale: resolvedCaptureResolutionScale,
       baseResolution: [baseWidth, baseHeight],
       captureResolution: [captureWidth, captureHeight],

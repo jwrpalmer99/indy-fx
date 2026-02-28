@@ -243,6 +243,7 @@ export function createMenus({ moduleId, shaderManager }) {
     };
     switch (mode) {
       case "sceneCapture":
+      case "sceneCaptureRaw":
         gradient.addColorStop(0, "#283a56");
         gradient.addColorStop(1, "#17212f");
         ctx.fillStyle = gradient;
@@ -869,7 +870,7 @@ export function createMenus({ moduleId, shaderManager }) {
       let hasTokenTileCapture = false;
       for (const value of Object.values(channelConfig)) {
         const mode = String(value?.mode ?? "").trim();
-        if (mode === "sceneCapture") hasSceneCapture = true;
+        if (mode === "sceneCapture" || mode === "sceneCaptureRaw") hasSceneCapture = true;
         else if (mode === "tokenTileImage") hasTokenTileCapture = true;
         if (mode === "buffer" && value?.channels && typeof value.channels === "object") {
           const nested = this._collectCaptureUsage(value.channels, depth + 1);
@@ -892,7 +893,10 @@ export function createMenus({ moduleId, shaderManager }) {
       const rows = Object.values(channelConfig);
       if (!rows.length) return true;
       return rows.some(
-        (channel) => String(channel?.mode ?? "") === "sceneCapture",
+        (channel) => {
+          const mode = String(channel?.mode ?? "");
+          return mode === "sceneCapture" || mode === "sceneCaptureRaw";
+        },
       );
     }
     _createEmptyChannelConfigEntry() {
@@ -1036,7 +1040,7 @@ export function createMenus({ moduleId, shaderManager }) {
         )
           .trim()
           .toLowerCase();
-        if (mode === "scenecapture") return index;
+        if (mode === "scenecapture" || mode === "scenecaptureraw") return index;
       }
       return this._findFirstFreeTokenAlphaChannel(root);
     }
@@ -1355,6 +1359,7 @@ export function createMenus({ moduleId, shaderManager }) {
         else if (mode === "buffer") {
           detail = source ? `${source.length} chars` : "No buffer code";
         } else if (mode === "sceneCapture") detail = "Scene clipped capture";
+        else if (mode === "sceneCaptureRaw") detail = "Scene raw capture";
         else if (mode === "auto") detail = "Auto assignment";
 
         if (pathLabelEl instanceof HTMLElement) {
@@ -3278,7 +3283,13 @@ export function createMenus({ moduleId, shaderManager }) {
               modeInput instanceof HTMLInputElement ||
               modeInput instanceof HTMLSelectElement
             ) {
-              modeInput.value = targetMode;
+              const currentMode = String(modeInput.value ?? "");
+              const preserveSceneCaptureMode =
+                targetMode === "sceneCapture" &&
+                (currentMode === "sceneCapture" || currentMode === "sceneCaptureRaw");
+              if (!preserveSceneCaptureMode) {
+                modeInput.value = targetMode;
+              }
             }
             const pathInput = root.querySelector(`[name="channel${channelIndex}Path"]`);
             if (pathInput instanceof HTMLInputElement) {

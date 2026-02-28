@@ -38,6 +38,7 @@ const CHANNEL_MODES = new Set([
   "noiseBw",
   "noiseRgb",
   "sceneCapture",
+  "sceneCaptureRaw",
   "tokenTileImage",
   "tokenImage",
   "tileImage",
@@ -799,6 +800,7 @@ function getChannelSamplerDefaults(mode) {
   }
   if (
     normalized === "sceneCapture" ||
+    normalized === "sceneCaptureRaw" ||
     normalized === "tokenTileImage" ||
     normalized === "tokenImage" ||
     normalized === "tileImage" ||
@@ -1136,7 +1138,7 @@ function channelConfigNeedsLivePreview(config, depth = 0) {
     const entry = config[key] ?? config[index];
     if (!entry || typeof entry !== "object") continue;
     const mode = normalizeChannelMode(entry.mode ?? "auto");
-    if (mode === "sceneCapture" || mode === "tokenTileImage") return true;
+    if (mode === "sceneCapture" || mode === "sceneCaptureRaw" || mode === "tokenTileImage") return true;
     if (mode === "buffer" && channelConfigNeedsLivePreview(entry.channels, depth + 1)) {
       return true;
     }
@@ -1147,12 +1149,15 @@ function channelConfigNeedsLivePreview(config, depth = 0) {
 function channelConfigHasMode(config, matchMode, depth = 0) {
   if (!config || typeof config !== "object") return false;
   if (depth > MAX_BUFFER_CHAIN_DEPTH) return false;
+  const matchModes = Array.isArray(matchMode)
+    ? matchMode.map((value) => normalizeChannelMode(value))
+    : [normalizeChannelMode(matchMode)];
   for (const index of CHANNEL_INDICES) {
     const key = `iChannel${index}`;
     const entry = config[key] ?? config[index];
     if (!entry || typeof entry !== "object") continue;
     const mode = normalizeChannelMode(entry.mode ?? "auto");
-    if (mode === matchMode) return true;
+    if (matchModes.includes(mode)) return true;
     if (mode === "buffer" && channelConfigHasMode(entry.channels, matchMode, depth + 1)) {
       return true;
     }
@@ -2704,7 +2709,7 @@ export class ShaderManager {
     const previewPlaceableTexture = this._getPreviewPlaceableCaptureTexturePath();
     const previewHasSceneCapture = channelConfigHasMode(
       previewDefinition.channelConfig,
-      "sceneCapture",
+      ["sceneCapture", "sceneCaptureRaw"],
     );
     const previewHasTokenTileCapture = channelConfigHasMode(
       previewDefinition.channelConfig,
@@ -3704,6 +3709,7 @@ export class ShaderManager {
     return {
       auto: "Auto",
       sceneCapture: "Scene capture (clipped)",
+      sceneCaptureRaw: "Scene capture (raw)",
       tokenTileImage: "Token/Tile image (captured)",
       noiseBw: "Black/White noise",
       noiseRgb: "RGB noise",
@@ -4734,7 +4740,7 @@ export class ShaderManager {
       runtimeImageChannels: [],
     };
 
-    if (mode === "sceneCapture") {
+    if (mode === "sceneCapture" || mode === "sceneCaptureRaw") {
       const captureRotationDeg = toFiniteNumber(options?.captureRotationDeg, 0);
       const captureFlipHorizontal = parseBooleanLike(
         options?.captureFlipHorizontal,
@@ -4760,7 +4766,7 @@ export class ShaderManager {
           base.update?.();
         }
         const resolution = getTextureSize(texture, 1024);
-        debugLog(this.moduleId, "resolve sceneCapture channel: preview texture", {
+        debugLog(this.moduleId, "resolve scene capture channel: preview texture", {
           mode,
           previewMode: options?.previewMode === true,
           captureRotationDeg,
@@ -4786,7 +4792,7 @@ export class ShaderManager {
       const captureWidth = Math.max(16, hintedWidth);
       const captureHeight = Math.max(16, hintedHeight);
       const texture = getNoiseTexture(IMPORTED_NOISE_TEXTURE_SIZE, "rgb");
-      debugLog(this.moduleId, "resolve sceneCapture channel: runtime fallback", {
+      debugLog(this.moduleId, "resolve scene capture channel: runtime fallback", {
         mode,
         previewMode: options?.previewMode === true,
         captureResolution: [captureWidth, captureHeight],
@@ -4799,6 +4805,7 @@ export class ShaderManager {
         texture,
         resolution: [captureWidth, captureHeight],
         runtimeCapture: true,
+        runtimeCaptureMode: mode,
         runtimeCaptureSize: Math.max(captureWidth, captureHeight),
         runtimeCaptureResolution: [captureWidth, captureHeight],
         runtimeCaptureChannels: [],
@@ -5064,6 +5071,7 @@ export class ShaderManager {
           );
           if (resolved.runtimeCapture) {
             result.runtimeCaptureChannels.push({
+              mode: resolved.runtimeCaptureMode ?? childMode,
               size: resolved.runtimeCaptureSize ?? 512,
               resolution: resolved.runtimeCaptureResolution ?? resolved.resolution ?? null,
               runtimeBuffer,
@@ -5472,6 +5480,11 @@ export class ShaderManager {
         if (resolved.runtimeCapture) {
           runtimeChannels.push({
             channel: index,
+            mode:
+              resolved.runtimeCaptureMode ??
+              normalizeChannelMode(
+                effectiveChannelCfg?.mode ?? channelCfg?.mode ?? "sceneCapture",
+              ),
             size: resolved.runtimeCaptureSize ?? 512,
             resolution: resolved.runtimeCaptureResolution ?? resolved.resolution ?? null,
           });
@@ -5485,8 +5498,10 @@ export class ShaderManager {
             continue;
           runtimeChannels.push({
             channel: captureChannel.channel,
+            mode: captureChannel.mode ?? "sceneCapture",
             size: captureChannel.size ?? 512,
             runtimeBuffer: captureChannel.runtimeBuffer ?? null,
+            resolution: captureChannel.resolution ?? null,
           });
         }
         for (const runtimeImageChannel of resolved.runtimeImageChannels ?? []) {
@@ -5955,6 +5970,9 @@ export class ShaderManager {
       if (explicitMode === "sceneCapture") {
         return { mode: "sceneCapture", ...samplerCfg };
       }
+      if (explicitMode === "sceneCaptureRaw") {
+        return { mode: "sceneCaptureRaw", ...samplerCfg };
+      }
       if (explicitMode === "tokenTileImage") {
         return { mode: "tokenTileImage", ...samplerCfg };
       }
@@ -5977,6 +5995,16 @@ export class ShaderManager {
       ctype === "scene-capture"
     ) {
       return { mode: "sceneCapture", ...samplerCfg };
+    }
+    if (
+      ctype === "scenecaptureraw" ||
+      ctype === "scene_capture_raw" ||
+      ctype === "scene-capture-raw" ||
+      ctype === "rawscenecapture" ||
+      ctype === "raw_scene_capture" ||
+      ctype === "raw-scene-capture"
+    ) {
+      return { mode: "sceneCaptureRaw", ...samplerCfg };
     }
     if (
       ctype === "tokentileimage" ||

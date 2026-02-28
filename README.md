@@ -104,12 +104,14 @@ Imported shader channels (`iChannel0..iChannel3`) support:
 - `noiseRgb`
 - `noiseBw`
 - `sceneCapture`
+- `sceneCaptureRaw`
 - `image` (image/video path)
 - `buffer` (ShaderToy-style buffer source)
 - `tokenTileImage` (placeable image capture)
 
 Notes:
 - `tokenTileImage` is placeable-target specific and not suitable for region usage.
+- `sceneCapture` captures the composited stage; `sceneCaptureRaw` captures a lower scene container before higher-level stage compositing (it falls back to the primary scene container when the effect lives on an interface layer).
 - Preview backgrounds used for scene/placeable capture channels are configurable in module settings.
 - `const`/`#define` variables are exposed in Edit Variables.
 - Custom `uniform` variables are also exposed when annotated, e.g. `uniform float uFoam; // @editable 0.2`.
