@@ -120,6 +120,10 @@ Notes:
 - You can add per-variable tooltips with `@tip`, e.g.
   `uniform float uFoam; // @editable 0.2 @tip "Shoreline foam density"` or
   `#define WAVE_SPEED 1.2 // @tip "Controls small-wave drift speed"`.
+- `iMouse` is opt-in for live mouse input. Add `#define EnableMouse` in shader source if you want
+  the real ShaderToy-style mouse uniform injected and updated. Without that define, the adapter still
+  provides `iMouse`, but as a constant zero value (`vec4(0.0)`) for compatibility with shaders that
+  reference it but do not need live mouse input.
 - Look at how the example shaders are set up with regard to filling in tokens/tiles and respecting alpha/rotation etc.
 - The majority of shadertoy shaders should import and compile OK - check console log for shader compile issues.
 
