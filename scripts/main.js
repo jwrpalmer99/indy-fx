@@ -97,6 +97,7 @@ function roundMs(value) {
 
 const IMPORTED_LIGHT_TIMING_LOG_MIN_TOTAL_MS = 25;
 const IMPORTED_LIGHT_TIMING_LOG_MIN_ADAPT_MS = 20;
+const SHADER_TICKER_PRIORITY = Number(PIXI?.UPDATE_PRIORITY?.LOW ?? -25);
 const _importedLightTimingLoggedKeys = new Set();
 
 function shouldLogImportedLightShaderTiming({
@@ -5718,7 +5719,7 @@ function shaderOn(tokenId, opts = {}) {
     }
   };
 
-  canvas.app.ticker.add(tickerFn);
+  canvas.app.ticker.add(tickerFn, null, SHADER_TICKER_PRIORITY);
   _activeShader.set(tokenId, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
@@ -6058,7 +6059,7 @@ function shaderOnTemplate(templateId, opts = {}) {
     }
   };
 
-  canvas.app.ticker.add(tickerFn);
+  canvas.app.ticker.add(tickerFn, null, SHADER_TICKER_PRIORITY);
   _activeTemplateShader.set(resolvedTemplateId, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
@@ -6417,7 +6418,7 @@ function shaderOnTile(tileId, opts = {}) {
     }
   };
 
-  canvas.app.ticker.add(tickerFn);
+  canvas.app.ticker.add(tickerFn, null, SHADER_TICKER_PRIORITY);
   _activeTileShader.set(resolvedTileId, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
@@ -7099,7 +7100,7 @@ function shaderOnRegion(regionId, opts = {}) {
     t = nextTime;
   };
 
-  canvas.app.ticker.add(tickerFn);
+  canvas.app.ticker.add(tickerFn, null, SHADER_TICKER_PRIORITY);
   registerActiveRegionShaderEntry(effectKey, {
     effectKey,
     regionId: resolvedRegionId,
