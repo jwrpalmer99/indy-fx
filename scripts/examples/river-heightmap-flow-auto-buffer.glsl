@@ -9,8 +9,7 @@ uniform float uFlowAngleDeg;      // @editable 24.0 @tip "Flow direction in degr
 uniform float uFlowSpeed;         // @editable 0.28 @tip "Overall river flow speed." @order 2
 uniform float uTurbulence;        // @editable 0.7 @tip "Amount of flow distortion and chaos." @order 4
 uniform float uPatternScale;      // @editable 1.0 @tip "Global scale for waves, foam, and silt patterns." @order 3
-uniform float uWaterLevel;        // @editable 0.5 @tip "Bias the automatically detected shoreline threshold." @order 5
-uniform float uTransparency;      // @editable 0.82 @tip "Visibility of refracted riverbed through water." @order 6
+uniform float uTransparency;      // @editable 0.82 @tip "Visibility of refracted riverbed through water." @order 8
 uniform float uRefraction;        // @editable 0.05 @tip "Base refraction distortion strength."
 uniform float uDiffraction;       // @editable 0.0025 @tip "Chromatic fringe amount around refraction."
 uniform float uRefractionFlow;    // @editable 0.55 @tip "Extra flow-driven refraction strength."
@@ -25,8 +24,9 @@ uniform float uVortexStrength;    // @editable 0.5 @tip "Extra turbulent churn c
 uniform vec3 uDeepColor;          // @editable 0.01,0.24,0.43 @tip "Tint color used in deepest water."
 uniform vec3 uMediumColor;        // @editable 0.07,0.45,0.57 @tip "Tint color used in mid-depth water."
 uniform vec3 uShallowColor;       // @editable 0.30,0.74,0.67 @tip "Tint color used in shallow water."
-uniform bool uDebugHeightVsWater;  // @editable 0.0 @tip "Show the auto-analyzed river mask and depth visualization." @order 7
-uniform float uDebugSceneUvGrid;   // @editable 0.0 @tip "Show 2x2 UV debug: TL scene UV grid, TR analysis buffer, BL local UV grid, BR local scene capture." @order 8
+uniform bool uDebugHeightVsWater;  // @editable 0.0 @tip "Show the auto-analyzed river mask and depth visualization." @order 9
+uniform float uDebugSceneUvGrid;   // @editable 0.0 @tip "Show 2x2 UV debug: TL scene UV grid, TR analysis buffer, BL local UV grid, BR local scene capture." @order 10
+uniform float uDebugSegmentation;  // @editable 0.0 @tip "Show segmentation debug: red=mask added by segmentation (amplified), green=water mask, blue=interior depth." @order 11
 uniform float uSiltIntensity;     // @editable 1.0 @tip "Overall strength of suspended silt plumes."
 uniform float uSiltScale;         // @editable 12.0 @tip "Scale of silt plume patterns."
 uniform float uSiltSpeed;         // @editable 0.25 @tip "Advection speed of silt through flow."
@@ -40,13 +40,28 @@ vec4 sampleAnalysis(vec2 uv) {
   return texture(iChannel1, uv);
 }
 
+float analysisGamma() {
+  return max(0.20, uAnalysisGamma);
+}
+
+float analysisContrast() {
+  return max(0.0, uAnalysisContrast);
+}
+
+float applyAnalysisCurve(float x) {
+  float shaped = pow(clamp(x, 0.0, 1.0), analysisGamma());
+  return clamp((shaped - 0.5) * analysisContrast() + 0.5, 0.0, 1.0);
+}
+
 float waterFieldFromAnalysis(vec4 analysis, float waterBias) {
-  return clamp(analysis.r + waterBias, 0.0, 1.0);
+  float field = clamp(analysis.r + waterBias, 0.0, 1.0);
+  return applyAnalysisCurve(field);
 }
 
 float rawDepthFromAnalysis(vec4 analysis, float waterBias) {
   float waterField = waterFieldFromAnalysis(analysis, waterBias);
-  return (waterField - 0.5) * 0.22 + analysis.g * waterField;
+  float interior = applyAnalysisCurve(analysis.g);
+  return (waterField - 0.5) * 0.22 + interior * waterField;
 }
 
 float sampleDepth(vec2 uv, float waterBias) {
@@ -223,11 +238,29 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 quadUv = fract(rawUv * 2.0);
   vec4 bed = texture(iChannel0, uv);
   vec4 analysis = sampleAnalysis(uv);
+  float waterBias = (clamp(uWaterLevel, 0.0, 1.0) - 0.5) * 0.20;
 
   if (uDebugSceneUvGrid > 0.5) {
     vec3 analysisQuad = sampleAnalysis(quadUv).rgb;
+    analysisQuad.r = applyAnalysisCurve(analysisQuad.r);
+    analysisQuad.g = applyAnalysisCurve(analysisQuad.g);
     vec3 captureQuad = texture(iChannel0, quadUv).rgb;
     fragColor = vec4(sceneUvGridDebug(rawUv, analysisQuad, captureQuad), 1.0);
+    return;
+  }
+
+  if (uDebugSegmentation > 0.5) {
+    float debugMask = waterFieldFromAnalysis(analysis, waterBias);
+    float debugDepth = applyAnalysisCurve(analysis.g);
+    float debugSeg = clamp(analysis.a * 12.0, 0.0, 1.0);
+    float debugShore = clamp(analysis.b, 0.0, 1.0);
+    vec3 debugColor = vec3(
+      debugSeg,
+      debugMask * (1.0 - debugSeg * 0.50),
+      debugDepth * (1.0 - debugSeg * 0.50)
+    );
+    debugColor = mix(debugColor, vec3(1.0, 0.92, 0.18), debugShore * 0.35);
+    fragColor = vec4(debugColor, 1.0);
     return;
   }
 
@@ -238,9 +271,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec3 N = computeSurfaceNormal(uvP, flowDirP, t, max(0.01, uNormalIntensity), max(0.0, uTurbulence));
 
   // Buffer-derived water field and interior depth.
-  float waterBias = (clamp(uWaterLevel, 0.0, 1.0) - 0.5) * 0.20;
   float waterField = waterFieldFromAnalysis(analysis, waterBias);
-  float bedDepthMap = analysis.g;
+  float bedDepthMap = applyAnalysisCurve(analysis.g);
   float rawDepth = rawDepthFromAnalysis(analysis, waterBias);
   float depth = clamp(rawDepth, 0.0, 1.0);
   float waterMask = smoothstep(0.002, 0.03, depth);
