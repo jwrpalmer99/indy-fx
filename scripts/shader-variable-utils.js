@@ -19,11 +19,29 @@ function parseEditableAnnotation(commentText) {
 }
 
 function parseOrderAnnotation(commentText) {
+  const n = parseNumericAnnotation(commentText, "order");
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseNumericAnnotation(commentText, name) {
   const text = String(commentText ?? "");
-  const m = text.match(/@order\b\s*(?:=|:)?\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/i);
+  const escapedName = String(name ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(
+    `@${escapedName}\\b\\s*(?:=|:)?\\s*([-+]?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?)`,
+    "i",
+  );
+  const m = text.match(re);
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
+}
+
+function parseMinAnnotation(commentText) {
+  return parseNumericAnnotation(commentText, "min");
+}
+
+function parseMaxAnnotation(commentText) {
+  return parseNumericAnnotation(commentText, "max");
 }
 
 function unescapeAnnotationText(text) {
@@ -89,8 +107,12 @@ function extractStatementAnnotationMeta(sourceText, statementIndex) {
   if (!Number.isFinite(order)) order = parseOrderAnnotation(previousCommentText);
   let tip = parseTipAnnotation(inlineCommentText);
   if (tip === null) tip = parseTipAnnotation(previousCommentText);
+  let min = parseMinAnnotation(inlineCommentText);
+  if (!Number.isFinite(min)) min = parseMinAnnotation(previousCommentText);
+  let max = parseMaxAnnotation(inlineCommentText);
+  if (!Number.isFinite(max)) max = parseMaxAnnotation(previousCommentText);
 
-  return { order, tip };
+  return { order, tip, min, max };
 }
 
 function compareEditableVariableDisplayOrder(a, b) {
@@ -197,9 +219,13 @@ function extractEditableUniformVariables(source, uniformValues = null) {
     let annotation = parseEditableAnnotation(inlineComment);
     let order = parseOrderAnnotation(inlineComment);
     let tip = parseTipAnnotation(inlineComment);
+    let min = parseMinAnnotation(inlineComment);
+    let max = parseMaxAnnotation(inlineComment);
     if (annotation === null) annotation = parseEditableAnnotation(previousCommentText);
     if (!Number.isFinite(order)) order = parseOrderAnnotation(previousCommentText);
     if (tip === null) tip = parseTipAnnotation(previousCommentText);
+    if (!Number.isFinite(min)) min = parseMinAnnotation(previousCommentText);
+    if (!Number.isFinite(max)) max = parseMaxAnnotation(previousCommentText);
     if (annotation === null) continue;
 
     const currentRaw = values[name];
@@ -218,6 +244,8 @@ function extractEditableUniformVariables(source, uniformValues = null) {
         values: normalized,
         order,
         tip,
+        min,
+        max,
       });
       continue;
     }
@@ -234,6 +262,8 @@ function extractEditableUniformVariables(source, uniformValues = null) {
       value: normalizeUniformScalarValue(type, currentRaw, defaultValue),
       order,
       tip,
+      min,
+      max,
     });
   }
 
@@ -418,7 +448,7 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
     const key = `${type}:${name}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const { order, tip } = extractStatementAnnotationMeta(text, m.index);
+    const { order, tip, min, max } = extractStatementAnnotationMeta(text, m.index);
     result.push({
       kind: "scalar",
       declaration: "const",
@@ -427,6 +457,8 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       value: Number(m[3]),
       order,
       tip,
+      min,
+      max,
     });
   }
 
@@ -439,7 +471,7 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
     const key = `bool:${name}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const { order, tip } = extractStatementAnnotationMeta(text, m.index);
+    const { order, tip, min, max } = extractStatementAnnotationMeta(text, m.index);
     result.push({
       kind: "scalar",
       declaration: "const",
@@ -448,6 +480,8 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       value: parsed,
       order,
       tip,
+      min,
+      max,
     });
   }
 
@@ -470,7 +504,7 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
     if (!values.every((v) => Number.isFinite(v))) continue;
 
     seen.add(key);
-    const { order, tip } = extractStatementAnnotationMeta(text, m.index);
+    const { order, tip, min, max } = extractStatementAnnotationMeta(text, m.index);
     result.push({
       kind: "vector",
       declaration: "const",
@@ -479,6 +513,8 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       values,
       order,
       tip,
+      min,
+      max,
     });
   }
 
@@ -503,7 +539,7 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       const key = `define:${type}:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const { order, tip } = extractStatementAnnotationMeta(text, m.index);
+      const { order, tip, min, max } = extractStatementAnnotationMeta(text, m.index);
       result.push({
         kind: "vector",
         declaration: "define",
@@ -512,6 +548,8 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
         values,
         order,
         tip,
+        min,
+        max,
       });
       continue;
     }
@@ -526,7 +564,7 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       const key = `define:${type}:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const { order, tip } = extractStatementAnnotationMeta(text, m.index);
+      const { order, tip, min, max } = extractStatementAnnotationMeta(text, m.index);
       result.push({
         kind: "scalar",
         declaration: "define",
@@ -535,6 +573,8 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
         value,
         order,
         tip,
+        min,
+        max,
       });
       continue;
     }
@@ -546,7 +586,7 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       const key = `define:bool:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const { order, tip } = extractStatementAnnotationMeta(text, m.index);
+      const { order, tip, min, max } = extractStatementAnnotationMeta(text, m.index);
       result.push({
         kind: "scalar",
         declaration: "define",
@@ -555,6 +595,8 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
         value,
         order,
         tip,
+        min,
+        max,
       });
       continue;
     }
@@ -564,7 +606,7 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       const key = `define:bool:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const { order, tip } = extractStatementAnnotationMeta(text, m.index);
+      const { order, tip, min, max } = extractStatementAnnotationMeta(text, m.index);
       result.push({
         kind: "scalar",
         declaration: "define",
@@ -573,6 +615,8 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
         value: plainBool,
         order,
         tip,
+        min,
+        max,
       });
       continue;
     }
@@ -588,7 +632,7 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
       const key = `define:${type}:${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const { order, tip } = extractStatementAnnotationMeta(text, m.index);
+      const { order, tip, min, max } = extractStatementAnnotationMeta(text, m.index);
       result.push({
         kind: "scalar",
         declaration: "define",
@@ -597,6 +641,8 @@ export function extractEditableShaderVariables(source, { uniformValues = null } 
         value,
         order,
         tip,
+        min,
+        max,
       });
     }
   }

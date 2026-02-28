@@ -5,11 +5,11 @@
 // 3) iChannel1 should be the internal analysis buffer provided by the example JSON.
 // 4) Tune uniforms in Edit Variables (all @editable fields below).
 
-uniform float uFlowAngleDeg;      // @editable 24.0 @tip "Flow direction in degrees." @order 1
-uniform float uFlowSpeed;         // @editable 0.28 @tip "Overall river flow speed." @order 2
-uniform float uTurbulence;        // @editable 0.7 @tip "Amount of flow distortion and chaos." @order 4
-uniform float uPatternScale;      // @editable 1.0 @tip "Global scale for waves, foam, and silt patterns." @order 3
-uniform float uTransparency;      // @editable 0.82 @tip "Visibility of refracted riverbed through water." @order 8
+uniform float uFlowAngleDeg;      // @editable 24.0 @min -180.0 @max 180.0 @tip "Flow direction in degrees." @order 1
+uniform float uFlowSpeed;         // @editable 0.28 @min 0.01 @max 10.0 @tip "Overall river flow speed." @order 2
+uniform float uTurbulence;        // @editable 0.7 @min 0.0 @max 5.0 @tip "Amount of flow distortion and chaos." @order 4
+uniform float uPatternScale;      // @editable 1.0 @min 0.01 @max 10.0 @tip "Global scale for waves, foam, and silt patterns." @order 3
+uniform float uTransparency;      // @editable 0.82 @min 0.0 @max 1.0 @tip "Visibility of refracted riverbed through water." @order 8
 uniform float uRefraction;        // @editable 0.05 @tip "Base refraction distortion strength."
 uniform float uDiffraction;       // @editable 0.0025 @tip "Chromatic fringe amount around refraction."
 uniform float uRefractionFlow;    // @editable 0.55 @tip "Extra flow-driven refraction strength."
@@ -24,9 +24,9 @@ uniform float uVortexStrength;    // @editable 0.5 @tip "Extra turbulent churn c
 uniform vec3 uDeepColor;          // @editable 0.01,0.24,0.43 @tip "Tint color used in deepest water."
 uniform vec3 uMediumColor;        // @editable 0.07,0.45,0.57 @tip "Tint color used in mid-depth water."
 uniform vec3 uShallowColor;       // @editable 0.30,0.74,0.67 @tip "Tint color used in shallow water."
-uniform bool uDebugHeightVsWater;  // @editable 0.0 @tip "Show the auto-analyzed river mask and depth visualization." @order 9
-uniform float uDebugSceneUvGrid;   // @editable 0.0 @tip "Show 2x2 UV debug: TL scene UV grid, TR analysis buffer, BL local UV grid, BR local scene capture." @order 10
-uniform float uDebugSegmentation;  // @editable 0.0 @tip "Show segmentation debug: red=mask added by segmentation (amplified), green=water mask, blue=interior depth." @order 11
+uniform bool uDebugHeightVsWater;  // @editable false @tip "Show the auto-analyzed river mask and depth visualization." @order 9
+uniform bool uDebugSceneUvGrid;    // @editable false @tip "Show 2x2 UV debug: TL scene UV grid, TR analysis buffer, BL local UV grid, BR local scene capture." @order 10
+uniform bool uDebugSegmentation;   // @editable false @tip "Show segmentation debug: red=mask added by segmentation (amplified), green=water mask, blue=interior depth." @order 11
 uniform float uSiltIntensity;     // @editable 1.0 @tip "Overall strength of suspended silt plumes."
 uniform float uSiltScale;         // @editable 12.0 @tip "Scale of silt plume patterns."
 uniform float uSiltSpeed;         // @editable 0.25 @tip "Advection speed of silt through flow."
@@ -240,7 +240,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec4 analysis = sampleAnalysis(uv);
   float waterBias = (clamp(uWaterLevel, 0.0, 1.0) - 0.5) * 0.20;
 
-  if (uDebugSceneUvGrid > 0.5) {
+  if (uDebugSceneUvGrid) {
     vec3 analysisQuad = sampleAnalysis(quadUv).rgb;
     analysisQuad.r = applyAnalysisCurve(analysisQuad.r);
     analysisQuad.g = applyAnalysisCurve(analysisQuad.g);
@@ -249,7 +249,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     return;
   }
 
-  if (uDebugSegmentation > 0.5) {
+  if (uDebugSegmentation) {
     float debugMask = waterFieldFromAnalysis(analysis, waterBias);
     float debugDepth = applyAnalysisCurve(analysis.g);
     float debugSeg = clamp(analysis.a * 12.0, 0.0, 1.0);
@@ -276,7 +276,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   float rawDepth = rawDepthFromAnalysis(analysis, waterBias);
   float depth = clamp(rawDepth, 0.0, 1.0);
   float waterMask = smoothstep(0.002, 0.03, depth);
-  if (uDebugHeightVsWater == true) {
+  if (uDebugHeightVsWater) {
     float level01 = clamp(uWaterLevel, 0.0, 1.0);
     float edge = 1.0 - smoothstep(0.0, 0.02, abs(rawDepth));
     vec3 landWater = mix(

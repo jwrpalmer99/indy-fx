@@ -45,6 +45,7 @@ vec3 classifyRiver(
   vec3 c,
   vec3 localMean,
   float neighborhoodHint,
+  float waterFront,
   vec3 seedMean,
   float seedCoverage
 ) {
@@ -77,9 +78,16 @@ vec3 classifyRiver(
   float tolOuter = max(0.001, tol);
   float tolInner = max(0.0005, tol * 0.45);
   float seedSimilarity = segEnabled * (1.0 - smoothstep(tolInner, tolOuter, seedDist));
-  float seedSupport = seedCoverage * smoothstep(0.06, 0.35, neighborhoodHint);
-  float segmentJoin = seedSimilarity * seedSupport * mix(0.70, 1.10, segControl);
-  float segmentLift = segEnabled * segmentJoin * (1.0 - baseMask) * 0.85;
+  float frontBias = smoothstep(0.18, 0.78, waterFront);
+  float edgeGap = clamp(waterFront - baseMask, 0.0, 1.0);
+  float edgeNeed = smoothstep(0.01, 0.28, edgeGap);
+  float seedSupport = mix(
+    seedCoverage * smoothstep(0.04, 0.28, neighborhoodHint),
+    frontBias,
+    0.55
+  );
+  float segmentJoin = seedSimilarity * seedSupport * mix(0.60, 1.20, segControl);
+  float segmentLift = segEnabled * segmentJoin * edgeNeed * (1.0 - baseMask) * 0.95;
   float rawMask = clamp(baseMask + segmentLift, 0.0, 1.0);
   float mask = pow(rawMask, 0.90);
   float segDelta = max(rawMask - baseMask, 0.0);
@@ -108,6 +116,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec3 cDR = sampleCaptureLocal(uv + vec2(texel.x, -texel.y));
   vec3 cUL = sampleCaptureLocal(uv + vec2(-texel.x, texel.y));
   vec3 cUR = sampleCaptureLocal(uv + texel);
+  vec3 cL2 = sampleCaptureLocal(uv - vec2(texel.x * 2.0, 0.0));
+  vec3 cR2 = sampleCaptureLocal(uv + vec2(texel.x * 2.0, 0.0));
+  vec3 cD2 = sampleCaptureLocal(uv - vec2(0.0, texel.y * 2.0));
+  vec3 cU2 = sampleCaptureLocal(uv + vec2(0.0, texel.y * 2.0));
 
   vec3 localMean =
     (c + cL + cR + cD + cU + cDL + cDR + cUL + cUR) / 9.0;
@@ -121,6 +133,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   float hDR = quickWaterHint(cDR);
   float hUL = quickWaterHint(cUL);
   float hUR = quickWaterHint(cUR);
+  float hL2 = quickWaterHint(cL2);
+  float hR2 = quickWaterHint(cR2);
+  float hD2 = quickWaterHint(cD2);
+  float hU2 = quickWaterHint(cU2);
 
   float hint =
     hC * 0.32 +
@@ -131,7 +147,16 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     hDL * 0.07 +
     hDR * 0.07 +
     hUL * 0.07 +
-    hUR * 0.07;
+    hUR * 0.07 +
+    hL2 * 0.05 +
+    hR2 * 0.05 +
+    hD2 * 0.05 +
+    hU2 * 0.05;
+
+  float waterFront = max(
+    max(max(hL, hR), max(hD, hU)),
+    max(max(hL2, hR2), max(hD2, hU2)) * 0.92
+  );
 
   float wC = seedHintWeight(hC) * 0.22;
   float wL = seedHintWeight(hL);
@@ -142,8 +167,13 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   float wDR = seedHintWeight(hDR) * 0.85;
   float wUL = seedHintWeight(hUL) * 0.85;
   float wUR = seedHintWeight(hUR) * 0.85;
+  float wL2 = seedHintWeight(hL2) * 0.72;
+  float wR2 = seedHintWeight(hR2) * 0.72;
+  float wD2 = seedHintWeight(hD2) * 0.72;
+  float wU2 = seedHintWeight(hU2) * 0.72;
 
-  float seedWeightSum = wC + wL + wR + wD + wU + wDL + wDR + wUL + wUR;
+  float seedWeightSum =
+    wC + wL + wR + wD + wU + wDL + wDR + wUL + wUR + wL2 + wR2 + wD2 + wU2;
   vec3 seedMean = seedWeightSum > 0.00001
     ? (
       c * wC +
@@ -154,12 +184,16 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
       cDL * wDL +
       cDR * wDR +
       cUL * wUL +
-      cUR * wUR
+      cUR * wUR +
+      cL2 * wL2 +
+      cR2 * wR2 +
+      cD2 * wD2 +
+      cU2 * wU2
     ) / seedWeightSum
     : localMean;
-  float seedCoverage = smoothstep(0.18, 1.80, seedWeightSum);
+  float seedCoverage = smoothstep(0.12, 2.10, seedWeightSum);
 
-  vec3 river = classifyRiver(c, localMean, hint, seedMean, seedCoverage);
+  vec3 river = classifyRiver(c, localMean, hint, waterFront, seedMean, seedCoverage);
   float mask = river.x;
   float depth = river.y;
   float segment = river.z;

@@ -160,6 +160,20 @@ function getBufferChannelIndex(entry) {
   return 99;
 }
 
+function getScalarSliderSpec(variable) {
+  if (!variable || variable.kind !== "scalar") return null;
+  const type = String(variable.type ?? "").trim().toLowerCase();
+  if (type === "bool") return null;
+  const min = Number(variable.min);
+  const max = Number(variable.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
+  const span = Math.abs(max - min);
+  const step = type === "int" ? 1 : Math.max(0.001, span / 1000);
+  const rawValue = Number(variable.value);
+  const clampedValue = Math.min(max, Math.max(min, Number.isFinite(rawValue) ? rawValue : min));
+  return { min, max, step, clampedValue };
+}
+
 export async function openShaderVariableEditorDialog({
   title = "Edit Shader Variables",
   sourceEntries = [],
@@ -271,14 +285,28 @@ export async function openShaderVariableEditorDialog({
             </div>
           `;
         } else {
-          rows += `
-            <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
-              <label${tipAttr}>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
-              <div class="form-fields">
-                <input type="number" name="var_${index}_value" value="${escapeHtml(formatShaderScalarValue(variable.value, type))}" step="${type === "int" ? "1" : "0.001"}"${disabledAttr}${tipAttr} />
+          const sliderSpec = getScalarSliderSpec(variable);
+          if (sliderSpec) {
+            const displayValue = formatShaderScalarValue(sliderSpec.clampedValue, type);
+            rows += `
+              <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
+                <label${tipAttr}>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
+                <div class="form-fields" style="gap:0.5rem;align-items:center;">
+                  <input type="range" name="var_${index}_value" value="${escapeHtml(displayValue)}" min="${escapeHtml(String(sliderSpec.min))}" max="${escapeHtml(String(sliderSpec.max))}" step="${escapeHtml(String(sliderSpec.step))}" data-slider-output="var_${index}_value_display"${disabledAttr}${tipAttr} />
+                  <span data-slider-value-id="var_${index}_value_display" style="min-width:4.5rem;text-align:right;font-variant-numeric:tabular-nums;"${tipAttr}>${escapeHtml(displayValue)}</span>
+                </div>
               </div>
-            </div>
-          `;
+            `;
+          } else {
+            rows += `
+              <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
+                <label${tipAttr}>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
+                <div class="form-fields">
+                  <input type="number" name="var_${index}_value" value="${escapeHtml(formatShaderScalarValue(variable.value, type))}" step="${type === "int" ? "1" : "0.001"}"${disabledAttr}${tipAttr} />
+                </div>
+              </div>
+            `;
+          }
         }
         continue;
       }
@@ -479,6 +507,34 @@ export async function openShaderVariableEditorDialog({
         }
       }
     });
+  }
+
+  for (const sliderInput of variableRoot?.querySelectorAll?.('input[type="range"][data-slider-output]') ?? []) {
+    if (!(sliderInput instanceof HTMLInputElement)) continue;
+    const outputId = String(sliderInput.dataset.sliderOutput ?? "").trim();
+    if (!outputId) continue;
+    const outputSelector =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? `[data-slider-value-id="${CSS.escape(outputId)}"]`
+        : `[data-slider-value-id="${outputId.replace(/"/g, '\\"')}"]`;
+    const outputEl = variableRoot?.querySelector?.(outputSelector);
+    const updateSliderValue = () => {
+      if (!(outputEl instanceof HTMLElement)) return;
+      const match = String(sliderInput.name ?? "").match(/^var_(\d+)_value$/);
+      const idx = match ? Number(match[1]) : -1;
+      const variable = Number.isInteger(idx) && idx >= 0 ? variables[idx] : null;
+      const type = String(variable?.type ?? "float");
+      const raw = Number(sliderInput.value);
+      outputEl.textContent = formatShaderScalarValue(
+        Number.isFinite(raw) ? raw : Number(variable?.value ?? 0),
+        type,
+      );
+    };
+    updateSliderValue();
+    if (!sliderInput.disabled) {
+      sliderInput.addEventListener("input", updateSliderValue);
+      sliderInput.addEventListener("change", updateSliderValue);
+    }
   }
 
   return variableDialog;
