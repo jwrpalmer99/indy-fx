@@ -178,6 +178,96 @@ function toSceneUvFromWorldPoint(worldPoint, sceneRect) {
   ];
 }
 
+function tryResolveSceneUvTransformFromMeshGeometry(mouseTarget, sceneRect) {
+  if (!mouseTarget?.geometry?.getBuffer || !mouseTarget?.toGlobal || !canvas?.stage?.toLocal) {
+    return null;
+  }
+
+  try {
+    const posBuffer =
+      mouseTarget.geometry.getBuffer("aVertexPosition") ??
+      mouseTarget.geometry.getBuffer("aPosition");
+    const uvBuffer =
+      mouseTarget.geometry.getBuffer("aTextureCoord") ??
+      mouseTarget.geometry.getBuffer("aUV");
+    const positions = posBuffer?.data;
+    const uvs = uvBuffer?.data;
+    if (!positions || !uvs) return null;
+
+    const vertexCount = Math.min(
+      Math.floor(positions.length / 2),
+      Math.floor(uvs.length / 2),
+    );
+    if (vertexCount < 3) return null;
+
+    const points = [];
+    for (let i = 0; i < vertexCount; i += 1) {
+      const px = Number(positions[i * 2]);
+      const py = Number(positions[i * 2 + 1]);
+      const u = Number(uvs[i * 2]);
+      const v = Number(uvs[i * 2 + 1]);
+      if (![px, py, u, v].every(Number.isFinite)) continue;
+      const globalPoint = mouseTarget.toGlobal(new PIXI.Point(px, py));
+      const worldPoint = canvas.stage.toLocal(globalPoint);
+      const sceneUv = toSceneUvFromWorldPoint(worldPoint, sceneRect);
+      if (!sceneUv) continue;
+      points.push({
+        localUv: [u, v],
+        sceneUv,
+      });
+    }
+
+    if (points.length < 3) return null;
+
+    for (let i = 0; i < points.length - 2; i += 1) {
+      const p0 = points[i];
+      for (let j = i + 1; j < points.length - 1; j += 1) {
+        const p1 = points[j];
+        for (let k = j + 1; k < points.length; k += 1) {
+          const p2 = points[k];
+          const du1x = p1.localUv[0] - p0.localUv[0];
+          const du1y = p1.localUv[1] - p0.localUv[1];
+          const du2x = p2.localUv[0] - p0.localUv[0];
+          const du2y = p2.localUv[1] - p0.localUv[1];
+          const det = du1x * du2y - du1y * du2x;
+          if (!Number.isFinite(det) || Math.abs(det) <= 1e-6) continue;
+
+          const invDet = 1 / det;
+          const ds1x = p1.sceneUv[0] - p0.sceneUv[0];
+          const ds1y = p1.sceneUv[1] - p0.sceneUv[1];
+          const ds2x = p2.sceneUv[0] - p0.sceneUv[0];
+          const ds2y = p2.sceneUv[1] - p0.sceneUv[1];
+
+          const axisU = [
+            (du2y * ds1x - du1y * ds2x) * invDet,
+            (du2y * ds1y - du1y * ds2y) * invDet,
+          ];
+          const axisV = [
+            (-du2x * ds1x + du1x * ds2x) * invDet,
+            (-du2x * ds1y + du1x * ds2y) * invDet,
+          ];
+          const origin = [
+            p0.sceneUv[0] - p0.localUv[0] * axisU[0] - p0.localUv[1] * axisV[0],
+            p0.sceneUv[1] - p0.localUv[0] * axisU[1] - p0.localUv[1] * axisV[1],
+          ];
+
+          if (
+            origin.every(Number.isFinite) &&
+            axisU.every(Number.isFinite) &&
+            axisV.every(Number.isFinite)
+          ) {
+            return { origin, axisU, axisV };
+          }
+        }
+      }
+    }
+  } catch (_err) {
+    // Fall back to bounds-based mapping below.
+  }
+
+  return null;
+}
+
 function syncUniformSceneUvTransform(uniforms, origin, axisU, axisV) {
   if (!uniforms || typeof uniforms !== "object") return;
   if ("cpfxSceneUvOrigin" in uniforms) uniforms.cpfxSceneUvOrigin = origin;
@@ -197,42 +287,51 @@ function syncShaderSceneUvUniforms(shader, { mouseTarget = null, runtimeBuffers 
   if (
     sceneRect &&
     mouseTarget?.toGlobal &&
-    typeof mouseTarget.getLocalBounds === "function" &&
     canvas?.stage?.toLocal
   ) {
-    try {
-      const bounds = mouseTarget.getLocalBounds();
-      const bx = Number(bounds?.x);
-      const by = Number(bounds?.y);
-      const bw = Number(bounds?.width);
-      const bh = Number(bounds?.height);
-      if (
-        Number.isFinite(bx) &&
-        Number.isFinite(by) &&
-        Number.isFinite(bw) &&
-        bw > 1e-6 &&
-        Number.isFinite(bh) &&
-        bh > 1e-6
-      ) {
-        const tlGlobal = mouseTarget.toGlobal(new PIXI.Point(bx, by));
-        const trGlobal = mouseTarget.toGlobal(new PIXI.Point(bx + bw, by));
-        const blGlobal = mouseTarget.toGlobal(new PIXI.Point(bx, by + bh));
+    const geometryTransform = tryResolveSceneUvTransformFromMeshGeometry(
+      mouseTarget,
+      sceneRect,
+    );
+    if (geometryTransform) {
+      origin = geometryTransform.origin;
+      axisU = geometryTransform.axisU;
+      axisV = geometryTransform.axisV;
+    } else if (typeof mouseTarget.getLocalBounds === "function") {
+      try {
+        const bounds = mouseTarget.getLocalBounds();
+        const bx = Number(bounds?.x);
+        const by = Number(bounds?.y);
+        const bw = Number(bounds?.width);
+        const bh = Number(bounds?.height);
+        if (
+          Number.isFinite(bx) &&
+          Number.isFinite(by) &&
+          Number.isFinite(bw) &&
+          bw > 1e-6 &&
+          Number.isFinite(bh) &&
+          bh > 1e-6
+        ) {
+          const tlGlobal = mouseTarget.toGlobal(new PIXI.Point(bx, by));
+          const trGlobal = mouseTarget.toGlobal(new PIXI.Point(bx + bw, by));
+          const blGlobal = mouseTarget.toGlobal(new PIXI.Point(bx, by + bh));
 
-        const tlWorld = canvas.stage.toLocal(tlGlobal);
-        const trWorld = canvas.stage.toLocal(trGlobal);
-        const blWorld = canvas.stage.toLocal(blGlobal);
+          const tlWorld = canvas.stage.toLocal(tlGlobal);
+          const trWorld = canvas.stage.toLocal(trGlobal);
+          const blWorld = canvas.stage.toLocal(blGlobal);
 
-        const tlUv = toSceneUvFromWorldPoint(tlWorld, sceneRect);
-        const trUv = toSceneUvFromWorldPoint(trWorld, sceneRect);
-        const blUv = toSceneUvFromWorldPoint(blWorld, sceneRect);
-        if (tlUv && trUv && blUv) {
-          origin = tlUv;
-          axisU = [trUv[0] - tlUv[0], trUv[1] - tlUv[1]];
-          axisV = [blUv[0] - tlUv[0], blUv[1] - tlUv[1]];
+          const tlUv = toSceneUvFromWorldPoint(tlWorld, sceneRect);
+          const trUv = toSceneUvFromWorldPoint(trWorld, sceneRect);
+          const blUv = toSceneUvFromWorldPoint(blWorld, sceneRect);
+          if (tlUv && trUv && blUv) {
+            origin = tlUv;
+            axisU = [trUv[0] - tlUv[0], trUv[1] - tlUv[1]];
+            axisV = [blUv[0] - tlUv[0], blUv[1] - tlUv[1]];
+          }
         }
+      } catch (_err) {
+        // Leave the default local UV mapping in place.
       }
-    } catch (_err) {
-      // Leave the default local UV mapping in place.
     }
   }
 

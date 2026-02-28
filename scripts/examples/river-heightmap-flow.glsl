@@ -8,7 +8,7 @@ uniform float uFlowAngleDeg;      // @editable 24.0 @tip "Flow direction in degr
 uniform float uFlowSpeed;         // @editable 0.28 @tip "Overall river flow speed." @order 2
 uniform float uTurbulence;        // @editable 0.7 @tip "Amount of flow distortion and chaos." @order 4
 uniform float uPatternScale;      // @editable 1.0 @tip "Global scale for waves, foam, and silt patterns." @order 3
-uniform float uWaterLevel;        // @editable 0.5 @tip "Waterline threshold against depth map." @order 5
+uniform float uWaterLevel;        // @editable 0.5 @tip "Bias the automatically detected shoreline threshold." @order 5
 uniform float uTransparency;      // @editable 0.82 @tip "Visibility of refracted riverbed through water." @order 6
 uniform float uRefraction;        // @editable 0.05 @tip "Base refraction distortion strength."
 uniform float uDiffraction;       // @editable 0.0025 @tip "Chromatic fringe amount around refraction."
@@ -24,10 +24,10 @@ uniform float uVortexStrength;    // @editable 0.5 @tip "Extra turbulent churn c
 uniform vec3 uDeepColor;          // @editable 0.01,0.24,0.43 @tip "Tint color used in deepest water."
 uniform vec3 uMediumColor;        // @editable 0.07,0.45,0.57 @tip "Tint color used in mid-depth water."
 uniform vec3 uShallowColor;       // @editable 0.30,0.74,0.67 @tip "Tint color used in shallow water."
-uniform vec3 uDepthWeights;       // @editable -1.0,0.0,1.0 @tip "RGB channel weights used to derive depth." @order 7
-uniform float uDepthGamma;        // @editable 1.0 @tip "Gamma curve applied to depth mapping." @order 8
-uniform float uRedFix;           // @editable 0.7 @tip "How strongly red suppresses blue when isolating river pixels." @order 9
-uniform float uGreenFix;           // @editable 0.4 @tip "How strongly green suppresses blue when isolating river pixels." @order 10
+uniform vec3 uDepthWeights;       // @editable -1.0,0.0,1.0 @tip "Optional palette bias for unusual river colors; usually leave at default." @order 7
+uniform float uDepthGamma;        // @editable 1.0 @tip "Response curve for the auto-detected water depth; usually leave at default." @order 8
+uniform float uRedFix;           // @editable 0.7 @tip "Warm-color rejection strength against red/brown land." @order 9
+uniform float uGreenFix;           // @editable 0.4 @tip "Warm-color rejection strength against green land." @order 10
 uniform bool uDebugHeightVsWater;  // @editable 0.0 @tip "Show depth/waterline debug visualization." @order 11
 uniform float uSiltIntensity;     // @editable 1.0 @tip "Overall strength of suspended silt plumes."
 uniform float uSiltScale;         // @editable 12.0 @tip "Scale of silt plume patterns."
@@ -45,35 +45,49 @@ float luma(vec3 c) {
 float depthMapFromRgb(vec3 c) {
   vec3 w = uDepthWeights;
   float wsumAbs = abs(w.x) + abs(w.y) + abs(w.z);
-  // Signed channel weighting remains available for manual tuning.
+  // Signed channel weighting remains available as a light palette bias, but
+  // the primary extraction is now automatic and style-tolerant.
   float weighted = wsumAbs > 0.00001
     ? dot(c - vec3(0.5), w) / wsumAbs + 0.5
-    : luma(c);
+    : c.b;
 
-  // High-contrast river detector: require both visible blue and blue dominance
-  // over the warm channels. uRedFix/uGreenFix act as suppression weights here.
+  float maxC = max(max(c.r, c.g), c.b);
+  float minC = min(min(c.r, c.g), c.b);
+  float sat = (maxC - minC) / max(0.08, maxC);
+  float lit = luma(c);
+
+  // Prefer cool hues, but normalize by chroma so painterly palettes still read well.
+  float cool = c.b - 0.5 * (c.r + c.g);
+  float cyan = min(c.g, c.b) - c.r;
+  float coolNorm = (cool + sat * 0.18) / (0.18 + sat);
+  float coolScore = smoothstep(0.00, 0.22, max(coolNorm, cyan * 0.85));
+
+  // Water often reads as both cool and somewhat darker than surrounding banks.
+  float darkScore = smoothstep(0.18, 0.82, (1.0 - lit) * (0.55 + 0.45 * sat));
+  float bluePresence = smoothstep(0.14, 0.75, c.b);
+
+  // Keep a small path for manual weighting to help on non-blue or stylized maps,
+  // but make the auto detector do most of the work.
+  float manualBias = clamp(weighted, 0.0, 1.0);
+  float waterLikelihood = bluePresence * mix(coolScore, max(coolScore, darkScore), 0.35);
+  waterLikelihood = max(waterLikelihood, manualBias * 0.18);
+  waterLikelihood = pow(clamp(waterLikelihood, 0.0, 1.0), 0.85);
+
+  // Estimate depth inside detected water from darkness and coolness.
+  float deepBlue = smoothstep(0.02, 0.45, c.b - 0.25 * c.r - 0.15 * c.g);
+  float depthCore = clamp(darkScore * 0.55 + deepBlue * 0.45, 0.0, 1.0);
+
+  // Warm land rejection stays available as a secondary suppression term.
   float redSuppress = max(0.0, uRedFix);
   float greenSuppress = max(0.0, uGreenFix);
-  float warmSuppressedBlue = c.b - (c.r * redSuppress + c.g * greenSuppress);
-  float bluePresence = smoothstep(0.06, 0.72, c.b);
-  float blueDominance = smoothstep(0.01, 0.20, warmSuppressedBlue);
-  float riverMask = bluePresence * blueDominance;
-  riverMask = smoothstep(0.15, 0.85, riverMask);
-  riverMask = pow(clamp(riverMask, 0.0, 1.0), 0.65);
-
-  // Non-blue terrain should fall away faster than river pixels, but keep a path
-  // for manual RGB weighting to still matter when tuning unusual captures.
-  float blueWeight = max(bluePresence, riverMask);
-  float d = mix(weighted * 0.45, max(weighted, riverMask), blueWeight);
-
-  float g = max(0.01, uDepthGamma);
-  float depthLinear = pow(clamp(d, 0.0, 1.0), g);
-
-  // Final leak suppression for obviously non-blue land.
   float landLeak =
     max(c.r - c.b, 0.0) * redSuppress +
     max(c.g - c.b, 0.0) * greenSuppress;
-  depthLinear = clamp(depthLinear - landLeak * 0.20, 0.0, 1.0);
+
+  float autoDepth = clamp(waterLikelihood * depthCore - landLeak * 0.16, 0.0, 1.0);
+
+  float g = max(0.01, uDepthGamma);
+  float depthLinear = pow(autoDepth, g);
 
   // Direct mapping: brighter weighted values map to deeper terrain.
   return depthLinear;
@@ -201,7 +215,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec3 N = computeSurfaceNormal(uvP, flowDirP, t, max(0.01, uNormalIntensity), max(0.0, uTurbulence));
 
   // Depth-map-derived water depth.
-  float rawDepth = uWaterLevel + bedDepthMap - 1.0;
+  // Auto shoreline with a small user bias instead of a hard manual waterline.
+  float waterBias = (clamp(uWaterLevel, 0.0, 1.0) - 0.5) * 0.18;
+  float rawDepth = (bedDepthMap - 0.24 + waterBias) * 1.45;
   float depth = clamp(rawDepth, 0.0, 1.0);
   float waterMask = smoothstep(0.002, 0.03, depth);
   if (uDebugHeightVsWater == true) {

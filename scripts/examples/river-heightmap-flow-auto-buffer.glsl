@@ -1,15 +1,15 @@
-// River Over Separate Height Map (top-down)
+// River Over Auto-Analyzed Capture (top-down)
 // Usage in Indy FX:
 // 1) Import/create a shader and paste this source.
 // 2) Set iChannel0 to your riverbed texture (token/tile image or scene capture).
-// 3) Set iChannel1 to a heightmap texture aligned to the scene (same size/aspect as the scene capture).
+// 3) iChannel1 should be the internal analysis buffer provided by the example JSON.
 // 4) Tune uniforms in Edit Variables (all @editable fields below).
 
 uniform float uFlowAngleDeg;      // @editable 24.0 @tip "Flow direction in degrees." @order 1
 uniform float uFlowSpeed;         // @editable 0.28 @tip "Overall river flow speed." @order 2
 uniform float uTurbulence;        // @editable 0.7 @tip "Amount of flow distortion and chaos." @order 4
 uniform float uPatternScale;      // @editable 1.0 @tip "Global scale for waves, foam, and silt patterns." @order 3
-uniform float uWaterLevel;        // @editable 0.5 @tip "Waterline threshold against depth map." @order 5
+uniform float uWaterLevel;        // @editable 0.5 @tip "Bias the automatically detected shoreline threshold." @order 5
 uniform float uTransparency;      // @editable 0.82 @tip "Visibility of refracted riverbed through water." @order 6
 uniform float uRefraction;        // @editable 0.05 @tip "Base refraction distortion strength."
 uniform float uDiffraction;       // @editable 0.0025 @tip "Chromatic fringe amount around refraction."
@@ -25,12 +25,8 @@ uniform float uVortexStrength;    // @editable 0.5 @tip "Extra turbulent churn c
 uniform vec3 uDeepColor;          // @editable 0.01,0.24,0.43 @tip "Tint color used in deepest water."
 uniform vec3 uMediumColor;        // @editable 0.07,0.45,0.57 @tip "Tint color used in mid-depth water."
 uniform vec3 uShallowColor;       // @editable 0.30,0.74,0.67 @tip "Tint color used in shallow water."
-uniform vec3 uDepthWeights;       // @editable -1.0,0.0,1.0 @tip "Optional RGB weighting for colored heightmaps; grayscale maps are read directly and inverted." @order 7
-uniform float uDepthGamma;        // @editable 1.0 @tip "Gamma curve applied to height values after extraction." @order 8
-uniform float uRedFix;           // @editable 0.7 @tip "Extra red suppression for colored heightmaps; ignored for grayscale maps." @order 9
-uniform float uGreenFix;           // @editable 0.4 @tip "Extra green suppression for colored heightmaps; ignored for grayscale maps." @order 10
-uniform bool uDebugHeightVsWater;  // @editable 0.0 @tip "Show depth/waterline debug visualization." @order 11
-uniform float uDebugSceneUvGrid;   // @editable 0.0 @tip "Show 2x2 UV debug: TL scene UV grid, TR mapped heightmap, BL local UV grid, BR local heightmap." @order 12
+uniform bool uDebugHeightVsWater;  // @editable 0.0 @tip "Show the auto-analyzed river mask and depth visualization." @order 7
+uniform float uDebugSceneUvGrid;   // @editable 0.0 @tip "Show 2x2 UV debug: TL scene UV grid, TR analysis buffer, BL local UV grid, BR local scene capture." @order 8
 uniform float uSiltIntensity;     // @editable 1.0 @tip "Overall strength of suspended silt plumes."
 uniform float uSiltScale;         // @editable 12.0 @tip "Scale of silt plume patterns."
 uniform float uSiltSpeed;         // @editable 0.25 @tip "Advection speed of silt through flow."
@@ -40,36 +36,79 @@ uniform float uSiltDepthBias;     // @editable 0.25 @tip "Target depth where sil
 uniform vec3 uSiltColorA;         // @editable 0.53,0.59,0.42 @tip "Primary silt tint color."
 uniform vec3 uSiltColorB;         // @editable 0.34,0.43,0.30 @tip "Secondary silt tint color."
 
-float luma(vec3 c) {
-  return dot(c, vec3(0.2126, 0.7152, 0.0722));
+vec4 sampleAnalysis(vec2 uv) {
+  return texture(iChannel1, uv);
 }
 
-float depthMapFromRgb(vec3 c) {
-  float minC = min(min(c.r, c.g), c.b);
-  float maxC = max(max(c.r, c.g), c.b);
-  float chroma = maxC - minC;
-  float grayscaleDepth = 1.0 - luma(c);
-  vec3 w = uDepthWeights;
-  float wsumAbs = abs(w.x) + abs(w.y) + abs(w.z);
-  // Treat near-neutral inputs as true grayscale height data (inverted so bright
-  // terrain reads as shallower). Only lean on channel weights when the heightmap
-  // is deliberately color-coded.
-  float weightedDepth = wsumAbs > 0.00001
-    ? dot(c - vec3(0.5), w) / wsumAbs + 0.5
-    : grayscaleDepth;
-  float useWeighted = smoothstep(0.04, 0.18, chroma);
-  float d = mix(grayscaleDepth, weightedDepth, useWeighted);
-  float g = max(0.01, uDepthGamma);
-  float depthLinear = pow(clamp(d, 0.0, 1.0), g);
+float waterFieldFromAnalysis(vec4 analysis, float waterBias) {
+  return clamp(analysis.r + waterBias, 0.0, 1.0);
+}
 
-  // Warm-channel suppression only makes sense for chromatic maps.
-  float warmVsBlue = max(c.r - c.b, 0.0);
-  float greenVsBlue = max(c.g - c.b, 0.0);
-  depthLinear -= (warmVsBlue * uRedFix + greenVsBlue * uGreenFix) * useWeighted;
+float rawDepthFromAnalysis(vec4 analysis, float waterBias) {
+  float waterField = waterFieldFromAnalysis(analysis, waterBias);
+  return (waterField - 0.5) * 0.22 + analysis.g * waterField;
+}
 
-  depthLinear = clamp(depthLinear, 0.0, 1.0);
-  // Direct mapping: brighter weighted values map to deeper terrain.
-  return depthLinear;
+float sampleDepth(vec2 uv, float waterBias) {
+  return clamp(rawDepthFromAnalysis(sampleAnalysis(uv), waterBias), 0.0, 1.0);
+}
+
+float gridLine(vec2 uv, float cells, float thickness) {
+  vec2 f = fract(uv * cells);
+  vec2 d = min(f, 1.0 - f) / max(cells, 1.0);
+  return 1.0 - smoothstep(0.0, thickness, min(d.x, d.y));
+}
+
+vec3 debugGridView(vec2 uv) {
+  float major = gridLine(uv, 10.0, 0.0035);
+  float minor = gridLine(uv, 40.0, 0.0012);
+  float axisX = 1.0 - smoothstep(0.0, 0.005, abs(uv.x - 0.5));
+  float axisY = 1.0 - smoothstep(0.0, 0.005, abs(uv.y - 0.5));
+  vec3 gridView = vec3(uv.x, uv.y, 1.0 - 0.5 * (uv.x + uv.y));
+  gridView = mix(gridView, vec3(0.05), minor * 0.35);
+  gridView = mix(gridView, vec3(1.0), major * 0.85);
+  gridView = mix(gridView, vec3(1.0, 0.20, 0.20), axisX * 0.75);
+  gridView = mix(gridView, vec3(0.20, 1.0, 0.20), axisY * 0.75);
+  return gridView;
+}
+
+vec3 debugSampleView(vec2 uv, vec3 sampled) {
+  float major = gridLine(uv, 10.0, 0.0030);
+  float minor = gridLine(uv, 40.0, 0.0010);
+  vec3 sampleView = sampled;
+  sampleView = mix(sampleView, vec3(1.0), major * 0.35);
+  sampleView = mix(sampleView, vec3(0.08), minor * 0.18);
+  return sampleView;
+}
+
+vec3 sceneUvGridDebug(vec2 rawUv, vec3 analysisSample, vec3 captureSample) {
+  vec2 quadUv = fract(rawUv * 2.0);
+  vec2 sceneUv = cpfx_sceneUvFromRaw(quadUv);
+  bool left = rawUv.x < 0.5;
+  bool top = rawUv.y >= 0.5;
+
+  vec3 debugColor;
+  if (left && top) {
+    debugColor = debugGridView(sceneUv);
+  } else if (!left && top) {
+    debugColor = debugSampleView(quadUv, analysisSample);
+  } else if (left && !top) {
+    debugColor = debugGridView(quadUv);
+  } else {
+    debugColor = debugSampleView(quadUv, captureSample);
+  }
+
+  float dividerX = 1.0 - smoothstep(0.0, 0.003, abs(rawUv.x - 0.5));
+  float dividerY = 1.0 - smoothstep(0.0, 0.003, abs(rawUv.y - 0.5));
+  debugColor = mix(debugColor, vec3(1.0, 0.92, 0.18), max(dividerX, dividerY));
+
+  float edgeDist = min(
+    min(quadUv.x, 1.0 - quadUv.x),
+    min(quadUv.y, 1.0 - quadUv.y)
+  );
+  float innerFrame = 1.0 - smoothstep(0.0, 0.004, edgeDist);
+  debugColor = mix(debugColor, vec3(0.04), innerFrame * 0.35);
+  return debugColor;
 }
 
 mat2 rot2(float a) {
@@ -123,68 +162,6 @@ float fbm(vec2 p) {
     a *= 0.52;
   }
   return v;
-}
-
-float sampleDepthRaw(vec2 rawUv) {
-  return depthMapFromRgb(texture(iChannel1, cpfx_sceneUvFromRaw(rawUv)).rgb);
-}
-
-float gridLine(vec2 uv, float cells, float thickness) {
-  vec2 f = fract(uv * cells);
-  vec2 d = min(f, 1.0 - f) / max(cells, 1.0);
-  return 1.0 - smoothstep(0.0, thickness, min(d.x, d.y));
-}
-
-vec3 debugGridView(vec2 uv) {
-  float major = gridLine(uv, 10.0, 0.0035);
-  float minor = gridLine(uv, 40.0, 0.0012);
-  float axisX = 1.0 - smoothstep(0.0, 0.005, abs(uv.x - 0.5));
-  float axisY = 1.0 - smoothstep(0.0, 0.005, abs(uv.y - 0.5));
-  vec3 gridView = vec3(uv.x, uv.y, 1.0 - 0.5 * (uv.x + uv.y));
-  gridView = mix(gridView, vec3(0.05), minor * 0.35);
-  gridView = mix(gridView, vec3(1.0), major * 0.85);
-  gridView = mix(gridView, vec3(1.0, 0.20, 0.20), axisX * 0.75);
-  gridView = mix(gridView, vec3(0.20, 1.0, 0.20), axisY * 0.75);
-  return gridView;
-}
-
-vec3 debugSampleView(vec2 uv, vec3 sampled) {
-  float major = gridLine(uv, 10.0, 0.0030);
-  float minor = gridLine(uv, 40.0, 0.0010);
-  vec3 sampleView = sampled;
-  sampleView = mix(sampleView, vec3(1.0), major * 0.35);
-  sampleView = mix(sampleView, vec3(0.08), minor * 0.18);
-  return sampleView;
-}
-
-vec3 sceneUvGridDebug(vec2 rawUv, vec3 mappedSample, vec3 localSample) {
-  vec2 quadUv = fract(rawUv * 2.0);
-  vec2 sceneUv = cpfx_sceneUvFromRaw(quadUv);
-  bool left = rawUv.x < 0.5;
-  bool top = rawUv.y >= 0.5;
-
-  vec3 debugColor;
-  if (left && top) {
-    debugColor = debugGridView(sceneUv);
-  } else if (!left && top) {
-    debugColor = debugSampleView(sceneUv, mappedSample);
-  } else if (left && !top) {
-    debugColor = debugGridView(quadUv);
-  } else {
-    debugColor = debugSampleView(quadUv, localSample);
-  }
-
-  float dividerX = 1.0 - smoothstep(0.0, 0.003, abs(rawUv.x - 0.5));
-  float dividerY = 1.0 - smoothstep(0.0, 0.003, abs(rawUv.y - 0.5));
-  debugColor = mix(debugColor, vec3(1.0, 0.92, 0.18), max(dividerX, dividerY));
-
-  float edgeDist = min(
-    min(quadUv.x, 1.0 - quadUv.x),
-    min(quadUv.y, 1.0 - quadUv.y)
-  );
-  float innerFrame = 1.0 - smoothstep(0.0, 0.004, edgeDist);
-  debugColor = mix(debugColor, vec3(0.04), innerFrame * 0.35);
-  return debugColor;
 }
 
 vec2 flowWarp(vec2 p, vec2 flowDir, float t, float turb) {
@@ -244,15 +221,13 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 uv = fragCoord.xy / iResolution.xy;
   vec2 rawUv = cpfx_rawUv();
   vec2 quadUv = fract(rawUv * 2.0);
-  vec2 sceneUv = cpfx_sceneUvFromRaw(rawUv);
   vec4 bed = texture(iChannel0, uv);
-  vec4 heightMap = texture(iChannel1, sceneUv);
-  float bedDepthMap = depthMapFromRgb(heightMap.rgb);
+  vec4 analysis = sampleAnalysis(uv);
 
   if (uDebugSceneUvGrid > 0.5) {
-    vec3 mappedHeightMap = texture(iChannel1, cpfx_sceneUvFromRaw(quadUv)).rgb;
-    vec3 localHeightMap = texture(iChannel1, quadUv).rgb;
-    fragColor = vec4(sceneUvGridDebug(rawUv, mappedHeightMap, localHeightMap), 1.0);
+    vec3 analysisQuad = sampleAnalysis(quadUv).rgb;
+    vec3 captureQuad = texture(iChannel0, quadUv).rgb;
+    fragColor = vec4(sceneUvGridDebug(rawUv, analysisQuad, captureQuad), 1.0);
     return;
   }
 
@@ -262,8 +237,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 flowDirP = toPatternDir(flowDir);
   vec3 N = computeSurfaceNormal(uvP, flowDirP, t, max(0.01, uNormalIntensity), max(0.0, uTurbulence));
 
-  // Depth-map-derived water depth.
-  float rawDepth = uWaterLevel + bedDepthMap - 1.0;
+  // Buffer-derived water field and interior depth.
+  float waterBias = (clamp(uWaterLevel, 0.0, 1.0) - 0.5) * 0.20;
+  float waterField = waterFieldFromAnalysis(analysis, waterBias);
+  float bedDepthMap = analysis.g;
+  float rawDepth = rawDepthFromAnalysis(analysis, waterBias);
   float depth = clamp(rawDepth, 0.0, 1.0);
   float waterMask = smoothstep(0.002, 0.03, depth);
   if (uDebugHeightVsWater == true) {
@@ -274,9 +252,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
       vec3(0.08, 0.38, 0.90),
       step(0.0, rawDepth)
     );
-    // Debug depth ramp: deeper = darker.
+    // Debug depth ramp: deeper = darker, with auto mask confidence mixed in.
     vec3 debugDepth = vec3(1.0 - bedDepthMap);
-    vec3 debugColor = mix(debugDepth, landWater, 0.65);
+    vec3 debugColor = mix(debugDepth, landWater, 0.55 + 0.25 * waterField);
+    debugColor = mix(debugColor, vec3(1.0), analysis.b * 0.25);
     debugColor = mix(debugColor, vec3(1.0, 0.92, 0.18), edge);
 
     // Top bar marker for the current water level (normalized 0-1).
@@ -291,12 +270,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
   // Terrain slope for shoreline foam.
   vec2 texel = vec2(1.0 / iResolution.x, 1.0 / iResolution.y);
-  float hL = sampleDepthRaw(rawUv - vec2(texel.x, 0.0));
-  float hR = sampleDepthRaw(rawUv + vec2(texel.x, 0.0));
-  float hD = sampleDepthRaw(rawUv - vec2(0.0, texel.y));
-  float hU = sampleDepthRaw(rawUv + vec2(0.0, texel.y));
+  float hL = sampleDepth(uv - vec2(texel.x, 0.0), waterBias);
+  float hR = sampleDepth(uv + vec2(texel.x, 0.0), waterBias);
+  float hD = sampleDepth(uv - vec2(0.0, texel.y), waterBias);
+  float hU = sampleDepth(uv + vec2(0.0, texel.y), waterBias);
   vec2 terrainGrad = vec2(hR - hL, hU - hD);
-  float slope = length(terrainGrad);
+  float slope = length(terrainGrad) + analysis.b * 0.03;
 
   // Refracted riverbed with configurable diffraction.
   // Blend physical (IOR-based) and flow-driven distortion for readable top-down motion.

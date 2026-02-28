@@ -13,6 +13,38 @@ const SHADERTOY_UNIFORM_NAMES = [
   "iDate"
 ];
 const SHADERTOY_LEGACY_UNIFORM_NAMES = ["resolution"];
+
+// Pre-compiled combined regex for stripping all known ShaderToy uniform declarations.
+// Matches: uniform [precision] <type> <name> [array]; on a single line.
+const _ALL_SHADERTOY_UNIFORM_NAMES = [...SHADERTOY_UNIFORM_NAMES, ...SHADERTOY_LEGACY_UNIFORM_NAMES];
+const _SHADERTOY_UNIFORM_STRIP_RE = new RegExp(
+  `^\\s*uniform\\s+(?:(?:lowp|mediump|highp)\\s+)?\\w+\\s+(?:${_ALL_SHADERTOY_UNIFORM_NAMES.join("|")})\\s*(?:\\[\\s*\\d+\\s*\\])?\\s*;\\s*$`,
+  "gm"
+);
+
+// Pre-compiled combined regex for shouldUseLeanProfile blocker detection.
+const _LEAN_PROFILE_BLOCKER_RE = new RegExp([
+  /\btexelFetch\s*\(/.source,
+  /\btextureSize\s*\(/.source,
+  /\btextureLod\s*\(/.source,
+  /\btextureGrad\s*\(/.source,
+  /\b(?:sampler3D|sampler2DArray|samplerCubeArray)\b/.source,
+  /\bmat[234]x[234]\b/.source,
+  /\b(?:transpose|inverse|outerProduct)\s*\(/.source,
+  /\b(?:uint|uvec[234]|floatBitsToUint|uintBitsToFloat)\b/.source,
+  /\bswitch\s*\(/.source,
+  /\bfor\s*\(\s*float\b/.source,
+  /<<|>>|\^/.source,
+  /\b(?:dFdx|dFdy|fwidth|tanh|sinh|cosh|round)\s*\(/.source,
+  /\bcpfx_[A-Za-z_]\w*/.source,
+].join("|"));
+
+// Pre-compiled regexes for buildCompatMacroPreamble hasDefine checks.
+const _COMPAT_MACRO_NAMES = ["_in", "_inout", "_out", "_begin", "_end", "_mutable", "_constant", "mul"];
+const _COMPAT_MACRO_DEFINE_RES = Object.fromEntries(
+  _COMPAT_MACRO_NAMES.map((name) => [name, new RegExp(`^\\s*#\\s*define\\s+${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "m")])
+);
+
 const ADAPTER_CACHE_LIMITS = Object.freeze({
   validatedSource: 256,
   rewrittenSource: 256,
@@ -150,13 +182,8 @@ function normalizeShaderSource(source) {
   next = next.replace(/^\s*precision\s+\w+\s+float\s*;\s*$/gm, "");
   next = next.replace(/^\s*uniform\s+\w+\s+iChannelResolution\s*\[\s*4\s*\]\s*;\s*$/gm, "");
 
-  for (const name of [...SHADERTOY_UNIFORM_NAMES, ...SHADERTOY_LEGACY_UNIFORM_NAMES]) {
-    const re = new RegExp(
-      `^\\s*uniform\\s+(?:(?:lowp|mediump|highp)\\s+)?\\w+\\s+${name}\\s*(?:\\[\\s*\\d+\\s*\\])?\\s*;\\s*$`,
-      "gm"
-    );
-    next = next.replace(re, "");
-  }
+  _SHADERTOY_UNIFORM_STRIP_RE.lastIndex = 0;
+  next = next.replace(_SHADERTOY_UNIFORM_STRIP_RE, "");
 
   return next.trim();
 }
@@ -707,6 +734,8 @@ function applyCompatibilityRewrites(source) {
     );
   const rewriteTextureBuiltins = (value) => {
     let out = String(value ?? "");
+    // Skip if no ES3 texture builtins handled by this function are present.
+    if (!/\b(?:texelFetch|textureSize)\s*\(/.test(out)) return out;
     // texelFetch is GLSL ES 3.00; remap common ShaderToy channel fetches.
     out = out.replace(
       /\btexelFetch\s*\(\s*iChannel([0-3])\s*,/g,
@@ -878,42 +907,45 @@ function applyCompatibilityRewrites(source) {
 
   let next = injectMainImageParameterAliases(String(source ?? ""));
   next = maskComments(next);
-  next = rewriteFloatStepLoopsToCountedLoops(next);
+
+  // Feature-detect: skip expensive float loop rewrites if source has no `for` at all.
+  const hasForLoop = /\bfor\s*\(/.test(next);
+  if (hasForLoop) {
+    next = rewriteFloatStepLoopsToCountedLoops(next);
+  }
   next = rewriteTopLevelRedeclaredLocals(next);
 
-  // Common ShaderToy trick in ES3 shaders:
-  //   #define ZERO min(iFrame,0)
-  //   for (int i=ZERO; i<N; i++) ...
-  // GLSL ES 1.00 requires loop init to be compile-time constant.
-  // Only rewrite loop initializers; mutating #define bodies can break
-  // multiline macro DSL shaders.
-  next = next.replace(
-    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*\(?\s*ZERO\s*\)?\s*;/g,
-    "for(int $1=0;",
-  );
-
-  // Some shaders use alternate macro names like NON_CONST_ZERO in loop init.
-  // If such macro resolves from runtime values, clamp it to 0 for GLSL ES 1.00.
-  const loopInitMacroNames = new Set();
-  next.replace(
-    /for\s*\(\s*int\s+[A-Za-z_]\w*\s*=\s*\(?\s*([A-Za-z_]\w*)\s*\)?\s*;/g,
-    (_full, macroName) => {
-      if (macroName && macroName !== "ZERO") loopInitMacroNames.add(String(macroName));
-      return _full;
-    },
-  );
-  for (const macroName of loopInitMacroNames) {
-    const loopStartRe = new RegExp(
-      `for\\s*\\(\\s*int\\s+([A-Za-z_]\\w*)\\s*=\\s*\\(?\\s*${macroName}\\s*\\)?\\s*;`,
-      "g",
+  if (hasForLoop) {
+    // Common ShaderToy trick in ES3 shaders:
+    //   #define ZERO min(iFrame,0)
+    //   for (int i=ZERO; i<N; i++) ...
+    // GLSL ES 1.00 requires loop init to be compile-time constant.
+    // Only rewrite loop initializers; mutating #define bodies can break
+    // multiline macro DSL shaders.
+    next = next.replace(
+      /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*\(?\s*ZERO\s*\)?\s*;/g,
+      "for(int $1=0;",
     );
-    next = next.replace(loopStartRe, "for(int $1=0;");
+
+    // Some shaders use alternate macro names like NON_CONST_ZERO in loop init.
+    // If such macro resolves from runtime values, clamp it to 0 for GLSL ES 1.00.
+    const loopInitMacroNames = new Set();
+    for (const m of next.matchAll(/for\s*\(\s*int\s+[A-Za-z_]\w*\s*=\s*\(?\s*([A-Za-z_]\w*)\s*\)?\s*;/g)) {
+      if (m[1] && m[1] !== "ZERO") loopInitMacroNames.add(m[1]);
+    }
+    for (const macroName of loopInitMacroNames) {
+      const loopStartRe = new RegExp(
+        `for\\s*\\(\\s*int\\s+([A-Za-z_]\\w*)\\s*=\\s*\\(?\\s*${macroName}\\s*\\)?\\s*;`,
+        "g",
+      );
+      next = next.replace(loopStartRe, "for(int $1=0;");
+    }
+    // Direct non-constant init expression in integer loops.
+    next = next.replace(
+      /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*([^;]*?(?:\biFrame\b|\biTime\b|\biMouse\b)[^;]*?)\s*;/g,
+      "for(int $1=0;",
+    );
   }
-  // Direct non-constant init expression in integer loops.
-  next = next.replace(
-    /for\s*\(\s*int\s+([A-Za-z_]\w*)\s*=\s*([^;]*?(?:\biFrame\b|\biTime\b|\biMouse\b)[^;]*?)\s*;/g,
-    "for(int $1=0;",
-  );
 
   // Do not transform preprocessor lines/macros. Rewrites that inject
   // multi-line loop bodies break #define function macros (for example,
@@ -954,7 +986,8 @@ function applyCompatibilityRewrites(source) {
   // Normalize declarations/signatures to sampler2D so adapter wrappers can compile.
   next = next.replace(/\bsampler(?:2D|Cube)?Array\b/g, "sampler2D");
   next = next.replace(/\bsampler3D\b/g, "sampler2D");
-  // Track non-square matrix variables so we can lower unsupported ops.
+  // Feature-detect: skip non-square matrix lowering if none present.
+  const hasNonSquareMatrix = /\bmat[234]x[234]\b/.test(next);
   const mat4x3Vars = new Set();
   const mat3x4Vars = new Set();
   const mat2x4Vars = new Set();
@@ -962,102 +995,84 @@ function applyCompatibilityRewrites(source) {
   const mat2x3Vars = new Set();
   const mat3x2Vars = new Set();
   const mat2Vars = new Set();
-  next.replace(/\bmat4x3\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
-    mat4x3Vars.add(String(name));
-    return _full;
-  });
-  next.replace(/\bmat3x4\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
-    mat3x4Vars.add(String(name));
-    return _full;
-  });
-  next.replace(/\bmat2x4\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
-    mat2x4Vars.add(String(name));
-    return _full;
-  });
-  next.replace(/\bmat4x2\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
-    mat4x2Vars.add(String(name));
-    return _full;
-  });
-  next.replace(/\bmat2x3\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
-    mat2x3Vars.add(String(name));
-    return _full;
-  });
-  next.replace(/\bmat3x2\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
-    mat3x2Vars.add(String(name));
-    return _full;
-  });
-  next.replace(/\bmat2\s+([A-Za-z_]\w*)(?!\s*\()/g, (_full, name) => {
-    mat2Vars.add(String(name));
-    return _full;
-  });
-  // Lower non-square matrix constructors/types to encoded mat4/mat3 forms.
-  next = next.replace(/\bmat4x3\s*\(/g, "cpfx_mat4x3(");
-  next = next.replace(/\bmat3x4\s*\(/g, "cpfx_mat3x4(");
-  next = next.replace(/\bmat2x4\s*\(/g, "cpfx_mat2x4(");
-  next = next.replace(/\bmat4x2\s*\(/g, "cpfx_mat4x2(");
-  next = next.replace(/\bmat2x3\s*\(/g, "cpfx_mat2x3(");
-  next = next.replace(/\bmat3x2\s*\(/g, "cpfx_mat3x2(");
-  next = next.replace(/\bmat4x3\b/g, "mat4");
-  next = next.replace(/\bmat3x4\b/g, "mat4");
-  next = next.replace(/\bmat2x4\b/g, "mat4");
-  next = next.replace(/\bmat4x2\b/g, "mat4");
-  next = next.replace(/\bmat2x3\b/g, "mat3");
-  next = next.replace(/\bmat3x2\b/g, "mat3");
-  const exprAtom =
-    String.raw`(?:\((?:[^()]|\([^()]*\))*\)|[A-Za-z_]\w*\s*\((?:[^()]|\([^()]*\))*\)|[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[[^\]]+\s*\])*)`;
-  next = next.replace(
-    /cpfx_mat4x3\s*\(((?:[^()]|\([^()]*\))*)\)\s*\*\s*([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[[^\]]+\s*\])?|\((?:[^()]|\([^()]*\))*\))/g,
-    "cpfx_mul_mat4x3_vec4(cpfx_mat4x3($1), $2)",
-  );
-  // Handle direct constructor * mat2 cases before per-variable rewrites.
-  next = next.replace(
-    /cpfx_mat2x3\s*\(((?:[^()]|\([^()]*\))*)\)\s*\*\s*(mat2\s*\((?:[^()]|\([^()]*\))*\)|\((?:[^()]|\([^()]*\))*mat2\s*\((?:[^()]|\([^()]*\))*\)(?:[^()]|\([^()]*\))*\))/g,
-    "cpfx_mul_mat2x3_mat2(cpfx_mat2x3($1), $2)",
-  );
-  for (const name of mat4x3Vars) {
-    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
-    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
-    next = next.replace(rightMulRe, `cpfx_mul_mat4x3_vec4(${name}, $1)`);
-    next = next.replace(leftMulRe, `cpfx_mul_vec3_mat4x3($1, ${name})`);
-  }
-  for (const name of mat3x4Vars) {
-    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
-    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
-    next = next.replace(rightMulRe, `cpfx_mul_mat3x4_vec3(${name}, $1)`);
-    next = next.replace(leftMulRe, `cpfx_mul_vec4_mat3x4($1, ${name})`);
-  }
-  for (const name of mat2x4Vars) {
-    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
-    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
-    next = next.replace(rightMulRe, `cpfx_mul_mat2x4_vec2(${name}, $1)`);
-    next = next.replace(leftMulRe, `cpfx_mul_vec4_mat2x4($1, ${name})`);
-  }
-  for (const name of mat4x2Vars) {
-    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
-    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
-    next = next.replace(rightMulRe, `cpfx_mul_mat4x2_vec4(${name}, $1)`);
-    next = next.replace(leftMulRe, `cpfx_mul_vec2_mat4x2($1, ${name})`);
-  }
-  for (const name of mat3x2Vars) {
-    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
-    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
-    next = next.replace(rightMulRe, `cpfx_mul_mat3x2_vec3(${name}, $1)`);
-    next = next.replace(leftMulRe, `cpfx_mul_vec2_mat3x2($1, ${name})`);
-  }
-  for (const name of mat2x3Vars) {
-    const mulMat2Re = new RegExp(
-      `\\b${name}\\s*\\*\\s*(mat2\\s*\\((?:[^()]|\\([^()]*\\))*\\)|\\((?:[^()]|\\([^()]*\\))*mat2\\s*\\((?:[^()]|\\([^()]*\\))*\\)(?:[^()]|\\([^()]*\\))*\\))`,
-      "g",
+  if (hasNonSquareMatrix) {
+    // Track non-square matrix variables so we can lower unsupported ops.
+    for (const m of next.matchAll(/\bmat4x3\s+([A-Za-z_]\w*)(?!\s*\()/g)) mat4x3Vars.add(m[1]);
+    for (const m of next.matchAll(/\bmat3x4\s+([A-Za-z_]\w*)(?!\s*\()/g)) mat3x4Vars.add(m[1]);
+    for (const m of next.matchAll(/\bmat2x4\s+([A-Za-z_]\w*)(?!\s*\()/g)) mat2x4Vars.add(m[1]);
+    for (const m of next.matchAll(/\bmat4x2\s+([A-Za-z_]\w*)(?!\s*\()/g)) mat4x2Vars.add(m[1]);
+    for (const m of next.matchAll(/\bmat2x3\s+([A-Za-z_]\w*)(?!\s*\()/g)) mat2x3Vars.add(m[1]);
+    for (const m of next.matchAll(/\bmat3x2\s+([A-Za-z_]\w*)(?!\s*\()/g)) mat3x2Vars.add(m[1]);
+    for (const m of next.matchAll(/\bmat2\s+([A-Za-z_]\w*)(?!\s*\()/g)) mat2Vars.add(m[1]);
+    // Lower non-square matrix constructors/types to encoded mat4/mat3 forms.
+    next = next.replace(/\bmat4x3\s*\(/g, "cpfx_mat4x3(");
+    next = next.replace(/\bmat3x4\s*\(/g, "cpfx_mat3x4(");
+    next = next.replace(/\bmat2x4\s*\(/g, "cpfx_mat2x4(");
+    next = next.replace(/\bmat4x2\s*\(/g, "cpfx_mat4x2(");
+    next = next.replace(/\bmat2x3\s*\(/g, "cpfx_mat2x3(");
+    next = next.replace(/\bmat3x2\s*\(/g, "cpfx_mat3x2(");
+    next = next.replace(/\bmat4x3\b/g, "mat4");
+    next = next.replace(/\bmat3x4\b/g, "mat4");
+    next = next.replace(/\bmat2x4\b/g, "mat4");
+    next = next.replace(/\bmat4x2\b/g, "mat4");
+    next = next.replace(/\bmat2x3\b/g, "mat3");
+    next = next.replace(/\bmat3x2\b/g, "mat3");
+    const exprAtom =
+      String.raw`(?:\((?:[^()]|\([^()]*\))*\)|[A-Za-z_]\w*\s*\((?:[^()]|\([^()]*\))*\)|[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[[^\]]+\s*\])*)`;
+    next = next.replace(
+      /cpfx_mat4x3\s*\(((?:[^()]|\([^()]*\))*)\)\s*\*\s*([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[[^\]]+\s*\])?|\((?:[^()]|\([^()]*\))*\))/g,
+      "cpfx_mul_mat4x3_vec4(cpfx_mat4x3($1), $2)",
     );
-    for (const mat2Name of mat2Vars) {
-      const mulMat2VarRe = new RegExp(`\\b${name}\\s*\\*\\s*\\b${mat2Name}\\b`, "g");
-      next = next.replace(mulMat2VarRe, `cpfx_mul_mat2x3_mat2(${name}, ${mat2Name})`);
+    // Handle direct constructor * mat2 cases before per-variable rewrites.
+    next = next.replace(
+      /cpfx_mat2x3\s*\(((?:[^()]|\([^()]*\))*)\)\s*\*\s*(mat2\s*\((?:[^()]|\([^()]*\))*\)|\((?:[^()]|\([^()]*\))*mat2\s*\((?:[^()]|\([^()]*\))*\)(?:[^()]|\([^()]*\))*\))/g,
+      "cpfx_mul_mat2x3_mat2(cpfx_mat2x3($1), $2)",
+    );
+    for (const name of mat4x3Vars) {
+      const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+      const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+      next = next.replace(rightMulRe, `cpfx_mul_mat4x3_vec4(${name}, $1)`);
+      next = next.replace(leftMulRe, `cpfx_mul_vec3_mat4x3($1, ${name})`);
     }
-    const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
-    const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
-    next = next.replace(mulMat2Re, `cpfx_mul_mat2x3_mat2(${name}, $1)`);
-    next = next.replace(rightMulRe, `cpfx_mul_mat2x3_vec2(${name}, $1)`);
-    next = next.replace(leftMulRe, `cpfx_mul_vec3_mat2x3($1, ${name})`);
+    for (const name of mat3x4Vars) {
+      const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+      const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+      next = next.replace(rightMulRe, `cpfx_mul_mat3x4_vec3(${name}, $1)`);
+      next = next.replace(leftMulRe, `cpfx_mul_vec4_mat3x4($1, ${name})`);
+    }
+    for (const name of mat2x4Vars) {
+      const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+      const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+      next = next.replace(rightMulRe, `cpfx_mul_mat2x4_vec2(${name}, $1)`);
+      next = next.replace(leftMulRe, `cpfx_mul_vec4_mat2x4($1, ${name})`);
+    }
+    for (const name of mat4x2Vars) {
+      const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+      const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+      next = next.replace(rightMulRe, `cpfx_mul_mat4x2_vec4(${name}, $1)`);
+      next = next.replace(leftMulRe, `cpfx_mul_vec2_mat4x2($1, ${name})`);
+    }
+    for (const name of mat3x2Vars) {
+      const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+      const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+      next = next.replace(rightMulRe, `cpfx_mul_mat3x2_vec3(${name}, $1)`);
+      next = next.replace(leftMulRe, `cpfx_mul_vec2_mat3x2($1, ${name})`);
+    }
+    for (const name of mat2x3Vars) {
+      const mulMat2Re = new RegExp(
+        `\\b${name}\\s*\\*\\s*(mat2\\s*\\((?:[^()]|\\([^()]*\\))*\\)|\\((?:[^()]|\\([^()]*\\))*mat2\\s*\\((?:[^()]|\\([^()]*\\))*\\)(?:[^()]|\\([^()]*\\))*\\))`,
+        "g",
+      );
+      for (const mat2Name of mat2Vars) {
+        const mulMat2VarRe = new RegExp(`\\b${name}\\s*\\*\\s*\\b${mat2Name}\\b`, "g");
+        next = next.replace(mulMat2VarRe, `cpfx_mul_mat2x3_mat2(${name}, ${mat2Name})`);
+      }
+      const rightMulRe = new RegExp(`\\b${name}\\s*\\*\\s*(${exprAtom})`, "g");
+      const leftMulRe = new RegExp(`(${exprAtom})\\s*\\*\\s*\\b${name}\\b`, "g");
+      next = next.replace(mulMat2Re, `cpfx_mul_mat2x3_mat2(${name}, $1)`);
+      next = next.replace(rightMulRe, `cpfx_mul_mat2x3_vec2(${name}, $1)`);
+      next = next.replace(leftMulRe, `cpfx_mul_vec3_mat2x3($1, ${name})`);
+    }
   }
 
   // GLSL ES 1.00 does not support float literal suffixes (for example, 1.0f).
@@ -2377,16 +2392,21 @@ function applyCompatibilityRewrites(source) {
   // Cast RHS in int assignments to avoid float->int compile errors.
   next = castIntAssignmentsFromFrameUniforms(next);
 
+  // Feature-detect: skip bitwise operator rewrites if no bitwise syntax present.
+  // Note: check again after preprocessor unmasking in case macros introduce ops.
+  const hasBitwiseOps = /<<|>>|(?<!&)&(?!&)|(?<!\|)\|(?!\|)|\^|%|\b0x[0-9A-Fa-f]/.test(next);
+  const lvalue = String.raw`([A-Za-z_]\w*(?:\s*\[[^\]]+\s*\])?(?:\s*\.\s*[A-Za-z_]\w+)*)`;
+  if (hasBitwiseOps) {
   // GLSL ES 1.00 has no bitwise operators. Rewrite common patterns.
   // Rewrite compound bitwise assignments (unsupported in GLSL ES 1.00).
   // Examples: a ^= b; a |= b; a &= b; a <<= b; a >>= b; a %= b;
-  const lvalue = String.raw`([A-Za-z_]\w*(?:\s*\[[^\]]+\s*\])?(?:\s*\.\s*[A-Za-z_]\w+)*)`;
   next = next.replace(new RegExp(`${lvalue}\\s*\\^=\\s*([^;]+);`, "g"), "$1 = cpfx_bitxor($1, $2);");
   next = next.replace(new RegExp(`${lvalue}\\s*\\|=\\s*([^;]+);`, "g"), "$1 = cpfx_bitor($1, $2);");
   next = next.replace(new RegExp(`${lvalue}\\s*&=\\s*([^;]+);`, "g"), "$1 = cpfx_bitand($1, $2);");
   next = next.replace(new RegExp(`${lvalue}\\s*<<=\\s*([^;]+);`, "g"), "$1 = cpfx_shl($1, $2);");
   next = next.replace(new RegExp(`${lvalue}\\s*>>=\\s*([^;]+);`, "g"), "$1 = cpfx_shr($1, $2);");
   next = next.replace(new RegExp(`${lvalue}\\s*%=\\s*([^;]+);`, "g"), "$1 = cpfx_mod($1, $2);");
+  }
 
   const foldBinaryOps = (input, regex, replacement) => {
     let out = String(input ?? "");
@@ -2397,58 +2417,60 @@ function applyCompatibilityRewrites(source) {
     }
     return out;
   };
-  // Handle nested pattern like (((i+3)>>1)&1) before generic binary rewrites.
-  const nestedShiftAndRe =
-    /\(\s*\(\s*([A-Za-z0-9_+\-*/\s.]+?)\s*>>\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g;
-  next = next.replace(
-    nestedShiftAndRe,
-    "cpfx_bitand(cpfx_shr($1, $2), $3)",
-  );
+  if (hasBitwiseOps) {
+    // Handle nested pattern like (((i+3)>>1)&1) before generic binary rewrites.
+    const nestedShiftAndRe =
+      /\(\s*\(\s*([A-Za-z0-9_+\-*/\s.]+?)\s*>>\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g;
+    next = next.replace(
+      nestedShiftAndRe,
+      "cpfx_bitand(cpfx_shr($1, $2), $3)",
+    );
 
-  const identifierAtom = String.raw`\b[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[\s*[^][]+\s*\])?`;
-  const callableIdentifierAtom = String.raw`(?!(?:return|if|for|while|switch|case|default|else|do)\b)${identifierAtom}`;
-  const parenAtom = String.raw`\((?:[^()]|\([^()]*\))*\)`;
-  const functionCallAtom = String.raw`${callableIdentifierAtom}\s*\((?:[^()]|\([^()]*\))*\)`;
-  const atom = String.raw`(?:${functionCallAtom}|${identifierAtom}|0x[0-9A-Fa-f]+|[+-]?\d+(?:\.\d+)?|${parenAtom})`;
-  const shlRe = new RegExp(`(${atom})\\s*<<\\s*(${atom})`, "g");
-  const shrRe = new RegExp(`(${atom})\\s*>>\\s*(${atom})`, "g");
-  const andRe = new RegExp(`(${atom})\\s*&\\s*(${atom})`, "g");
-  const xorRe = new RegExp(`(${atom})\\s*\\^\\s*(${atom})`, "g");
-  const orRe = new RegExp(`(${atom})\\s*\\|\\s*(${atom})`, "g");
-  const modRe = new RegExp(`(${atom})\\s*%\\s*(${atom})`, "g");
-  next = foldBinaryOps(next, shlRe, "cpfx_shl($1, $2)");
-  next = foldBinaryOps(next, shrRe, "cpfx_shr($1, $2)");
-  next = foldBinaryOps(next, andRe, "cpfx_bitand($1, $2)");
-  next = foldBinaryOps(next, xorRe, "cpfx_bitxor($1, $2)");
-  next = foldBinaryOps(next, orRe, "cpfx_bitor($1, $2)");
-  next = foldBinaryOps(next, modRe, "cpfx_mod($1, $2)");
-  // Catch residual forms like ((cpfx_shr((i+3),1))&1).
-  next = next.replace(
-    /\(\s*\(\s*(cpfx_shr\s*\([^;]+?\))\s*\)\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g,
-    "cpfx_bitand($1, $2)",
-  );
-  next = next.replace(
-    /\(\s*(cpfx_shr\s*\([^;]+?\))\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g,
-    "cpfx_bitand($1, $2)",
-  );
-  // Catch residual XOR forms with wrapped operands where nested function calls
-  // can defeat the simpler atom-based regex above.
-  next = next.replace(
-    /\(\s*(\([^;\n]+?\)|(?!(?:return|if|for|while|switch|case|default|else|do)\b)\b[A-Za-z_]\w*(?:\s*\([^;\n]*?\))?)\s*\^\s*([A-Za-z_]\w*|\([^;\n]+?\))\s*\)/g,
-    "cpfx_bitxor($1, $2)",
-  );
-  // Final conservative XOR sweep for simple binary operands.
-  next = next.replace(
-    /(\b[A-Za-z_]\w*\b|\([^()]*\))\s*\^\s*(\b[A-Za-z_]\w*\b|\([^()]*\))/g,
-    "cpfx_bitxor($1, $2)",
-  );
-  // Some ES3 hash snippets cast a scalar bitand result from a vector constructor:
-  // float(cpfx_bitand(n, ivec3(0x7fffffff))) -> float(cpfx_bitand(n, 0x7fffffff))
-  // Keep this scalar to avoid illegal mixed scalar/vector overload resolution.
-  next = next.replace(
-    /float\s*\(\s*cpfx_bitand\s*\(\s*([^,]+?)\s*,\s*ivec[234]\s*\(\s*([^)]+?)\s*\)\s*\)\s*\)/g,
-    "float(cpfx_bitand($1, $2))",
-  );
+    const identifierAtom = String.raw`\b[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?(?:\s*\[\s*[^][]+\s*\])?`;
+    const callableIdentifierAtom = String.raw`(?!(?:return|if|for|while|switch|case|default|else|do)\b)${identifierAtom}`;
+    const parenAtom = String.raw`\((?:[^()]|\([^()]*\))*\)`;
+    const functionCallAtom = String.raw`${callableIdentifierAtom}\s*\((?:[^()]|\([^()]*\))*\)`;
+    const atom = String.raw`(?:${functionCallAtom}|${identifierAtom}|0x[0-9A-Fa-f]+|[+-]?\d+(?:\.\d+)?|${parenAtom})`;
+    const shlRe = new RegExp(`(${atom})\\s*<<\\s*(${atom})`, "g");
+    const shrRe = new RegExp(`(${atom})\\s*>>\\s*(${atom})`, "g");
+    const andRe = new RegExp(`(${atom})\\s*&\\s*(${atom})`, "g");
+    const xorRe = new RegExp(`(${atom})\\s*\\^\\s*(${atom})`, "g");
+    const orRe = new RegExp(`(${atom})\\s*\\|\\s*(${atom})`, "g");
+    const modRe = new RegExp(`(${atom})\\s*%\\s*(${atom})`, "g");
+    next = foldBinaryOps(next, shlRe, "cpfx_shl($1, $2)");
+    next = foldBinaryOps(next, shrRe, "cpfx_shr($1, $2)");
+    next = foldBinaryOps(next, andRe, "cpfx_bitand($1, $2)");
+    next = foldBinaryOps(next, xorRe, "cpfx_bitxor($1, $2)");
+    next = foldBinaryOps(next, orRe, "cpfx_bitor($1, $2)");
+    next = foldBinaryOps(next, modRe, "cpfx_mod($1, $2)");
+    // Catch residual forms like ((cpfx_shr((i+3),1))&1).
+    next = next.replace(
+      /\(\s*\(\s*(cpfx_shr\s*\([^;]+?\))\s*\)\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g,
+      "cpfx_bitand($1, $2)",
+    );
+    next = next.replace(
+      /\(\s*(cpfx_shr\s*\([^;]+?\))\s*&\s*([A-Za-z0-9_+\-*/\s.]+?)\s*\)/g,
+      "cpfx_bitand($1, $2)",
+    );
+    // Catch residual XOR forms with wrapped operands where nested function calls
+    // can defeat the simpler atom-based regex above.
+    next = next.replace(
+      /\(\s*(\([^;\n]+?\)|(?!(?:return|if|for|while|switch|case|default|else|do)\b)\b[A-Za-z_]\w*(?:\s*\([^;\n]*?\))?)\s*\^\s*([A-Za-z_]\w*|\([^;\n]+?\))\s*\)/g,
+      "cpfx_bitxor($1, $2)",
+    );
+    // Final conservative XOR sweep for simple binary operands.
+    next = next.replace(
+      /(\b[A-Za-z_]\w*\b|\([^()]*\))\s*\^\s*(\b[A-Za-z_]\w*\b|\([^()]*\))/g,
+      "cpfx_bitxor($1, $2)",
+    );
+    // Some ES3 hash snippets cast a scalar bitand result from a vector constructor:
+    // float(cpfx_bitand(n, ivec3(0x7fffffff))) -> float(cpfx_bitand(n, 0x7fffffff))
+    // Keep this scalar to avoid illegal mixed scalar/vector overload resolution.
+    next = next.replace(
+      /float\s*\(\s*cpfx_bitand\s*\(\s*([^,]+?)\s*,\s*ivec[234]\s*\(\s*([^)]+?)\s*\)\s*\)\s*\)/g,
+      "float(cpfx_bitand($1, $2))",
+    );
+  }
 
   next = rewriteTextureBuiltins(next);
   // GLSL ES 1.00 has no mat4x3; rewrite constructor multiply forms.
@@ -2485,13 +2507,9 @@ function applyCompatibilityRewrites(source) {
   // Some shaders define runtime init symbols (for example ZEROU) in preprocessor
   // sections and use them in `for(int i=MACRO; ...)`, which GLSL ES 1.00 rejects.
   const postLoopInitMacroNames = new Set();
-  next.replace(
-    /for\s*\(\s*int\s+[A-Za-z_]\w*\s*=\s*\(?\s*([A-Za-z_]\w*)\s*\)?\s*;/g,
-    (_full, macroName) => {
-      if (macroName) postLoopInitMacroNames.add(String(macroName));
-      return _full;
-    },
-  );
+  for (const m of next.matchAll(/for\s*\(\s*int\s+[A-Za-z_]\w*\s*=\s*\(?\s*([A-Za-z_]\w*)\s*\)?\s*;/g)) {
+    if (m[1]) postLoopInitMacroNames.add(m[1]);
+  }
   for (const macroName of postLoopInitMacroNames) {
     const loopStartRe = new RegExp(
       `for\\s*\\(\\s*int\\s+([A-Za-z_]\\w*)\\s*=\\s*\\(?\\s*${macroName}\\s*\\)?\\s*;`,
@@ -2508,13 +2526,15 @@ function applyCompatibilityRewrites(source) {
   // bodies such as `#define Main ... I = iFrame;` are covered too.
   next = castIntAssignmentsFromFrameUniforms(next);
   // Final post-preprocessor pass for macro-expanded bodies that may still
-  // contain ES3-only compound bitwise operators.
-  next = next.replace(new RegExp(`${lvalue}\\s*\\^=\\s*([^;]+);`, "g"), "$1 = cpfx_bitxor($1, $2);");
-  next = next.replace(new RegExp(`${lvalue}\\s*\\|=\\s*([^;]+);`, "g"), "$1 = cpfx_bitor($1, $2);");
-  next = next.replace(new RegExp(`${lvalue}\\s*&=\\s*([^;]+);`, "g"), "$1 = cpfx_bitand($1, $2);");
-  next = next.replace(new RegExp(`${lvalue}\\s*<<=\\s*([^;]+);`, "g"), "$1 = cpfx_shl($1, $2);");
-  next = next.replace(new RegExp(`${lvalue}\\s*>>=\\s*([^;]+);`, "g"), "$1 = cpfx_shr($1, $2);");
-  next = next.replace(new RegExp(`${lvalue}\\s*%=\\s*([^;]+);`, "g"), "$1 = cpfx_mod($1, $2);");
+  // contain ES3-only compound bitwise operators. Re-check after unmasking.
+  if (/[&|^]=|<<=|>>=|%=/.test(next)) {
+    next = next.replace(new RegExp(`${lvalue}\\s*\\^=\\s*([^;]+);`, "g"), "$1 = cpfx_bitxor($1, $2);");
+    next = next.replace(new RegExp(`${lvalue}\\s*\\|=\\s*([^;]+);`, "g"), "$1 = cpfx_bitor($1, $2);");
+    next = next.replace(new RegExp(`${lvalue}\\s*&=\\s*([^;]+);`, "g"), "$1 = cpfx_bitand($1, $2);");
+    next = next.replace(new RegExp(`${lvalue}\\s*<<=\\s*([^;]+);`, "g"), "$1 = cpfx_shl($1, $2);");
+    next = next.replace(new RegExp(`${lvalue}\\s*>>=\\s*([^;]+);`, "g"), "$1 = cpfx_shr($1, $2);");
+    next = next.replace(new RegExp(`${lvalue}\\s*%=\\s*([^;]+);`, "g"), "$1 = cpfx_mod($1, $2);");
+  }
   next = rewriteDynamicArrayReadIndexing(next);
   next = rewriteDynamicMatrixReadIndexing(next);
   next = unmaskComments(next);
@@ -2523,7 +2543,7 @@ function applyCompatibilityRewrites(source) {
 
 function buildCompatMacroPreamble(source) {
   const text = String(source ?? "");
-  const hasDefine = (name) => new RegExp(`^\\s*#\\s*define\\s+${name}\\b`, "m").test(text);
+  const hasDefine = (name) => _COMPAT_MACRO_DEFINE_RES[name].test(text);
   const blocks = [];
   const addMacro = (name, value) => {
     if (hasDefine(name)) return;
@@ -2717,25 +2737,7 @@ export function adaptShaderToyFragment(source, options = {}) {
   const shouldUseLeanProfile = (value) => {
     const text = stripCommentsForChannelScan(String(value ?? ""));
     if (!text) return false;
-    const blockers = [
-      /\btexelFetch\s*\(/,
-      /\btextureSize\s*\(/,
-      /\btextureLod\s*\(/,
-      /\btextureGrad\s*\(/,
-      /\b(?:sampler3D|sampler2DArray|samplerCubeArray)\b/,
-      /\bmat[234]x[234]\b/,
-      /\b(?:transpose|inverse|outerProduct)\s*\(/,
-      /\b(?:uint|uvec[234]|floatBitsToUint|uintBitsToFloat)\b/,
-      /\bswitch\s*\(/,
-      /\bfor\s*\(\s*float\b/,
-      /<<|>>|\^/,
-      /\b(?:dFdx|dFdy|fwidth|tanh|sinh|cosh|round)\s*\(/,
-      /\bcpfx_[A-Za-z_]\w*/,
-    ];
-    for (const blocker of blockers) {
-      if (blocker.test(text)) return false;
-    }
-    return true;
+    return !_LEAN_PROFILE_BLOCKER_RE.test(text);
   };
 
   const sanitizeColorFlag = sanitizeColor;

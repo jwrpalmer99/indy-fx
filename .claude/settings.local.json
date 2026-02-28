@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --input-type=module -e \"import\\(''./scripts/shaders/shadertoy-adapter.js''\\).then\\(\\(\\) => console.log\\(''OK''\\)\\).catch\\(e => console.error\\(e.message\\)\\)\")",
+      "Bash(node -e \"const fs = require\\(''fs''\\); const src = fs.readFileSync\\(''scripts/shaders/shadertoy-adapter.js'',''utf8''\\); try { new Function\\(src.replace\\(/^export /gm,''''\\).replace\\(/^import .*/gm,''''\\)\\); console.log\\(''Syntax OK''\\); } catch\\(e\\) { console.error\\(e.message\\); }\")"
+    ]
+  }
+}
