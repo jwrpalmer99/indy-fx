@@ -405,11 +405,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     1.0
   );
   float waterTintStrength = 1.0 - bedVisibility;
+  float hazeStrength = 1.0 - transparency;
 
   // uTransparency = 0.0 -> fully opaque water (no bed visibility).
   // uTransparency = 1.0 -> refracted bed strongly visible, especially in shallows.
   vec3 waterBody = mix(refractedBed, waterColor, waterTintStrength);
-  waterBody += vec3((eddy - 0.5) * 0.03 * bedVisibility);
+  waterBody += vec3((eddy - 0.5) * 0.03 * hazeStrength);
 
   // Suspended silt as soft underwater plumes (cloud/smoke-like rather than streaky).
   float siltScale = max(0.5, uSiltScale);
