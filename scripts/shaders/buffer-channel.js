@@ -1,6 +1,9 @@
 import { SHADER_VERT } from "./common.js";
 import { getSolidTexture } from "./textures.js";
-import { adaptShaderToyBufferFragment } from "./shadertoy-adapter.js";
+import {
+  adaptShaderToyBufferFragment,
+  shaderSourceEnablesMouse,
+} from "./shadertoy-adapter.js";
 
 const CHANNEL_INDICES = [0, 1, 2, 3];
 const MODULE_ID = "indy-fx";
@@ -496,6 +499,7 @@ export class ShaderToyBufferChannel {
     samplerInternal = "",
     customUniforms = null,
   } = {}) {
+    const mouseEnabled = shaderSourceEnablesMouse(source);
     const fallbackSize = Math.max(2, Math.round(Number(size) || 512));
     const widthRaw = Number(width);
     const heightRaw = Number(height);
@@ -555,7 +559,6 @@ export class ShaderToyBufferChannel {
       iChannel1: this.fallbackTextures[1],
       iChannel2: this.fallbackTextures[2],
       iChannel3: this.fallbackTextures[3],
-      iMouse: [0, 0, 0, 0],
       uTime: 0,
       iTime: 0,
       iTimeDelta: 1 / 60,
@@ -590,6 +593,9 @@ export class ShaderToyBufferChannel {
       iResolution: [this.width, this.height, 1],
       resolution: [this.width, this.height],
     };
+    if (mouseEnabled) {
+      uniforms.iMouse = [0, 0, 0, 0];
+    }
 
     const editableDefaults = extractEditableUniformDefaults(source);
     for (const [name, value] of Object.entries(editableDefaults)) {
@@ -599,6 +605,9 @@ export class ShaderToyBufferChannel {
     const explicitCustomUniforms = normalizeCustomUniformMap(customUniforms);
     for (const [name, value] of Object.entries(explicitCustomUniforms)) {
       uniforms[name] = value;
+    }
+    if (!mouseEnabled && Object.prototype.hasOwnProperty.call(uniforms, "iMouse")) {
+      delete uniforms.iMouse;
     }
 
     const fragment = adaptShaderToyBufferFragment(source);

@@ -291,9 +291,9 @@ export async function openShaderVariableEditorDialog({
             rows += `
               <div class="form-group" data-var-index="${index}" data-var-kind="scalar">
                 <label${tipAttr}>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
-                <div class="form-fields" style="gap:0.5rem;align-items:center;">
-                  <input type="range" name="var_${index}_value" value="${escapeHtml(displayValue)}" min="${escapeHtml(String(sliderSpec.min))}" max="${escapeHtml(String(sliderSpec.max))}" step="${escapeHtml(String(sliderSpec.step))}" data-slider-output="var_${index}_value_display"${disabledAttr}${tipAttr} />
-                  <span data-slider-value-id="var_${index}_value_display" style="min-width:4.5rem;text-align:right;font-variant-numeric:tabular-nums;"${tipAttr}>${escapeHtml(displayValue)}</span>
+                <div class="form-fields" style="gap:0.5rem;align-items:center;flex-wrap:nowrap;width:100%;">
+                  <input type="range" name="var_${index}_slider" value="${escapeHtml(displayValue)}" min="${escapeHtml(String(sliderSpec.min))}" max="${escapeHtml(String(sliderSpec.max))}" step="${escapeHtml(String(sliderSpec.step))}" data-slider-number="var_${index}_value" style="flex:1 1 auto;min-width:0;"${disabledAttr}${tipAttr} />
+                  <input type="number" name="var_${index}_value" value="${escapeHtml(displayValue)}" min="${escapeHtml(String(sliderSpec.min))}" max="${escapeHtml(String(sliderSpec.max))}" step="${escapeHtml(String(sliderSpec.step))}" style="width:6.5rem;flex:0 0 auto;"${disabledAttr}${tipAttr} />
                 </div>
               </div>
             `;
@@ -368,8 +368,7 @@ export async function openShaderVariableEditorDialog({
     });
   };
 
-  const applyFromDialog = async (dialogRoot, action = "apply") => {
-    const nextVariables = readDialogVariables(dialogRoot);
+  const buildVariablesBySourceKey = (nextVariables) => {
     const varsBySourceKey = new Map();
     for (const variable of nextVariables) {
       const sourceKey = String(variable?.sourceKey ?? "").trim();
@@ -377,6 +376,65 @@ export async function openShaderVariableEditorDialog({
       if (!varsBySourceKey.has(sourceKey)) varsBySourceKey.set(sourceKey, []);
       varsBySourceKey.get(sourceKey).push(variable);
     }
+    return varsBySourceKey;
+  };
+
+  const applyUniformVariablesBySource = (varsBySourceKey, updatedSourceKeys) => {
+    for (const sourceEntry of normalizedEntries) {
+      const scopedVariables = varsBySourceKey.get(sourceEntry.key) ?? [];
+      if (!scopedVariables.length) continue;
+      const uniformScopedVariables = scopedVariables.filter(
+        (variable) => String(variable?.declaration ?? "").trim().toLowerCase() === "uniform",
+      );
+      if (!uniformScopedVariables.length || !sourceEntry.uniformValuesWritable) continue;
+      const currentUniformValues = sourceEntry.readUniformValues();
+      const nextUniformValues = foundry.utils.deepClone(currentUniformValues);
+      for (const variable of uniformScopedVariables) {
+        const uniformName = String(variable?.name ?? "").trim();
+        if (!uniformName) continue;
+        if (variable?.kind === "vector") {
+          nextUniformValues[uniformName] = Array.isArray(variable?.values)
+            ? variable.values.map((value) => Number(value))
+            : [];
+        } else if (String(variable?.type ?? "").trim().toLowerCase() === "bool") {
+          nextUniformValues[uniformName] = Boolean(variable?.value);
+        } else {
+          const n = Number(variable?.value);
+          nextUniformValues[uniformName] = Number.isFinite(n) ? n : 0;
+        }
+      }
+      if (JSON.stringify(nextUniformValues) !== JSON.stringify(currentUniformValues)) {
+        sourceEntry.writeUniformValues(nextUniformValues);
+        updatedSourceKeys.push(`${sourceEntry.key}:uniforms`);
+      }
+    }
+  };
+
+  const notifyApply = async (action, updatedSourceKeys) => {
+    if (typeof onApply !== "function") return;
+    await onApply({
+      action,
+      changed: updatedSourceKeys.length > 0,
+      updatedSourceKeys,
+    });
+  };
+
+  const applyUniformsFromDialog = async (dialogRoot, action = "live") => {
+    const nextVariables = readDialogVariables(dialogRoot);
+    const varsBySourceKey = buildVariablesBySourceKey(nextVariables);
+    const updatedSourceKeys = [];
+    applyUniformVariablesBySource(varsBySourceKey, updatedSourceKeys);
+    await notifyApply(action, updatedSourceKeys);
+    return {
+      nextVariables,
+      varsBySourceKey,
+      updatedSourceKeys,
+    };
+  };
+
+  const applyFromDialog = async (dialogRoot, action = "apply") => {
+    const nextVariables = readDialogVariables(dialogRoot);
+    const varsBySourceKey = buildVariablesBySourceKey(nextVariables);
 
     const updatedSourceKeys = [];
     for (const sourceEntry of normalizedEntries) {
@@ -393,41 +451,9 @@ export async function openShaderVariableEditorDialog({
           updatedSourceKeys.push(sourceEntry.key);
         }
       }
-
-      const uniformScopedVariables = scopedVariables.filter(
-        (variable) => String(variable?.declaration ?? "").trim().toLowerCase() === "uniform",
-      );
-      if (uniformScopedVariables.length && sourceEntry.uniformValuesWritable) {
-        const currentUniformValues = sourceEntry.readUniformValues();
-        const nextUniformValues = foundry.utils.deepClone(currentUniformValues);
-        for (const variable of uniformScopedVariables) {
-          const uniformName = String(variable?.name ?? "").trim();
-          if (!uniformName) continue;
-          if (variable?.kind === "vector") {
-            nextUniformValues[uniformName] = Array.isArray(variable?.values)
-              ? variable.values.map((value) => Number(value))
-              : [];
-          } else if (String(variable?.type ?? "").trim().toLowerCase() === "bool") {
-            nextUniformValues[uniformName] = Boolean(variable?.value);
-          } else {
-            const n = Number(variable?.value);
-            nextUniformValues[uniformName] = Number.isFinite(n) ? n : 0;
-          }
-        }
-        if (JSON.stringify(nextUniformValues) !== JSON.stringify(currentUniformValues)) {
-          sourceEntry.writeUniformValues(nextUniformValues);
-          updatedSourceKeys.push(`${sourceEntry.key}:uniforms`);
-        }
-      }
     }
-
-    if (typeof onApply === "function") {
-      await onApply({
-        action,
-        changed: updatedSourceKeys.length > 0,
-        updatedSourceKeys,
-      });
-    }
+    applyUniformVariablesBySource(varsBySourceKey, updatedSourceKeys);
+    await notifyApply(action, updatedSourceKeys);
   };
 
   const variableDialog = new foundry.applications.api.DialogV2({
@@ -473,6 +499,63 @@ export async function openShaderVariableEditorDialog({
   const variableRoot = resolveElementRoot(variableDialog?.element) ?? resolveElementRoot(variableDialog);
   ensureDialogVerticalScroll(variableRoot);
 
+  const getVariableIndexFromControlName = (name) => {
+    const match = String(name ?? "").match(/^var_(\d+)_(?:value|slider|color|c\d+)$/);
+    if (!match) return -1;
+    const idx = Number(match[1]);
+    return Number.isInteger(idx) && idx >= 0 ? idx : -1;
+  };
+
+  const isLiveUniformControl = (target) => {
+    if (!(target instanceof HTMLInputElement)) return false;
+    const idx = getVariableIndexFromControlName(target.name);
+    if (idx < 0) return false;
+    const variable = variables[idx];
+    return (
+      variable &&
+      String(variable?.declaration ?? "").trim().toLowerCase() === "uniform" &&
+      variable?.sourceUniformWritable === true
+    );
+  };
+
+  let liveUniformApplyScheduled = false;
+  let liveUniformApplyPending = false;
+  const scheduleLiveUniformApply = () => {
+    if (liveUniformApplyScheduled) {
+      liveUniformApplyPending = true;
+      return;
+    }
+    liveUniformApplyScheduled = true;
+    const schedule =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame
+        : (callback) => globalThis.setTimeout(callback, 0);
+    schedule(async () => {
+      const dialogRoot =
+        resolveElementRoot(variableDialog?.element) ?? resolveElementRoot(variableDialog);
+      try {
+        await applyUniformsFromDialog(dialogRoot, "live");
+      } finally {
+        if (liveUniformApplyPending) {
+          liveUniformApplyPending = false;
+          liveUniformApplyScheduled = false;
+          scheduleLiveUniformApply();
+        } else {
+          liveUniformApplyScheduled = false;
+        }
+      }
+    });
+  };
+
+  if (variableRoot instanceof Element) {
+    const liveListener = (event) => {
+      if (!isLiveUniformControl(event.target)) return;
+      scheduleLiveUniformApply();
+    };
+    variableRoot.addEventListener("input", liveListener);
+    variableRoot.addEventListener("change", liveListener);
+  }
+
   const applyButton = variableRoot?.querySelector?.('[data-action="apply"]');
   if (applyButton instanceof HTMLElement) {
     if (applyButton.dataset.indyFxNoCloseApplyBound !== "1") {
@@ -509,31 +592,67 @@ export async function openShaderVariableEditorDialog({
     });
   }
 
-  for (const sliderInput of variableRoot?.querySelectorAll?.('input[type="range"][data-slider-output]') ?? []) {
+  for (const sliderInput of variableRoot?.querySelectorAll?.('input[type="range"][data-slider-number]') ?? []) {
     if (!(sliderInput instanceof HTMLInputElement)) continue;
-    const outputId = String(sliderInput.dataset.sliderOutput ?? "").trim();
-    if (!outputId) continue;
-    const outputSelector =
+    const numberInputName = String(sliderInput.dataset.sliderNumber ?? "").trim();
+    if (!numberInputName) continue;
+    const numberSelector =
       typeof CSS !== "undefined" && typeof CSS.escape === "function"
-        ? `[data-slider-value-id="${CSS.escape(outputId)}"]`
-        : `[data-slider-value-id="${outputId.replace(/"/g, '\\"')}"]`;
-    const outputEl = variableRoot?.querySelector?.(outputSelector);
-    const updateSliderValue = () => {
-      if (!(outputEl instanceof HTMLElement)) return;
-      const match = String(sliderInput.name ?? "").match(/^var_(\d+)_value$/);
-      const idx = match ? Number(match[1]) : -1;
-      const variable = Number.isInteger(idx) && idx >= 0 ? variables[idx] : null;
-      const type = String(variable?.type ?? "float");
+        ? `[name="${CSS.escape(numberInputName)}"]`
+        : `[name="${numberInputName.replace(/"/g, '\\"')}"]`;
+    const numberInput = variableRoot?.querySelector?.(numberSelector);
+    const match = String(sliderInput.name ?? "").match(/^var_(\d+)_slider$/);
+    const idx = match ? Number(match[1]) : -1;
+    const variable = Number.isInteger(idx) && idx >= 0 ? variables[idx] : null;
+    const type = String(variable?.type ?? "float");
+    const clampToSliderRange = (raw) => {
+      const min = Number(sliderInput.min);
+      const max = Number(sliderInput.max);
+      return Math.min(
+        Number.isFinite(max) ? max : raw,
+        Math.max(Number.isFinite(min) ? min : raw, raw),
+      );
+    };
+    const syncSliderToNumber = () => {
+      if (!(numberInput instanceof HTMLInputElement)) return;
       const raw = Number(sliderInput.value);
-      outputEl.textContent = formatShaderScalarValue(
+      numberInput.value = formatShaderScalarValue(
         Number.isFinite(raw) ? raw : Number(variable?.value ?? 0),
         type,
       );
     };
-    updateSliderValue();
+    const syncNumberToSlider = ({ commit = false } = {}) => {
+      if (!(numberInput instanceof HTMLInputElement)) return;
+      const raw = Number(numberInput.value);
+      if (!Number.isFinite(raw)) return;
+      const clamped = clampToSliderRange(raw);
+      sliderInput.value = String(clamped);
+      if (commit) {
+        numberInput.value = formatShaderScalarValue(clamped, type);
+      }
+    };
+    syncSliderToNumber();
     if (!sliderInput.disabled) {
-      sliderInput.addEventListener("input", updateSliderValue);
-      sliderInput.addEventListener("change", updateSliderValue);
+      sliderInput.addEventListener("input", syncSliderToNumber);
+      sliderInput.addEventListener("change", syncSliderToNumber);
+      sliderInput.addEventListener(
+        "wheel",
+        (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const scrollTarget =
+            sliderInput.closest(".indy-fx-variable-editor") ??
+            sliderInput.closest(".window-content");
+          if (scrollTarget instanceof HTMLElement) {
+            scrollTarget.scrollTop += event.deltaY;
+          }
+        },
+        { passive: false },
+      );
+    }
+    if (numberInput instanceof HTMLInputElement && !numberInput.disabled) {
+      numberInput.addEventListener("input", () => syncNumberToSlider());
+      numberInput.addEventListener("change", () => syncNumberToSlider({ commit: true }));
     }
   }
 

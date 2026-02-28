@@ -2539,12 +2539,140 @@ export function createMenus({ moduleId, shaderManager }) {
       }
     }
 
+    _resolveImportedShaderPayloadEntries(payload) {
+      const source = payload && typeof payload === "object" ? payload : {};
+      if (Array.isArray(source)) {
+        return { key: null, incoming: source };
+      }
+      if (Array.isArray(source.shaders)) {
+        return { key: "shaders", incoming: source.shaders };
+      }
+      if (Array.isArray(source.records)) {
+        return { key: "records", incoming: source.records };
+      }
+      return { key: "shaders", incoming: [] };
+    }
+
+    async _promptSelectImportedShaders(payload) {
+      const { key, incoming } = this._resolveImportedShaderPayloadEntries(payload);
+      const entries = incoming.filter((entry) => entry && typeof entry === "object");
+      if (entries.length <= 1) return payload;
+
+      const escapeHtml = (value) =>
+        String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+
+      const rows = entries
+        .map((entry, index) => {
+          const label = String(
+            entry.label ?? entry.name ?? entry.id ?? `Shader ${index + 1}`,
+          ).trim();
+          const subtitle = String(entry.id ?? "").trim();
+          return `
+            <label class="indy-fx-import-row" style="display:flex;align-items:flex-start;gap:0.6rem;padding:0.35rem 0;border-bottom:1px solid rgba(255,255,255,0.08);">
+              <input type="checkbox" name="import_shader_${index}" checked style="margin-top:0.15rem;">
+              <span style="display:flex;flex-direction:column;gap:0.1rem;">
+                <span>${escapeHtml(label || `Shader ${index + 1}`)}</span>
+                ${subtitle ? `<small class="notes">${escapeHtml(subtitle)}</small>` : ""}
+              </span>
+            </label>
+          `;
+        })
+        .join("");
+
+      const selectedIndices = await new Promise((resolve) => {
+        let finished = false;
+        const finish = (value) => {
+          if (finished) return;
+          finished = true;
+          resolve(value);
+        };
+
+        const dlg = new foundry.applications.api.DialogV2({
+          window: { title: "Select Shaders To Import", resizable: true },
+          position: {
+            width: 520,
+            height: Math.min(700, Math.max(360, Math.floor(window.innerHeight * 0.75))),
+          },
+          content: `
+            <form class="indy-fx-import-select" style="max-height:min(65vh, calc(100vh - 220px));overflow-y:auto;overflow-x:hidden;padding-right:0.35rem;">
+              <p class="notes" style="margin:0 0 0.5rem 0;">
+                This library file contains ${entries.length} shaders. Choose which ones to import.
+              </p>
+              ${rows}
+            </form>
+          `,
+          buttons: [
+            {
+              action: "import",
+              label: "Import Selected",
+              icon: "fas fa-file-import",
+              default: true,
+              callback: (_event, _button, dialog) => {
+                const dialogRoot =
+                  resolveElementRoot(dialog?.element) ?? resolveElementRoot(dialog);
+                if (!(dialogRoot instanceof Element)) return;
+                const chosen = [];
+                for (let i = 0; i < entries.length; i += 1) {
+                  const checkbox = dialogRoot.querySelector(
+                    `[name="import_shader_${i}"]`,
+                  );
+                  if (checkbox instanceof HTMLInputElement && checkbox.checked) {
+                    chosen.push(i);
+                  }
+                }
+                if (!chosen.length) {
+                  ui.notifications.warn("Select at least one shader to import.");
+                  return false;
+                }
+                finish(chosen);
+              },
+            },
+            {
+              action: "cancel",
+              label: "Cancel",
+              icon: "fas fa-times",
+              callback: () => finish(null),
+            },
+          ],
+          render: (app) => ensureDialogVerticalScroll(app),
+        });
+
+        const close = dlg.close.bind(dlg);
+        dlg.close = async (...args) => {
+          finish(null);
+          return close(...args);
+        };
+        void dlg.render(true);
+      });
+
+      if (!Array.isArray(selectedIndices) || !selectedIndices.length) return null;
+      const selectedEntries = selectedIndices
+        .map((index) => entries[index])
+        .filter((entry) => entry && typeof entry === "object")
+        .map((entry) => foundry.utils.deepClone(entry));
+
+      if (Array.isArray(payload)) return selectedEntries;
+
+      const nextPayload =
+        payload && typeof payload === "object"
+          ? foundry.utils.deepClone(payload)
+          : {};
+      nextPayload[key || "shaders"] = selectedEntries;
+      return nextPayload;
+    }
+
     async _importShaderLibraryFromFile(file) {
       if (!file) return;
       try {
         const text = await file.text();
         const payload = JSON.parse(String(text ?? "{}"));
-        const result = await shaderManager.importImportedShadersPayload(payload, {
+        const selectedPayload = await this._promptSelectImportedShaders(payload);
+        if (!selectedPayload) return;
+        const result = await shaderManager.importImportedShadersPayload(selectedPayload, {
           replace: false,
         });
         await shaderManager.enforceValidSelection();

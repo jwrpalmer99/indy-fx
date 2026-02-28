@@ -17,6 +17,7 @@ import { syncShaderMouseUniforms } from "../shader-runtime-utils.js";
 import {
   adaptShaderToyFragment,
   extractReferencedChannels,
+  shaderSourceEnablesMouse,
   validateShaderToySource,
 } from "./shadertoy-adapter.js";
 
@@ -5249,11 +5250,12 @@ export class ShaderManager {
     markTimingPhase("buildBaseUniformsMs", phaseStartMs);
     let editableUniformCount = 0;
     let editableUniformAppliedCount = 0;
+    const sourceToScan = def?.type === "imported"
+      ? this._composeShaderSourceWithCommon(def?.source ?? "", def?.commonSource ?? "")
+      : (def?.fragment ?? "");
+    const mouseEnabled = shaderSourceEnablesMouse(sourceToScan);
     if (def?.type === "imported" || def?.type === "builtin") {
       const editableStartMs = timingEnabled ? nowMs() : 0;
-      const sourceToScan = def?.type === "imported"
-        ? this._composeShaderSourceWithCommon(def?.source ?? "", def?.commonSource ?? "")
-        : (def?.fragment ?? "");
       const editableDefaults = extractEditableUniformDefaults(sourceToScan);
       editableUniformCount = Object.keys(editableDefaults ?? {}).length;
       for (const [name, value] of Object.entries(editableDefaults)) {
@@ -5265,7 +5267,12 @@ export class ShaderManager {
     } else if (timingEnabled) {
       timingPhases.extractEditableUniformsMs = 0;
     }
-    uniforms.iMouse = cfg.iMouse ?? [0, 0, 0, 0];
+    if (!mouseEnabled && Object.prototype.hasOwnProperty.call(uniforms, "iMouse")) {
+      delete uniforms.iMouse;
+    }
+    if (mouseEnabled) {
+      uniforms.iMouse = cfg.iMouse ?? [0, 0, 0, 0];
+    }
     uniforms.iTimeDelta = cfg.iTimeDelta ?? 1 / 60;
     uniforms.iFrame = cfg.iFrame ?? 0;
     uniforms.iFrameRate = cfg.iFrameRate ?? 60;

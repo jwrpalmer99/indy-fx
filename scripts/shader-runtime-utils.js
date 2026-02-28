@@ -507,12 +507,19 @@ export function syncShaderMouseUniforms(
 ) {
   const uniforms = shader?.uniforms;
   if (!uniforms || typeof uniforms !== "object") return [0, 0, 0, 0];
+  const buffers = Array.isArray(runtimeBuffers) ? runtimeBuffers : [];
+  const rootWantsMouse = Object.prototype.hasOwnProperty.call(uniforms, "iMouse");
+  const buffersWantMouse = buffers.some((runtimeBuffer) =>
+    Object.prototype.hasOwnProperty.call(
+      runtimeBuffer?.mesh?.shader?.uniforms ?? {},
+      "iMouse",
+    ));
+  if (!rootWantsMouse && !buffersWantMouse) return [0, 0, 0, 0];
   const mouseUniform = buildShaderToyMouseUniform(shader, { mouseTarget });
   if ("iMouse" in uniforms) {
     uniforms.iMouse = mouseUniform;
   }
 
-  const buffers = Array.isArray(runtimeBuffers) ? runtimeBuffers : [];
   if (buffers.length > 0) {
     const sourceResolution = resolveShaderResolution(uniforms, [1, 1]);
     for (const runtimeBuffer of buffers) {

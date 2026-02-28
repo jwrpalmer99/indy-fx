@@ -58,6 +58,12 @@ const _fragmentCache = new Map();
 const _bufferFragmentCache = new Map();
 const _referencedChannelsCache = new Map();
 const ADAPTER_MODULE_ID = "indy-fx";
+const _ENABLE_MOUSE_DEFINE_RE = /^\s*#\s*define\s+EnableMouse\b/m;
+
+export function shaderSourceEnablesMouse(source) {
+  const text = stripCommentsForChannelScan(String(source ?? ""));
+  return _ENABLE_MOUSE_DEFINE_RE.test(text);
+}
 
 function isSanitizeColorEnabled() {
   try {
@@ -2734,6 +2740,9 @@ export function adaptShaderToyFragment(source, options = {}) {
   const sanitizeColor = options?.sanitizeColor;
   const forceFullCompatibility = options?.forceFullCompatibility === true;
   const validated = getValidatedShaderSourceCached(source);
+  const mouseUniformDecl = shaderSourceEnablesMouse(validated)
+    ? "uniform vec4 iMouse;"
+    : "const vec4 iMouse = vec4(0.0);";
   const shouldUseLeanProfile = (value) => {
     const text = stripCommentsForChannelScan(String(value ?? ""));
     if (!text) return false;
@@ -2775,7 +2784,7 @@ uniform sampler2D iChannel0;
 uniform sampler2D iChannel1;
 uniform sampler2D iChannel2;
 uniform sampler2D iChannel3;
-uniform vec4 iMouse;
+${mouseUniformDecl}
 uniform float uTime;
 uniform float iTime;
 uniform float iTimeDelta;
@@ -2899,7 +2908,7 @@ uniform sampler2D iChannel0;
 uniform sampler2D iChannel1;
 uniform sampler2D iChannel2;
 uniform sampler2D iChannel3;
-uniform vec4 iMouse;
+${mouseUniformDecl}
 uniform float uTime;
 uniform float iTime;
 uniform float iTimeDelta;
@@ -3691,6 +3700,9 @@ ${sanitizeColorStage}
 
 export function adaptShaderToyBufferFragment(source, { sanitizeColor } = {}) {
   const validated = getValidatedShaderSourceCached(source);
+  const mouseUniformDecl = shaderSourceEnablesMouse(validated)
+    ? "uniform vec4 iMouse;"
+    : "const vec4 iMouse = vec4(0.0);";
   const cacheKey = `${getAdapterVariantKey({ sanitizeColor })}|${validated}`;
   const cached = getCachedLru(_bufferFragmentCache, cacheKey);
   if (typeof cached === "string") return cached;
@@ -3735,7 +3747,7 @@ uniform sampler2D iChannel0;
 uniform sampler2D iChannel1;
 uniform sampler2D iChannel2;
 uniform sampler2D iChannel3;
-uniform vec4 iMouse;
+${mouseUniformDecl}
 uniform float uTime;
 uniform float iTime;
 uniform float iTimeDelta;
