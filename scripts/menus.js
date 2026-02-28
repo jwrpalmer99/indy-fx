@@ -2571,14 +2571,11 @@ export function createMenus({ moduleId, shaderManager }) {
             entry.label ?? entry.name ?? entry.id ?? `Shader ${index + 1}`,
           ).trim();
           const subtitle = String(entry.id ?? "").trim();
+          const optionLabel = subtitle
+            ? `${label || `Shader ${index + 1}`} (${subtitle})`
+            : (label || `Shader ${index + 1}`);
           return `
-            <label class="indy-fx-import-row" style="display:flex;align-items:flex-start;gap:0.6rem;padding:0.35rem 0;border-bottom:1px solid rgba(255,255,255,0.08);">
-              <input type="checkbox" name="import_shader_${index}" checked style="margin-top:0.15rem;">
-              <span style="display:flex;flex-direction:column;gap:0.1rem;">
-                <span>${escapeHtml(label || `Shader ${index + 1}`)}</span>
-                ${subtitle ? `<small class="notes">${escapeHtml(subtitle)}</small>` : ""}
-              </span>
-            </label>
+            <option value="${index}" selected style="color:#111;background:#f2efe6;">${escapeHtml(optionLabel)}</option>
           `;
         })
         .join("");
@@ -2595,14 +2592,22 @@ export function createMenus({ moduleId, shaderManager }) {
           window: { title: "Select Shaders To Import", resizable: true },
           position: {
             width: 520,
-            height: Math.min(700, Math.max(360, Math.floor(window.innerHeight * 0.75))),
+            height: Math.min(620, Math.max(420, Math.floor(window.innerHeight * 0.7))),
           },
           content: `
-            <form class="indy-fx-import-select" style="max-height:min(65vh, calc(100vh - 220px));overflow-y:auto;overflow-x:hidden;padding-right:0.35rem;">
+            <form class="indy-fx-import-select" style="display:flex;flex-direction:column;gap:0.5rem;">
               <p class="notes" style="margin:0 0 0.5rem 0;">
-                This library file contains ${entries.length} shaders. Choose which ones to import.
+                This library file contains ${entries.length} shaders. Choose which ones to import. Use Shift/Ctrl (or Cmd) to multi-select.
               </p>
-              ${rows}
+              <select
+                name="import_shader_list"
+                multiple
+                class="indy-fx-import-listbox"
+                size="${Math.min(Math.max(entries.length, 8), 18)}"
+                style="display:block;width:100%;box-sizing:border-box;min-height:220px;overflow-y:scroll;overflow-x:hidden;padding:0.25rem;border:1px solid rgba(255,255,255,0.12);border-radius:6px;background:rgba(255,255,255,0.96);color:#111;font:inherit;"
+              >
+                ${rows}
+              </select>
             </form>
           `,
           buttons: [
@@ -2615,15 +2620,12 @@ export function createMenus({ moduleId, shaderManager }) {
                 const dialogRoot =
                   resolveElementRoot(dialog?.element) ?? resolveElementRoot(dialog);
                 if (!(dialogRoot instanceof Element)) return;
-                const chosen = [];
-                for (let i = 0; i < entries.length; i += 1) {
-                  const checkbox = dialogRoot.querySelector(
-                    `[name="import_shader_${i}"]`,
-                  );
-                  if (checkbox instanceof HTMLInputElement && checkbox.checked) {
-                    chosen.push(i);
-                  }
-                }
+                const listbox = dialogRoot.querySelector('[name="import_shader_list"]');
+                const chosen = listbox instanceof HTMLSelectElement
+                  ? Array.from(listbox.selectedOptions)
+                    .map((option) => Number(option.value))
+                    .filter((value) => Number.isInteger(value) && value >= 0 && value < entries.length)
+                  : [];
                 if (!chosen.length) {
                   ui.notifications.warn("Select at least one shader to import.");
                   return false;
@@ -2638,7 +2640,56 @@ export function createMenus({ moduleId, shaderManager }) {
               callback: () => finish(null),
             },
           ],
-          render: (app) => ensureDialogVerticalScroll(app),
+          render: (app) => {
+            ensureDialogVerticalScroll(app);
+            const root = resolveElementRoot(app?.element) ?? resolveElementRoot(app);
+            if (!(root instanceof Element)) return;
+            const header =
+              root.querySelector(":scope > .window-header") ??
+              root.querySelector(".window-header");
+            const content = root.querySelector(".window-content");
+            const footer =
+              root.querySelector(":scope > .window-footer") ??
+              root.querySelector(":scope > footer") ??
+              root.querySelector(".window-footer") ??
+              root.querySelector("footer");
+            const form = root.querySelector(".indy-fx-import-select");
+            const listbox = root.querySelector('[name="import_shader_list"]');
+            if (!(content instanceof HTMLElement) || !(form instanceof HTMLElement) || !(listbox instanceof HTMLSelectElement)) return;
+
+            if (root instanceof HTMLElement && footer instanceof HTMLElement) {
+              root.style.display = "grid";
+              root.style.gridTemplateRows = "auto minmax(0, 1fr) auto";
+              root.style.height = "100%";
+              root.style.minHeight = "0";
+            }
+            if (header instanceof HTMLElement) {
+              header.style.gridRow = "1";
+            }
+
+            content.style.gridRow = "2";
+            content.style.display = "flex";
+            content.style.flexDirection = "column";
+            content.style.flex = "1 1 auto";
+            content.style.minHeight = "0";
+            content.style.overflow = "hidden";
+
+            form.style.display = "flex";
+            form.style.flexDirection = "column";
+            form.style.minHeight = "0";
+            form.style.height = "100%";
+            form.style.overflow = "hidden";
+
+            listbox.style.flex = "1 1 auto";
+            listbox.style.minHeight = "0";
+            listbox.style.height = "100%";
+            listbox.style.maxHeight = "none";
+
+            if (footer instanceof HTMLElement) {
+              footer.style.gridRow = "3";
+              footer.style.marginTop = "0";
+            }
+          },
         });
 
         const close = dlg.close.bind(dlg);
