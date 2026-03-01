@@ -293,7 +293,7 @@ export async function openShaderVariableEditorDialog({
                 <label${tipAttr}>${escapeHtml(name)} <small style="opacity:.8;">(${escapeHtml(type)})</small></label>
                 <div class="form-fields" style="gap:0.5rem;align-items:center;flex-wrap:nowrap;width:100%;">
                   <input type="range" name="var_${index}_slider" value="${escapeHtml(displayValue)}" min="${escapeHtml(String(sliderSpec.min))}" max="${escapeHtml(String(sliderSpec.max))}" step="${escapeHtml(String(sliderSpec.step))}" data-slider-number="var_${index}_value" style="flex:1 1 auto;min-width:0;"${disabledAttr}${tipAttr} />
-                  <input type="number" name="var_${index}_value" value="${escapeHtml(displayValue)}" min="${escapeHtml(String(sliderSpec.min))}" max="${escapeHtml(String(sliderSpec.max))}" step="${escapeHtml(String(sliderSpec.step))}" style="width:6.5rem;flex:0 0 auto;"${disabledAttr}${tipAttr} />
+                  <input type="number" name="var_${index}_value" value="${escapeHtml(displayValue)}" step="${escapeHtml(String(sliderSpec.step))}" style="width:6.5rem;flex:0 0 auto;"${disabledAttr}${tipAttr} />
                 </div>
               </div>
             `;
@@ -627,7 +627,7 @@ export async function openShaderVariableEditorDialog({
       if (!Number.isFinite(raw)) return;
       const clamped = clampToSliderRange(raw);
       sliderInput.value = String(clamped);
-      if (commit) {
+      if (commit && clamped === raw) {
         numberInput.value = formatShaderScalarValue(clamped, type);
       }
     };

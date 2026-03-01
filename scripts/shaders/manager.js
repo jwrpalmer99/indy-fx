@@ -2198,12 +2198,16 @@ export class ShaderManager {
     const layerRaw = String(source.layer ?? base.layer ?? "inherit").trim();
     const layerNormalized = layerRaw === "drawingsLayer"
       ? "drawings"
+      : (layerRaw === "sceneCaptureRaw" || layerRaw === "primary")
+        ? "sceneRaw"
       : (layerRaw === "effects" || layerRaw === "effectsLayer")
         ? "belowTokens"
       : layerRaw === "interface"
           ? "interfacePrimary"
           : layerRaw === "token"
             ? "interfacePrimary"
+            : layerRaw === "sceneRaw"
+              ? "sceneRaw"
                     : layerRaw === "belowTiles"
             ? "belowTiles"
             : layerRaw === "baseEffects"
@@ -2212,6 +2216,7 @@ export class ShaderManager {
     const layer = [
       "inherit",
       "interfacePrimary",
+      "sceneRaw",
       "belowTiles",
       "belowTokens",
       "drawings",

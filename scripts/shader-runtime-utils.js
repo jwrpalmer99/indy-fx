@@ -178,6 +178,79 @@ function toSceneUvFromWorldPoint(worldPoint, sceneRect) {
   ];
 }
 
+function findCachedContainerAncestor(displayObject) {
+  let current = displayObject?.parent ?? null;
+  while (current) {
+    if (current === canvas?.primary) return current;
+    if (current?.renderTexture && current?.sprite) return current;
+    current = current.parent ?? null;
+  }
+  return null;
+}
+
+function transformPointToAncestorLocal(displayObject, localPoint, ancestor) {
+  if (!displayObject || !ancestor) return null;
+  let x = Number(localPoint?.x);
+  let y = Number(localPoint?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+  let current = displayObject;
+  while (current && current !== ancestor) {
+    current.transform?.updateLocalTransform?.();
+    const matrix = current.localTransform ?? current.transform?.localTransform ?? null;
+    if (!matrix) return null;
+    const nextX = matrix.a * x + matrix.c * y + matrix.tx;
+    const nextY = matrix.b * x + matrix.d * y + matrix.ty;
+    x = nextX;
+    y = nextY;
+    current = current.parent ?? null;
+  }
+
+  if (current !== ancestor) return null;
+  return new PIXI.Point(x, y);
+}
+
+function resolveSceneWorldPointFromDisplayLocal(displayObject, localPoint) {
+  if (!displayObject || !canvas?.stage?.toLocal) return null;
+
+  const cachedAncestor = findCachedContainerAncestor(displayObject);
+  if (cachedAncestor?.sprite?.worldTransform) {
+    const cachedLocal = transformPointToAncestorLocal(displayObject, localPoint, cachedAncestor);
+    if (cachedLocal) {
+      const matrix = cachedAncestor.sprite.worldTransform;
+      const globalPoint = new PIXI.Point(
+        matrix.a * cachedLocal.x + matrix.c * cachedLocal.y + matrix.tx,
+        matrix.b * cachedLocal.x + matrix.d * cachedLocal.y + matrix.ty,
+      );
+      try {
+        const worldPoint = canvas.stage.toLocal(globalPoint);
+        const wx = Number(worldPoint?.x);
+        const wy = Number(worldPoint?.y);
+        if (Number.isFinite(wx) && Number.isFinite(wy)) {
+          return new PIXI.Point(wx, wy);
+        }
+      } catch (_err) {
+        // Fall through to direct display-object mapping below.
+      }
+    }
+  }
+
+  if (!displayObject?.toGlobal) return null;
+  try {
+    const globalPoint = displayObject.toGlobal(new PIXI.Point(localPoint.x, localPoint.y));
+    const worldPoint = canvas.stage.toLocal(globalPoint);
+    const wx = Number(worldPoint?.x);
+    const wy = Number(worldPoint?.y);
+    if (Number.isFinite(wx) && Number.isFinite(wy)) {
+      return new PIXI.Point(wx, wy);
+    }
+  } catch (_err) {
+    // Give up and let caller fall back.
+  }
+
+  return null;
+}
+
 function tryResolveSceneUvTransformFromMeshGeometry(mouseTarget, sceneRect) {
   if (!mouseTarget?.geometry?.getBuffer || !mouseTarget?.toGlobal || !canvas?.stage?.toLocal) {
     return null;
@@ -207,8 +280,10 @@ function tryResolveSceneUvTransformFromMeshGeometry(mouseTarget, sceneRect) {
       const u = Number(uvs[i * 2]);
       const v = Number(uvs[i * 2 + 1]);
       if (![px, py, u, v].every(Number.isFinite)) continue;
-      const globalPoint = mouseTarget.toGlobal(new PIXI.Point(px, py));
-      const worldPoint = canvas.stage.toLocal(globalPoint);
+      const worldPoint = resolveSceneWorldPointFromDisplayLocal(
+        mouseTarget,
+        new PIXI.Point(px, py),
+      );
       const sceneUv = toSceneUvFromWorldPoint(worldPoint, sceneRect);
       if (!sceneUv) continue;
       points.push({
@@ -312,13 +387,18 @@ function syncShaderSceneUvUniforms(shader, { mouseTarget = null, runtimeBuffers 
           Number.isFinite(bh) &&
           bh > 1e-6
         ) {
-          const tlGlobal = mouseTarget.toGlobal(new PIXI.Point(bx, by));
-          const trGlobal = mouseTarget.toGlobal(new PIXI.Point(bx + bw, by));
-          const blGlobal = mouseTarget.toGlobal(new PIXI.Point(bx, by + bh));
-
-          const tlWorld = canvas.stage.toLocal(tlGlobal);
-          const trWorld = canvas.stage.toLocal(trGlobal);
-          const blWorld = canvas.stage.toLocal(blGlobal);
+          const tlWorld = resolveSceneWorldPointFromDisplayLocal(
+            mouseTarget,
+            new PIXI.Point(bx, by),
+          );
+          const trWorld = resolveSceneWorldPointFromDisplayLocal(
+            mouseTarget,
+            new PIXI.Point(bx + bw, by),
+          );
+          const blWorld = resolveSceneWorldPointFromDisplayLocal(
+            mouseTarget,
+            new PIXI.Point(bx, by + bh),
+          );
 
           const tlUv = toSceneUvFromWorldPoint(tlWorld, sceneRect);
           const trUv = toSceneUvFromWorldPoint(trWorld, sceneRect);
@@ -549,6 +629,8 @@ export function resolveShaderWorldLayer(moduleId, cfg, { allowTokenLayer = false
     const raw = String(value ?? "").trim();
     if (!raw) return "interfacePrimary";
     if (raw === "token") return "interfacePrimary";
+    if (raw === "sceneCaptureRaw" || raw === "primary") return "sceneRaw";
+    if (raw === "sceneRaw") return "sceneRaw";
     if (raw === "baseEffects") return "belowTokens";
     if (raw === "belowTiles") return "belowTiles";
     if (raw === "effects") return "belowTokens";
@@ -560,10 +642,13 @@ export function resolveShaderWorldLayer(moduleId, cfg, { allowTokenLayer = false
   const layerName = normalizeLayerName(layerNameRaw);
 
   const interfaceLayer = canvas?.interface?.primary ?? canvas?.interface;
-  const primaryLayer = canvas?.primary ?? canvas?.tiles?.parent ?? interfaceLayer;
+  const primaryGroup = canvas?.primary ?? canvas?.tiles?.parent ?? interfaceLayer;
+  const sceneRawLayer = canvas?.primary?.sprite ?? primaryGroup;
 
   const worldLayer = (layerName === "belowTiles")
-    ? primaryLayer
+    ? primaryGroup
+    : (layerName === "sceneRaw")
+    ? sceneRawLayer
     : (layerName === "belowTokens")
     ? interfaceLayer
     : (layerName === "drawings")

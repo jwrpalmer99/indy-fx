@@ -63,6 +63,7 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
     type: String,
     choices: {
       interfacePrimary: "interfacePrimary (above tokens, world space)",
+      sceneRaw: "Scene Raw (primary group, pre-vision)",
       belowTiles: "Below Tiles (on scene background)",
       belowTokens: "Below Tokens (interface, under token z-order)",
       drawings: "DrawingsLayer (above tokens, world space)"
@@ -106,6 +107,7 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
     choices: {
       inherit: "inherit from FX layer",
       interfacePrimary: "interfacePrimary (above tokens, world space)",
+      sceneRaw: "Scene Raw (primary group, pre-vision)",
       belowTiles: "Below Tiles (on scene background)",
       belowTokens: "Below Tokens (interface, under token z-order)",
       drawings: "DrawingsLayer (above tokens, world space)"

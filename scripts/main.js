@@ -97,7 +97,8 @@ function roundMs(value) {
 
 const IMPORTED_LIGHT_TIMING_LOG_MIN_TOTAL_MS = 25;
 const IMPORTED_LIGHT_TIMING_LOG_MIN_ADAPT_MS = 20;
-const SHADER_TICKER_PRIORITY = Number(PIXI?.UPDATE_PRIORITY?.LOW ?? -25);
+const SHADER_TICKER_PRIORITY_DEFAULT = Number(PIXI?.UPDATE_PRIORITY?.NORMAL ?? 0);
+const SHADER_TICKER_PRIORITY_SCENE_RAW = Number(PIXI?.UPDATE_PRIORITY?.LOW ?? -25);
 const _importedLightTimingLoggedKeys = new Set();
 
 function shouldLogImportedLightShaderTiming({
@@ -2348,6 +2349,7 @@ function resolveInstanceShaderDefinitionOverride(
 const SHADER_LAYER_CHOICES = {
   inherit: "inherit from FX layer",
   interfacePrimary: "interfacePrimary",
+  sceneRaw: "Scene Raw (primary group, pre-vision)",
   belowTiles: "Below Tiles (on scene background)",
   belowTokens: "Below Tokens (interface, under token z-order)",
   drawings: "DrawingsLayer (above tokens)"
@@ -2357,6 +2359,8 @@ function normalizeShaderLayerName(value, fallback = "interfacePrimary") {
   const raw = String(value ?? "").trim();
   if (!raw) return fallback;
   if (raw === "token") return "interfacePrimary";
+  if (raw === "sceneCaptureRaw" || raw === "primary") return "sceneRaw";
+  if (raw === "sceneRaw") return "sceneRaw";
   if (raw === "belowTiles") return "belowTiles";
   if (raw === "baseEffects") return "belowTokens";
   if (raw === "effects") return "belowTokens";
@@ -2419,6 +2423,12 @@ function resolveShaderContainerZIndex(cfg) {
   }
 
   return 999999;
+}
+
+function resolveShaderTickerPriority(cfg) {
+  return resolveConfiguredShaderLayerName(cfg) === "sceneRaw"
+    ? SHADER_TICKER_PRIORITY_SCENE_RAW
+    : SHADER_TICKER_PRIORITY_DEFAULT;
 }
 
 function addShaderContainerToWorldLayer(worldLayer, container, cfg) {
@@ -3733,6 +3743,37 @@ function setCenter(container, tok, worldLayer) {
     }
   }
   setCenterFromWorld(container, getTokenCenter(tok), worldLayer);
+}
+
+function getDisplayObjectWorldAxisScale(displayObject) {
+  const matrix = displayObject?.worldTransform ?? null;
+  const scaleX = Math.hypot(
+    Number(matrix?.a ?? 1),
+    Number(matrix?.b ?? 0),
+  );
+  const scaleY = Math.hypot(
+    Number(matrix?.c ?? 0),
+    Number(matrix?.d ?? 1),
+  );
+  return [
+    scaleX > 1e-6 ? scaleX : 1,
+    scaleY > 1e-6 ? scaleY : 1,
+  ];
+}
+
+function syncShaderLayerScale(container, worldLayer, cfg) {
+  if (!container?.scale) return;
+  if (resolveConfiguredShaderLayerName(cfg) !== "sceneRaw") {
+    container.scale.set(1, 1);
+    return;
+  }
+
+  const [stageScaleX, stageScaleY] = getDisplayObjectWorldAxisScale(canvas?.stage);
+  const [layerScaleX, layerScaleY] = getDisplayObjectWorldAxisScale(worldLayer);
+  container.scale.set(
+    stageScaleX / Math.max(1e-6, layerScaleX),
+    stageScaleY / Math.max(1e-6, layerScaleY),
+  );
 }
 
 function updateDebugGfxAtWorld(gfx, center, worldLayer, radius) {
@@ -5497,6 +5538,7 @@ function shaderOn(tokenId, opts = {}) {
   const getTokenRotationForContainer = (tokenLike) =>
     cfg.rotateWithToken === true ? getTokenRotationRaw(tokenLike) : 0;
   setCenter(container, tok, worldLayer);
+  syncShaderLayerScale(container, worldLayer, cfg);
   container.rotation = getTokenRotationForContainer(tok);
 
   const geom = createQuadGeometry(effectExtent, effectExtent);
@@ -5634,6 +5676,7 @@ function shaderOn(tokenId, opts = {}) {
     }
 
     setCenter(container, liveTok, worldLayer);
+    syncShaderLayerScale(container, worldLayer, cfg);
     syncTokenRuntimeImageRotationMode(liveTok);
     const tokenRotationRad = getTokenRotationForUniform(liveTok);
     container.rotation = getTokenRotationForContainer(liveTok);
@@ -5719,7 +5762,7 @@ function shaderOn(tokenId, opts = {}) {
     }
   };
 
-  canvas.app.ticker.add(tickerFn, null, SHADER_TICKER_PRIORITY);
+  canvas.app.ticker.add(tickerFn, null, resolveShaderTickerPriority(cfg));
   _activeShader.set(tokenId, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
@@ -5866,6 +5909,7 @@ function shaderOnTemplate(templateId, opts = {}) {
   });
 
   setCenterFromWorld(container, getTemplateOrigin(template), worldLayer);
+  syncShaderLayerScale(container, worldLayer, cfg);
 
   const geom = createQuadGeometry(effectExtent, effectExtent);
   const selectedShaderId = cfg.shaderId ?? cfg.shaderMode ?? game.settings.get(MODULE_ID, "shaderPreset");
@@ -5999,6 +6043,7 @@ function shaderOnTemplate(templateId, opts = {}) {
 
     const liveCenter = getTemplateOrigin(liveTemplate);
     setCenterFromWorld(container, liveCenter, worldLayer);
+    syncShaderLayerScale(container, worldLayer, cfg);
     if (mesh.filters?.length) {
       const pad = effectExtent * 0.8 + cfg.bloomBlur * 30;
       const bounds = mesh.getBounds(false);
@@ -6059,7 +6104,7 @@ function shaderOnTemplate(templateId, opts = {}) {
     }
   };
 
-  canvas.app.ticker.add(tickerFn, null, SHADER_TICKER_PRIORITY);
+  canvas.app.ticker.add(tickerFn, null, resolveShaderTickerPriority(cfg));
   _activeTemplateShader.set(resolvedTemplateId, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
@@ -6185,6 +6230,7 @@ function shaderOnTile(tileId, opts = {}) {
   addShaderContainerToWorldLayer(worldLayer, container, cfg);
 
   setCenterFromWorld(container, metrics.center, worldLayer);
+  syncShaderLayerScale(container, worldLayer, cfg);
   container.rotation = getTileRotationForContainer(tile);
 
   const shaderSize = getTileShaderSizeForMetrics(metrics);
@@ -6335,6 +6381,7 @@ function shaderOnTile(tileId, opts = {}) {
     const liveMetrics = getTileMetrics(liveTile);
     const liveShaderSize = getTileShaderSizeForMetrics(liveMetrics);
     setCenterFromWorld(container, liveMetrics.center, worldLayer);
+    syncShaderLayerScale(container, worldLayer, cfg);
     container.rotation = getTileRotationForContainer(liveTile);
     if ("cpfxTokenRotation" in shader.uniforms) {
       shader.uniforms.cpfxTokenRotation = getTileRotationForUniform(liveTile);
@@ -6418,7 +6465,7 @@ function shaderOnTile(tileId, opts = {}) {
     }
   };
 
-  canvas.app.ticker.add(tickerFn, null, SHADER_TICKER_PRIORITY);
+  canvas.app.ticker.add(tickerFn, null, resolveShaderTickerPriority(cfg));
   _activeTileShader.set(resolvedTileId, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
@@ -6840,6 +6887,7 @@ function shaderOnRegion(regionId, opts = {}) {
     clusterContainer.eventMode = "none";
     rootContainer.addChild(clusterContainer);
     setCenterFromWorld(clusterContainer, clusterBounds.center, worldLayer);
+    syncShaderLayerScale(clusterContainer, worldLayer, cfg);
 
     const halfW = Math.max(1, clusterBounds.width * 0.5);
     const halfH = Math.max(1, clusterBounds.height * 0.5);
@@ -7041,6 +7089,7 @@ function shaderOnRegion(regionId, opts = {}) {
       if (!clusterBounds) continue;
 
       setCenterFromWorld(cluster.clusterContainer, clusterBounds.center, worldLayer);
+      syncShaderLayerScale(cluster.clusterContainer, worldLayer, cfg);
 
       if ("globalAlpha" in cluster.shader.uniforms) {
         cluster.shader.uniforms.globalAlpha = computeFadeAlpha(elapsedMs);
@@ -7100,7 +7149,7 @@ function shaderOnRegion(regionId, opts = {}) {
     t = nextTime;
   };
 
-  canvas.app.ticker.add(tickerFn, null, SHADER_TICKER_PRIORITY);
+  canvas.app.ticker.add(tickerFn, null, resolveShaderTickerPriority(cfg));
   registerActiveRegionShaderEntry(effectKey, {
     effectKey,
     regionId: resolvedRegionId,
