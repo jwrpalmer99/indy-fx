@@ -140,7 +140,7 @@ Notes:
 - `sceneCapture` captures the composited stage; `sceneCaptureRaw` captures a lower scene container before higher-level stage compositing (it falls back to the primary scene container when the effect lives on an interface layer).
 - Preview backgrounds used for scene/placeable capture channels are configurable in module settings.
 - `const`/`#define` variables are exposed in Edit Variables.
-- Custom `uniform` variables are also exposed when annotated, e.g. `uniform float uFoam; // @editable 0.2`.
+- Custom `uniform` variables are also exposed when annotated, e.g. `uniform float uFoam; // @editable 0.2` - they have the big advantage that you can change them without needing to recompile the shader.
 - You can prioritize display order with `@order` on `uniform`, `const`, and `#define`, e.g.
   `uniform float uFoam; // @editable 0.2 @order 1` or `const float WAVE = 0.5; // @order 2`.
   In Edit Variables, entries with `@order` are shown first by ascending order value;
