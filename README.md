@@ -2,6 +2,10 @@
 
 Indy FX adds animated fragment shader effects to Foundry VTT tokens/tiles/templates and regions. Import easilly from [shadertoy](https://shadertoy.com/), edit and configure - then drag/drop the shaders onto tokens/tiles/templates or assign as lights. Extensive API provided.
 
+
+https://github.com/user-attachments/assets/aedd41a9-c74e-42bc-81aa-bda3be0ac1c6
+
+
 https://github.com/user-attachments/assets/1e7c158e-9e5c-4d2e-bc8e-319638b709d5
 
 <img width="1024" height="449" alt="Screenshot 2026-02-18 182548" src="https://github.com/user-attachments/assets/3a953f45-840c-4a7a-858f-1230d95b37b1" />
