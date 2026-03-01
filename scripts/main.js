@@ -98,7 +98,8 @@ function roundMs(value) {
 const IMPORTED_LIGHT_TIMING_LOG_MIN_TOTAL_MS = 25;
 const IMPORTED_LIGHT_TIMING_LOG_MIN_ADAPT_MS = 20;
 const SHADER_TICKER_PRIORITY_DEFAULT = Number(PIXI?.UPDATE_PRIORITY?.NORMAL ?? 0);
-const SHADER_TICKER_PRIORITY_SCENE_RAW = Number(PIXI?.UPDATE_PRIORITY?.LOW ?? -25);
+const SHADER_TICKER_PRIORITY_SCENE_RAW = Number(PIXI?.UPDATE_PRIORITY?.NORMAL ?? 0);
+const RAW_SCENE_CAPTURE_TICKER_PRIORITY = Number(PIXI?.UPDATE_PRIORITY?.UTILITY ?? -50);
 const _importedLightTimingLoggedKeys = new Set();
 
 function shouldLogImportedLightShaderTiming({
@@ -2429,6 +2430,60 @@ function resolveShaderTickerPriority(cfg) {
   return resolveConfiguredShaderLayerName(cfg) === "sceneRaw"
     ? SHADER_TICKER_PRIORITY_SCENE_RAW
     : SHADER_TICKER_PRIORITY_DEFAULT;
+}
+
+function shouldUseShaderPrerenderHook(cfg) {
+  // Renderer prerender fires during nested internal renders (buffers/captures),
+  // which makes sceneRaw updates far too expensive in practice.
+  return false;
+}
+
+function addShaderFrameHandler(handler, cfg) {
+  if (shouldUseShaderPrerenderHook(cfg)) {
+    const renderer = canvas?.app?.renderer;
+    if (renderer?.on) {
+      if (typeof handler._indyFxPrerenderWrapper !== "function") {
+        let running = false;
+        handler._indyFxPrerenderWrapper = (...args) => {
+          if (running) return;
+          running = true;
+          try {
+            handler(...args);
+          } finally {
+            running = false;
+          }
+        };
+      }
+      renderer.on("prerender", handler._indyFxPrerenderWrapper);
+      return "prerender";
+    }
+  }
+  canvas.app.ticker.add(handler, null, resolveShaderTickerPriority(cfg));
+  return "ticker";
+}
+
+function removeShaderFrameHandler(handler, frameHook = "ticker") {
+  if (frameHook === "prerender") {
+    canvas?.app?.renderer?.off?.("prerender", handler?._indyFxPrerenderWrapper ?? handler);
+    return;
+  }
+  canvas.app.ticker.remove(handler);
+}
+
+function hasRawSceneCaptureChannels(channels = []) {
+  return Array.isArray(channels) &&
+    channels.some((capture) => capture?.captureMode === "sceneCaptureRaw");
+}
+
+function addRawSceneCaptureTicker(handler) {
+  if (typeof handler !== "function") return null;
+  canvas.app.ticker.add(handler, null, RAW_SCENE_CAPTURE_TICKER_PRIORITY);
+  return handler;
+}
+
+function removeRawSceneCaptureTicker(handler) {
+  if (typeof handler !== "function") return;
+  canvas.app.ticker.remove(handler);
 }
 
 function addShaderContainerToWorldLayer(worldLayer, container, cfg) {
@@ -5642,6 +5697,11 @@ function shaderOn(tokenId, opts = {}) {
   let tokenRotationDebugLastLogMs = -1;
   const captureThrottleState = {};
   const drawThrottleState = {};
+  const hasRawSceneCaptures = hasRawSceneCaptureChannels(sceneAreaChannels);
+  const lateRawCaptureState = {
+    pending: false,
+    updates: [],
+  };
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
   if ("globalAlpha" in shader.uniforms) {
     shader.uniforms.globalAlpha = computeFadeAlpha(0);
@@ -5742,8 +5802,9 @@ function shaderOn(tokenId, opts = {}) {
       const captureFlipHorizontal = parseBooleanLike(cfg.captureFlipHorizontal, false);
       const captureFlipVerticalUser = parseBooleanLike(cfg.captureFlipVertical, false);
       const captureFlipVertical = !captureFlipVerticalUser;
+      const deferredRawUpdates = hasRawSceneCaptures ? [] : null;
       for (const capture of sceneAreaChannels) {
-        capture.update({
+        const params = {
           centerWorld: liveCenter,
           radiusWorldX: captureRadius,
           radiusWorldY: captureRadius * 0.5,
@@ -5751,7 +5812,16 @@ function shaderOn(tokenId, opts = {}) {
           flipY: captureFlipVertical,
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
-        });
+        };
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+          deferredRawUpdates.push({ capture, params });
+        } else {
+          capture.update(params);
+        }
+      }
+      if (deferredRawUpdates) {
+        lateRawCaptureState.pending = deferredRawUpdates.length > 0;
+        lateRawCaptureState.updates = deferredRawUpdates;
       }
     }
     t += dt;
@@ -5761,12 +5831,27 @@ function shaderOn(tokenId, opts = {}) {
       });
     }
   };
+  const captureTickerFn = hasRawSceneCaptures
+    ? addRawSceneCaptureTicker(() => {
+      if (!lateRawCaptureState.pending) return;
+      const updates = Array.isArray(lateRawCaptureState.updates)
+        ? lateRawCaptureState.updates
+        : [];
+      lateRawCaptureState.pending = false;
+      lateRawCaptureState.updates = [];
+      for (const entry of updates) {
+        entry?.capture?.update?.(entry?.params);
+      }
+    })
+    : null;
 
-  canvas.app.ticker.add(tickerFn, null, resolveShaderTickerPriority(cfg));
+  const frameHook = addShaderFrameHandler(tickerFn, cfg);
   _activeShader.set(tokenId, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
     tickerFn,
+    captureTickerFn,
+    frameHook,
     debugGfx,
     spriteDebugGfx,
     sceneAreaChannels,
@@ -5797,7 +5882,8 @@ function shaderOff(tokenId, { skipPersist = false } = {}) {
 
   const e = _activeShader.get(tokenId);
   if (!e) return;
-  canvas.app.ticker.remove(e.tickerFn);
+  removeShaderFrameHandler(e.tickerFn, e.frameHook);
+  removeRawSceneCaptureTicker(e.captureTickerFn);
   destroyShaderRuntimeEntry(e);
   _activeShader.delete(tokenId);
 }
@@ -5984,6 +6070,11 @@ function shaderOnTemplate(templateId, opts = {}) {
   let elapsedMs = 0;
   const captureThrottleState = {};
   const drawThrottleState = {};
+  const hasRawSceneCaptures = hasRawSceneCaptureChannels(sceneAreaChannels);
+  const lateRawCaptureState = {
+    pending: false,
+    updates: [],
+  };
   let missingTemplateMs = 0;
   const missingTemplateGraceMs = 2000;
   let templateShapeSignature = getTemplateShapeSignature(template);
@@ -6079,12 +6170,13 @@ function shaderOnTemplate(templateId, opts = {}) {
       const captureFlipHorizontal = parseBooleanLike(cfg.captureFlipHorizontal, false);
       const captureFlipVerticalUser = parseBooleanLike(cfg.captureFlipVertical, false);
       const captureFlipVertical = !captureFlipVerticalUser;
+      const deferredRawUpdates = hasRawSceneCaptures ? [] : null;
       for (const capture of sceneAreaChannels) {
         const captureWidth = Math.max(1, Number(capture?.width ?? capture?.size ?? 1));
         const captureHeight = Math.max(1, Number(capture?.height ?? capture?.size ?? 1));
         const captureAspect = captureWidth > 0 ? (captureHeight / captureWidth) : 1;
         const captureRadiusY = Math.max(1, captureRadiusX * captureAspect);
-        capture.update({
+        const params = {
           centerWorld: liveCenter,
           radiusWorldX: captureRadiusX,
           radiusWorldY: captureRadiusY,
@@ -6092,7 +6184,16 @@ function shaderOnTemplate(templateId, opts = {}) {
           flipY: captureFlipVertical,
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
-        });
+        };
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+          deferredRawUpdates.push({ capture, params });
+        } else {
+          capture.update(params);
+        }
+      }
+      if (deferredRawUpdates) {
+        lateRawCaptureState.pending = deferredRawUpdates.length > 0;
+        lateRawCaptureState.updates = deferredRawUpdates;
       }
     }
 
@@ -6103,12 +6204,27 @@ function shaderOnTemplate(templateId, opts = {}) {
       });
     }
   };
+  const captureTickerFn = hasRawSceneCaptures
+    ? addRawSceneCaptureTicker(() => {
+      if (!lateRawCaptureState.pending) return;
+      const updates = Array.isArray(lateRawCaptureState.updates)
+        ? lateRawCaptureState.updates
+        : [];
+      lateRawCaptureState.pending = false;
+      lateRawCaptureState.updates = [];
+      for (const entry of updates) {
+        entry?.capture?.update?.(entry?.params);
+      }
+    })
+    : null;
 
-  canvas.app.ticker.add(tickerFn, null, resolveShaderTickerPriority(cfg));
+  const frameHook = addShaderFrameHandler(tickerFn, cfg);
   _activeTemplateShader.set(resolvedTemplateId, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
     tickerFn,
+    captureTickerFn,
+    frameHook,
     debugGfx,
     spriteDebugGfx,
     sceneAreaChannels,
@@ -6132,7 +6248,8 @@ function shaderOffTemplate(templateId, { skipPersist = false } = {}) {
 
   const e = _activeTemplateShader.get(resolvedTemplateId);
   if (!e) return;
-  canvas.app.ticker.remove(e.tickerFn);
+  removeShaderFrameHandler(e.tickerFn, e.frameHook);
+  removeRawSceneCaptureTicker(e.captureTickerFn);
   destroyShaderRuntimeEntry(e);
   _activeTemplateShader.delete(resolvedTemplateId);
 }
@@ -6331,6 +6448,11 @@ function shaderOnTile(tileId, opts = {}) {
   let elapsedMs = 0;
   const captureThrottleState = {};
   const drawThrottleState = {};
+  const hasRawSceneCaptures = hasRawSceneCaptureChannels(sceneAreaChannels);
+  const lateRawCaptureState = {
+    pending: false,
+    updates: [],
+  };
   let captureDebugLastMs = 0;
   let tileShapeSignature = getTileShapeSignature(tile);
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
@@ -6444,8 +6566,9 @@ function shaderOnTile(tileId, opts = {}) {
           });
         }
       }
+      const deferredRawUpdates = hasRawSceneCaptures ? [] : null;
       for (const capture of sceneAreaChannels) {
-        capture.update({
+        const params = {
           centerWorld: liveMetrics.center,
           radiusWorldX: captureRadiusX,
           radiusWorldY: captureRadiusY,
@@ -6453,7 +6576,16 @@ function shaderOnTile(tileId, opts = {}) {
           flipY: captureFlipVertical,
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
-        });
+        };
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+          deferredRawUpdates.push({ capture, params });
+        } else {
+          capture.update(params);
+        }
+      }
+      if (deferredRawUpdates) {
+        lateRawCaptureState.pending = deferredRawUpdates.length > 0;
+        lateRawCaptureState.updates = deferredRawUpdates;
       }
     }
 
@@ -6464,12 +6596,27 @@ function shaderOnTile(tileId, opts = {}) {
       });
     }
   };
+  const captureTickerFn = hasRawSceneCaptures
+    ? addRawSceneCaptureTicker(() => {
+      if (!lateRawCaptureState.pending) return;
+      const updates = Array.isArray(lateRawCaptureState.updates)
+        ? lateRawCaptureState.updates
+        : [];
+      lateRawCaptureState.pending = false;
+      lateRawCaptureState.updates = [];
+      for (const entry of updates) {
+        entry?.capture?.update?.(entry?.params);
+      }
+    })
+    : null;
 
-  canvas.app.ticker.add(tickerFn, null, resolveShaderTickerPriority(cfg));
+  const frameHook = addShaderFrameHandler(tickerFn, cfg);
   _activeTileShader.set(resolvedTileId, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
     tickerFn,
+    captureTickerFn,
+    frameHook,
     debugGfx,
     spriteDebugGfx,
     sceneAreaChannels,
@@ -6494,7 +6641,8 @@ function shaderOffTile(tileId, { skipPersist = false } = {}) {
 
   const entry = _activeTileShader.get(resolvedTileId);
   if (!entry) return;
-  canvas.app.ticker.remove(entry.tickerFn);
+  removeShaderFrameHandler(entry.tickerFn, entry.frameHook);
+  removeRawSceneCaptureTicker(entry.captureTickerFn);
   destroyShaderRuntimeEntry(entry, { preserveWhiteMask: true });
   _activeTileShader.delete(resolvedTileId);
 }
@@ -6992,6 +7140,13 @@ function shaderOnRegion(regionId, opts = {}) {
   let elapsedMs = 0;
   const captureThrottleState = {};
   const drawThrottleState = {};
+  const hasRawSceneCaptures = clusterStates.some((cluster) =>
+    hasRawSceneCaptureChannels(cluster?.sceneAreaChannels),
+  );
+  const lateRawCaptureState = {
+    pending: false,
+    updates: [],
+  };
   let regionShapeSignature = getRegionShapeSignature(region);
   const { displayTimeMs, computeFadeAlpha } = createFadeAlphaComputer(cfg);
   for (const cluster of clusterStates) {
@@ -7078,6 +7233,8 @@ function shaderOnRegion(regionId, opts = {}) {
       }
     }
 
+    const deferredRawUpdates = (hasRawSceneCaptures && captureUpdateDt > 0) ? [] : null;
+
     for (let i = 0; i < clusterStates.length; i += 1) {
       const cluster = clusterStates[i];
       const clusterRuntimeBuffers = Array.isArray(cluster?.runtimeBufferChannels)
@@ -7127,7 +7284,7 @@ function shaderOnRegion(regionId, opts = {}) {
         const captureFlipVerticalUser = parseBooleanLike(cfg.captureFlipVertical, false);
         const captureFlipVertical = !captureFlipVerticalUser;
         for (const capture of cluster.sceneAreaChannels) {
-          capture.update({
+          const params = {
             centerWorld: clusterBounds.center,
             radiusWorldX: captureRadiusX,
             radiusWorldY: captureRadiusY,
@@ -7135,7 +7292,12 @@ function shaderOnRegion(regionId, opts = {}) {
             flipY: captureFlipVertical,
             rotationDeg: captureRotationDeg,
             excludeDisplayObject: rootContainer
-          });
+          };
+          if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+            deferredRawUpdates.push({ capture, params });
+          } else {
+            capture.update(params);
+          }
         }
       }
 
@@ -7146,15 +7308,35 @@ function shaderOnRegion(regionId, opts = {}) {
       }
     }
 
+    if (deferredRawUpdates) {
+      lateRawCaptureState.pending = deferredRawUpdates.length > 0;
+      lateRawCaptureState.updates = deferredRawUpdates;
+    }
+
     t = nextTime;
   };
 
-  canvas.app.ticker.add(tickerFn, null, resolveShaderTickerPriority(cfg));
+  const captureTickerFn = hasRawSceneCaptures
+    ? addRawSceneCaptureTicker(() => {
+      if (!lateRawCaptureState.pending) return;
+      const updates = Array.isArray(lateRawCaptureState.updates)
+        ? lateRawCaptureState.updates
+        : [];
+      lateRawCaptureState.pending = false;
+      lateRawCaptureState.updates = [];
+      for (const entry of updates) {
+        entry?.capture?.update?.(entry?.params);
+      }
+    })
+    : null;
+  const frameHook = addShaderFrameHandler(tickerFn, cfg);
   registerActiveRegionShaderEntry(effectKey, {
     effectKey,
     regionId: resolvedRegionId,
     container: rootContainer,
     tickerFn,
+    captureTickerFn,
+    frameHook,
     clusterStates,
     sourceOpts: foundry.utils.mergeObject(
       foundry.utils.mergeObject({}, macroOpts, { inplace: false }),
@@ -7187,7 +7369,8 @@ function shaderOffRegion(regionId, { skipPersist = false, fromBehavior = false, 
   }
 
   for (const entry of entries) {
-    canvas.app.ticker.remove(entry.tickerFn);
+    removeShaderFrameHandler(entry.tickerFn, entry.frameHook);
+    removeRawSceneCaptureTicker(entry.captureTickerFn);
     for (const cluster of (entry.clusterStates ?? [])) {
       destroyRegionClusterRuntime(cluster);
     }
