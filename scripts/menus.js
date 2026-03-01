@@ -2486,13 +2486,15 @@ export function createMenus({ moduleId, shaderManager }) {
         resolveElementRoot(dialog?.element) ?? resolveElementRoot(dialog);
       ensureDialogVerticalScroll(dialogRoot);
     }
-    async _openShaderVariableEditor(root, refreshPreview) {
+    async _openShaderVariableEditor(root, refreshPreview, shaderId = null) {
       const sourceInputs = this._collectShaderSourceInputs(root);
 
       if (!sourceInputs.length) {
         ui.notifications.warn("Shader source editor not found.");
         return;
       }
+
+      const record = shaderId ? shaderManager.getImportedRecord(shaderId) : null;
 
       await openShaderVariableEditorDialog({
         title: "Edit Shader Variables",
@@ -2512,6 +2514,10 @@ export function createMenus({ moduleId, shaderManager }) {
             this._writeCustomUniformValues(root, nextUniformValues);
           },
         })),
+        presets: record?.presets ?? [],
+        onSavePreset: shaderId
+          ? async (name, customUniforms) => shaderManager.saveShaderPreset(shaderId, name, customUniforms)
+          : null,
         onApply: () => {
           if (typeof refreshPreview === "function") refreshPreview();
         },
@@ -3212,7 +3218,7 @@ export function createMenus({ moduleId, shaderManager }) {
           if (editVariablesBtn.dataset.indyFxEditVarsBound !== "1") {
             editVariablesBtn.dataset.indyFxEditVarsBound = "1";
             editVariablesBtn.addEventListener("click", () => {
-              void this._openShaderVariableEditor(root, refreshPreview);
+              void this._openShaderVariableEditor(root, refreshPreview, shader.id);
             });
           }
         }

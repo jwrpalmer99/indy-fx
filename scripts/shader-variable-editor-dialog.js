@@ -178,6 +178,8 @@ export async function openShaderVariableEditorDialog({
   title = "Edit Shader Variables",
   sourceEntries = [],
   onApply = null,
+  presets = [],
+  onSavePreset = null,
 } = {}) {
   const normalizedEntries = normalizeSourceEntries(sourceEntries);
   if (!normalizedEntries.length) {
@@ -334,7 +336,47 @@ export async function openShaderVariableEditorDialog({
     }
   }
 
-  const content = `<form class="indy-fx-variable-editor" style="max-height:min(72vh, calc(100vh - 220px));overflow-y:auto;overflow-x:hidden;padding-right:.35rem;">${rows}</form>`;
+  // Build a map from uniform name → { index, variable } for preset loading.
+  const uniformByName = new Map();
+  for (let i = 0; i < variables.length; i += 1) {
+    const v = variables[i];
+    if (String(v?.declaration ?? "").trim().toLowerCase() === "uniform") {
+      uniformByName.set(String(v.name ?? "").trim(), { index: i, variable: v });
+    }
+  }
+
+  // Normalise the preset list (mutable so save-preset can push to it).
+  const currentPresets = Array.isArray(presets)
+    ? presets.filter((p) => p && typeof p === "object" && String(p.name ?? "").trim()).map((p) => ({
+        id: String(p.id ?? p.name ?? ""),
+        name: String(p.name ?? "").trim(),
+        customUniforms: p.customUniforms && typeof p.customUniforms === "object" ? p.customUniforms : {},
+      }))
+    : [];
+
+  const buildPresetOptions = () =>
+    currentPresets
+      .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`)
+      .join("");
+
+  const presetBar =
+    currentPresets.length > 0 || typeof onSavePreset === "function"
+      ? `
+        <div class="form-group indy-fx-preset-bar">
+          <label>Preset</label>
+          <div class="form-fields">
+            <select name="preset_select">
+              <option value="">-- Select Preset --</option>
+              ${buildPresetOptions()}
+            </select>
+            ${typeof onSavePreset === "function" ? `<button type="button" class="indy-fx-save-preset" title="Save current values as a preset"><i class="fas fa-bookmark"></i> Save Preset</button>` : ""}
+          </div>
+        </div>
+        <hr />
+      `
+      : "";
+
+  const content = `<form class="indy-fx-variable-editor" style="padding-right:.35rem;">${presetBar}${rows}</form>`;
 
   const readDialogVariables = (dialogRoot) => {
     return variables.map((variable, index) => {
@@ -654,6 +696,154 @@ export async function openShaderVariableEditorDialog({
       numberInput.addEventListener("input", () => syncNumberToSlider());
       numberInput.addEventListener("change", () => syncNumberToSlider({ commit: true }));
     }
+  }
+
+  // --- Preset interaction ---
+
+  const applyPresetToForm = (presetUniforms) => {
+    if (!presetUniforms || typeof presetUniforms !== "object") return;
+    for (const [uniformName, value] of Object.entries(presetUniforms)) {
+      const entry = uniformByName.get(uniformName);
+      if (!entry) continue;
+      const { index: idx, variable } = entry;
+      if (variable.kind === "scalar") {
+        if (String(variable.type ?? "") === "bool") {
+          const el = variableRoot?.querySelector?.(`[name="var_${idx}_value"]`);
+          if (el instanceof HTMLInputElement) el.checked = Boolean(value);
+        } else {
+          const el = variableRoot?.querySelector?.(`[name="var_${idx}_value"]`);
+          if (el instanceof HTMLInputElement) {
+            el.value = formatShaderScalarValue(Number(value), String(variable.type ?? ""));
+            const sliderEl = variableRoot?.querySelector?.(`[name="var_${idx}_slider"]`);
+            if (sliderEl instanceof HTMLInputElement) sliderEl.value = String(Number(value));
+          }
+        }
+      } else {
+        const values = Array.isArray(value) ? value : [];
+        for (let c = 0; c < values.length; c += 1) {
+          const el = variableRoot?.querySelector?.(`[name="var_${idx}_c${c}"]`);
+          if (el instanceof HTMLInputElement) el.value = formatShaderVectorValue(Number(values[c]));
+        }
+        if (values.length >= 3) {
+          const colorEl = variableRoot?.querySelector?.(`[name="var_${idx}_color"]`);
+          if (colorEl instanceof HTMLInputElement) colorEl.value = vecToHex(values);
+        }
+      }
+    }
+    scheduleLiveUniformApply();
+  };
+
+  const presetSelect = variableRoot?.querySelector?.('select[name="preset_select"]');
+  if (presetSelect instanceof HTMLSelectElement) {
+    presetSelect.addEventListener("change", () => {
+      const selectedId = presetSelect.value;
+      if (!selectedId) return;
+      const preset = currentPresets.find((p) => p.id === selectedId);
+      if (preset) applyPresetToForm(preset.customUniforms);
+    });
+  }
+
+  const savePresetBtn = variableRoot?.querySelector?.(".indy-fx-save-preset");
+  if (savePresetBtn instanceof HTMLElement && typeof onSavePreset === "function") {
+    savePresetBtn.addEventListener("click", async () => {
+      const selectedId = presetSelect?.value ?? "";
+      const selectedPreset = currentPresets.find((p) => p.id === selectedId);
+      const defaultName = selectedPreset?.name ?? "";
+
+      // Prompt for name via a small DialogV2.
+      let presetName = null;
+      try {
+        presetName = await new Promise((resolve) => {
+          const promptContent = `
+            <form style="padding:.25rem 0;">
+              <div class="form-group">
+                <label>Preset Name</label>
+                <div class="form-fields">
+                  <input type="text" name="preset_name" value="${escapeHtml(defaultName)}" placeholder="My Preset" style="flex:1 1 auto;" autofocus />
+                </div>
+              </div>
+            </form>`;
+          const promptDialog = new foundry.applications.api.DialogV2({
+            window: { title: "Save Preset" },
+            content: promptContent,
+            buttons: [
+              {
+                action: "save",
+                label: "Save",
+                icon: "fas fa-save",
+                default: true,
+                close: true,
+                callback: (_event, _button, dlg) => {
+                  const root = resolveElementRoot(dlg?.element) ?? resolveElementRoot(dlg);
+                  const val = String(root?.querySelector?.('[name="preset_name"]')?.value ?? "").trim();
+                  resolve(val || null);
+                  return true;
+                },
+              },
+              {
+                action: "cancel",
+                label: "Cancel",
+                icon: "fas fa-times",
+                close: true,
+                callback: () => { resolve(null); return true; },
+              },
+            ],
+          });
+          void promptDialog.render(true);
+        });
+      } catch (_err) {
+        presetName = null;
+      }
+
+      if (!presetName) return;
+
+      // Read the current uniforms from the dialog form.
+      const dialogRoot = resolveElementRoot(variableDialog?.element) ?? resolveElementRoot(variableDialog);
+      const nextVariables = readDialogVariables(dialogRoot);
+      const varsBySourceKey = buildVariablesBySourceKey(nextVariables);
+      const collectedUniforms = {};
+      for (const [, scopedVars] of varsBySourceKey) {
+        for (const variable of scopedVars) {
+          if (String(variable?.declaration ?? "").trim().toLowerCase() !== "uniform") continue;
+          const uName = String(variable?.name ?? "").trim();
+          if (!uName) continue;
+          if (variable.kind === "vector") {
+            collectedUniforms[uName] = Array.isArray(variable.values) ? variable.values.map(Number) : [];
+          } else if (String(variable.type ?? "").trim().toLowerCase() === "bool") {
+            collectedUniforms[uName] = Boolean(variable.value);
+          } else {
+            const n = Number(variable.value);
+            collectedUniforms[uName] = Number.isFinite(n) ? n : 0;
+          }
+        }
+      }
+
+      try {
+        const saved = await onSavePreset(presetName, collectedUniforms);
+        // Update local preset list and dropdown.
+        const existingIdx = currentPresets.findIndex((p) => p.name === presetName);
+        const newEntry = {
+          id: saved?.id ?? presetName,
+          name: presetName,
+          customUniforms: collectedUniforms,
+        };
+        if (existingIdx >= 0) {
+          currentPresets[existingIdx] = newEntry;
+        } else {
+          currentPresets.push(newEntry);
+        }
+        if (presetSelect instanceof HTMLSelectElement) {
+          // Rebuild options and select the saved preset.
+          const existingOpts = Array.from(presetSelect.options).filter((o) => !o.value);
+          presetSelect.innerHTML = existingOpts.map((o) => o.outerHTML).join("") + buildPresetOptions();
+          presetSelect.value = newEntry.id;
+        }
+        ui.notifications?.info?.(`Preset "${presetName}" saved.`);
+      } catch (err) {
+        console.error("indyFX | saveShaderPreset failed", err);
+        ui.notifications?.error?.(err?.message ?? "Failed to save preset.");
+      }
+    });
   }
 
   return variableDialog;

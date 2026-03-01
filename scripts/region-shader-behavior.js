@@ -964,6 +964,12 @@ function registerRegionShaderBehavior({
         return typeof fallback === "function" ? fallback.bind(game.indyFX.shaders) : null;
       }
 
+      _getSaveShaderPresetFn() {
+        const mgr = game?.indyFX?.shaders;
+        const fn = mgr?.saveShaderPreset;
+        return typeof fn === "function" ? fn.bind(mgr) : null;
+      }
+
       _collectBufferSourceEntries(channels, sourceEntries, scope = "iChannel") {
         if (!channels || typeof channels !== "object") return;
         for (let i = 0; i < 4; i += 1) {
@@ -1076,9 +1082,14 @@ function registerRegionShaderBehavior({
         }
 
         try {
+          const savePresetFn = this._getSaveShaderPresetFn();
           await openShaderVariableEditorDialog({
             title: `Edit Shader Variables: ${String(record.label ?? record.name ?? shaderId)}`,
             sourceEntries,
+            presets: record.presets ?? [],
+            onSavePreset: savePresetFn
+              ? (name, customUniforms) => savePresetFn(shaderId, name, customUniforms)
+              : null,
             onApply: async ({ changed, updatedSourceKeys = [] } = {}) => {
               if (!changed) return;
 
@@ -1111,7 +1122,6 @@ function registerRegionShaderBehavior({
                   },
                 });
               }
-
             },
           });
         } catch (err) {

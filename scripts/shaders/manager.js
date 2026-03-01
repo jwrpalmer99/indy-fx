@@ -3801,6 +3801,20 @@ export class ShaderManager {
     return `${sharedCommonSource}\n\n${mainSource}`;
   }
 
+  _normalizePresets(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((p) => p && typeof p === "object" && String(p.name ?? "").trim())
+      .map((p) => ({
+        id: String(p.id ?? "").trim() || foundry.utils.randomID(),
+        name: String(p.name).trim(),
+        customUniforms:
+          p.customUniforms && typeof p.customUniforms === "object" && !Array.isArray(p.customUniforms)
+            ? foundry.utils.deepClone(p.customUniforms)
+            : {},
+      }));
+  }
+
   _normalizeImportedRecord(rawRecord, { fallbackId = "", fallbackName = "" } = {}) {
     const entry = rawRecord && typeof rawRecord === "object" ? rawRecord : null;
     if (!entry) return null;
@@ -3823,7 +3837,44 @@ export class ShaderManager {
         entry.defaults,
         this.getDefaultImportedShaderDefaults(),
       ),
+      presets: this._normalizePresets(entry.presets),
     };
+  }
+
+  async saveShaderPreset(shaderId, name, customUniforms) {
+    const normalizedName = String(name ?? "").trim();
+    if (!normalizedName) throw new Error("Preset name cannot be empty.");
+
+    const records = this.getImportedRecords();
+    const idx = records.findIndex((r) => r.id === shaderId);
+    if (idx < 0) throw new Error(`Shader "${shaderId}" not found.`);
+
+    const record = records[idx];
+    const existingPresets = this._normalizePresets(record.presets ?? []);
+
+    const existingIdx = existingPresets.findIndex((p) => p.name === normalizedName);
+    const preset = {
+      id: existingIdx >= 0 ? existingPresets[existingIdx].id : foundry.utils.randomID(),
+      name: normalizedName,
+      customUniforms:
+        customUniforms && typeof customUniforms === "object" && !Array.isArray(customUniforms)
+          ? foundry.utils.deepClone(customUniforms)
+          : {},
+    };
+
+    if (existingIdx >= 0) {
+      existingPresets[existingIdx] = preset;
+    } else {
+      existingPresets.push(preset);
+    }
+
+    records[idx] = { ...record, presets: existingPresets };
+    await this.setImportedRecords(records, {
+      context: "saveShaderPreset",
+      changedShaderIds: [shaderId],
+      operation: "update",
+    });
+    return preset;
   }
 
   _coerceRecordCollectionToArray(value) {

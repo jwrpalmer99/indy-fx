@@ -3373,6 +3373,9 @@ async function openDocumentShaderConfigDialog(app) {
     await openShaderVariableEditorDialog({
       title: "Edit Shader Variables",
       sourceEntries,
+      presets: record.presets ?? [],
+      onSavePreset: async (name, customUniforms) =>
+        shaderManager.saveShaderPreset(shaderId, name, customUniforms),
       onApply: async ({ action, changed }) => {
         if (!changed) return;
         await applyAction(dlg, action === "save" ? "save" : "apply");
@@ -7966,7 +7969,8 @@ Hooks.once("ready", async () => {
       updateImportedChannels: (shaderId, payload = {}) => shaderManager.updateImportedShaderChannels(shaderId, payload),
       duplicateImported: (shaderId, payload = {}) => shaderManager.duplicateImportedShader(shaderId, payload),
       regenerateThumbnail: (shaderId, payload = {}) => shaderManager.regenerateImportedShaderThumbnail(shaderId, payload),
-      removeImported: (shaderId) => shaderManager.removeImportedShader(shaderId)
+      removeImported: (shaderId) => shaderManager.removeImportedShader(shaderId),
+      saveShaderPreset: (shaderId, name, customUniforms) => shaderManager.saveShaderPreset(shaderId, name, customUniforms),
     }
   };
 });
