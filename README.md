@@ -97,6 +97,28 @@ Notes:
 - Light animation registrations are synced at startup and when the shader library changes.
 - For light usage, placeable capture channel modes are remapped to scene capture where needed.
 
+### Using the Indy FX River Colour Shader
+This example shader is very flexible and exposes a lot of editable variables - you can adapt it to nearly any scene (even lava or other flows).
+Here are 2 examples of it in use for water/lava:
+- https://www.youtube.com/watch?v=n5boTFqjI-o
+- https://www.youtube.com/watch?v=_r7y_HH7VB4
+
+The trickiest part of using the shader is finding the right parameters to generate a good heightmap for your river:
+
+1. Draw a region roughly around the river - dont worry about following the edge too much.
+2. Drop the shader on the region and open the shader variable editor from within the region behaviour.
+3. There are 5 main variables to change to get a good height map:
+    - Select the `TargetDeep` and `TargetShallow` colours of your river (move the water depth to 0.0 if it's stopping you seeing the canvas).
+    - It may be helpful to manually lighten the `TargetShallow` colour you have picked.
+    - Lower the `DepthGamma` variable - this can help in a lot of cases to differentiate the river from its surrounds.
+    - Raise the `Water Depth` variable.
+    - Adjust the `ColorSensitivy` variable.
+    - Use `DebugHeightvsWater` to assist - it will show you where the current water/land is with your settings.
+9. By tuning the above parameters you should be able to get a good match for your river - changes you make are reflected immediately in the shader.
+   
+- Once you have got the height map to match your river you can then play around with all the other values to achieve the look you want.
+- Remember you can settings you like as a preset.
+
 ## Channel Modes
 Imported shader channels (`iChannel0..iChannel3`) support:
 - `none` (black)
