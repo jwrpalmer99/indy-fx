@@ -39,7 +39,8 @@ import {
   syncShaderMouseUniforms,
   updateShaderTimeUniforms,
   destroyShaderRuntimeEntry,
-  destroyRegionClusterRuntime
+  destroyRegionClusterRuntime,
+  createOutputVisionFilter
 } from "./shader-runtime-utils.js";
 import { getCircleMaskTexture } from "./shaders/textures.js";
 import { openShaderVariableEditorDialog } from "./shader-variable-editor-dialog.js";
@@ -2360,7 +2361,7 @@ function normalizeShaderLayerName(value, fallback = "interfacePrimary") {
   const raw = String(value ?? "").trim();
   if (!raw) return fallback;
   if (raw === "token") return "interfacePrimary";
-  if (raw === "sceneCaptureRaw" || raw === "primary") return "sceneRaw";
+  if (raw === "sceneCaptureRaw" || raw === "sceneCaptureVision" || raw === "primary") return "sceneRaw";
   if (raw === "sceneRaw") return "sceneRaw";
   if (raw === "belowTiles") return "belowTiles";
   if (raw === "baseEffects") return "belowTokens";
@@ -2472,7 +2473,10 @@ function removeShaderFrameHandler(handler, frameHook = "ticker") {
 
 function hasRawSceneCaptureChannels(channels = []) {
   return Array.isArray(channels) &&
-    channels.some((capture) => capture?.captureMode === "sceneCaptureRaw");
+    channels.some((capture) =>
+      capture?.captureMode === "sceneCaptureRaw" ||
+      capture?.captureMode === "sceneCaptureVision"
+    );
 }
 
 function addRawSceneCaptureTicker(handler) {
@@ -5683,6 +5687,9 @@ function shaderOn(tokenId, opts = {}) {
     bloom.padding = effectExtent * 2.5;
     mesh.filters = [bloom];
   }
+  if (sceneAreaChannels.some(c => c.captureMode === "sceneCaptureVision")) {
+    mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
+  }
   const debugEnabled = game.settings.get(MODULE_ID, "shaderDebug");
   let debugGfx = null;
   let spriteDebugGfx = null;
@@ -5816,7 +5823,7 @@ function shaderOn(tokenId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+        if ((capture?.captureMode === "sceneCaptureRaw" || capture?.captureMode === "sceneCaptureVision") && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -6056,6 +6063,9 @@ function shaderOnTemplate(templateId, opts = {}) {
     bloom.padding = effectExtent * 2.5;
     mesh.filters = [bloom];
   }
+  if (sceneAreaChannels.some(c => c.captureMode === "sceneCaptureVision")) {
+    mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
+  }
 
   const debugEnabled = game.settings.get(MODULE_ID, "shaderDebug");
   let debugGfx = null;
@@ -6188,7 +6198,7 @@ function shaderOnTemplate(templateId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+        if ((capture?.captureMode === "sceneCaptureRaw" || capture?.captureMode === "sceneCaptureVision") && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -6434,6 +6444,9 @@ function shaderOnTile(tileId, opts = {}) {
     bloom.padding = Math.max(halfW, halfH) * 2.0;
     mesh.filters = [bloom];
   }
+  if (sceneAreaChannels.some(c => c.captureMode === "sceneCaptureVision")) {
+    mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
+  }
 
   const debugEnabled = game.settings.get(MODULE_ID, "shaderDebug");
   let debugGfx = null;
@@ -6580,7 +6593,7 @@ function shaderOnTile(tileId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+        if ((capture?.captureMode === "sceneCaptureRaw" || capture?.captureMode === "sceneCaptureVision") && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -7118,6 +7131,9 @@ function shaderOnRegion(regionId, opts = {}) {
       bloom.padding = Math.max(halfW, halfH) * 2.0;
       mesh.filters = [bloom];
     }
+    if (sceneAreaChannels.some(c => c.captureMode === "sceneCaptureVision")) {
+      mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
+    }
 
     clusterStates.push({
       clusterContainer,
@@ -7296,7 +7312,7 @@ function shaderOnRegion(regionId, opts = {}) {
             rotationDeg: captureRotationDeg,
             excludeDisplayObject: rootContainer
           };
-          if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+          if ((capture?.captureMode === "sceneCaptureRaw" || capture?.captureMode === "sceneCaptureVision") && deferredRawUpdates) {
             deferredRawUpdates.push({ capture, params });
           } else {
             capture.update(params);

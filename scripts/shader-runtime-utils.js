@@ -1,4 +1,5 @@
-import { SceneAreaChannel } from "./shaders/scene-channel.js";
+import { SceneAreaChannel, createOutputVisionFilter } from "./shaders/scene-channel.js";
+export { createOutputVisionFilter };
 import { createShapeMaskTexture } from "./shaders/mask-shapes.js";
 
 const RUNTIME_DEBUG_MODULE_ID = "indy-fx";
@@ -629,7 +630,7 @@ export function resolveShaderWorldLayer(moduleId, cfg, { allowTokenLayer = false
     const raw = String(value ?? "").trim();
     if (!raw) return "interfacePrimary";
     if (raw === "token") return "interfacePrimary";
-    if (raw === "sceneCaptureRaw" || raw === "primary") return "sceneRaw";
+    if (raw === "sceneCaptureRaw" || raw === "sceneCaptureVision" || raw === "primary") return "sceneRaw";
     if (raw === "sceneRaw") return "sceneRaw";
     if (raw === "baseEffects") return "belowTokens";
     if (raw === "belowTiles") return "belowTiles";
@@ -752,10 +753,12 @@ export function setupShaderRuntimeChannels(
   const sceneCaptureByKey = new Map();
   const resolvedCaptureResolutionScale =
     normalizeCaptureResolutionScale(captureResolutionScale);
-  const normalizeRuntimeCaptureMode = (mode) =>
-    String(mode ?? "").trim() === "sceneCaptureRaw"
-      ? "sceneCaptureRaw"
-      : "sceneCapture";
+  const normalizeRuntimeCaptureMode = (mode) => {
+    const m = String(mode ?? "").trim();
+    if (m === "sceneCaptureRaw") return "sceneCaptureRaw";
+    if (m === "sceneCaptureVision") return "sceneCaptureVision";
+    return "sceneCapture";
+  };
 
   const getBaseCaptureResolution = (runtimeChannel, channelIndex) => {
     const fallbackSize = Math.max(

@@ -1,3 +1,128 @@
+// Vertex shader for OutputVisionCorrectionFilter — identical to Foundry's
+// AbstractBaseMaskFilter, which provides both vTextureCoord (for the input
+// sprite UV) and vMaskTextureCoord (screen-space UV for vision/darkness textures).
+const OUTPUT_VISION_VERT = `
+  attribute vec2 aVertexPosition;
+  uniform mat3 projectionMatrix;
+  uniform vec2 screenDimensions;
+  uniform vec4 inputSize;
+  uniform vec4 outputFrame;
+  varying vec2 vTextureCoord;
+  varying vec2 vMaskTextureCoord;
+
+  vec4 filterVertexPosition(void) {
+    vec2 position = aVertexPosition * max(outputFrame.zw, vec2(0.)) + outputFrame.xy;
+    return vec4((projectionMatrix * vec3(position, 1.0)).xy, 0., 1.);
+  }
+  vec2 filterTextureCoord(void) {
+    return aVertexPosition * (outputFrame.zw * inputSize.zw);
+  }
+  // Map filter UV to normalised screen-space UV for screen-sized mask textures.
+  vec2 filterMaskTextureCoord(in vec2 textureCoord) {
+    return (textureCoord * inputSize.xy + outputFrame.xy) / screenDimensions;
+  }
+  void main() {
+    vTextureCoord = filterTextureCoord();
+    vMaskTextureCoord = filterMaskTextureCoord(vTextureCoord);
+    gl_Position = filterVertexPosition();
+  }
+`;
+
+// Fragment shader: post-processes the shader mesh output with vision correction.
+// vTextureCoord samples the rendered effect; vMaskTextureCoord samples
+// screen-aligned vision/darkness textures.
+const OUTPUT_VISION_FRAG = `
+  precision mediump float;
+  varying vec2 vTextureCoord;
+  varying vec2 vMaskTextureCoord;  // screen-space UV
+  uniform sampler2D uSampler;          // the rendered shader effect
+  uniform sampler2D visionTex;         // vision mask  (R = visibility 0..1)
+  uniform sampler2D darknessLevelTex;  // darkness map (R = darkness  0=lit, 1=dark)
+  uniform float saturation;            // token darkvision saturation (-1..0)
+  uniform float applyVision;           // 1.0 = apply, 0.0 = passthrough
+
+  void main() {
+    vec4 color = texture2D(uSampler, vTextureCoord);
+    if (applyVision > 0.5) {
+      float visibility = texture2D(visionTex, vMaskTextureCoord).r;
+      if (saturation < -0.001) {
+        // darknessLevel 0=lit (no desaturation), 1=dark (full desaturation)
+        float darkness = texture2D(darknessLevelTex, vMaskTextureCoord).r;
+        float effectiveSat = saturation * darkness;
+        if (effectiveSat < -0.001) {
+          float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+          color.rgb = mix(vec3(luma), color.rgb, 1.0 + effectiveSat);
+        }
+      }
+      // Black out areas outside the token's vision
+      color.rgb *= visibility;
+      color.a *= visibility;
+    }
+    gl_FragColor = color;
+  }
+`;
+
+class OutputVisionCorrectionFilter extends PIXI.Filter {
+  constructor() {
+    super(OUTPUT_VISION_VERT, OUTPUT_VISION_FRAG, {
+      screenDimensions: [1, 1],
+      visionTex: PIXI.Texture.WHITE,        // fallback: fully visible
+      darknessLevelTex: PIXI.Texture.EMPTY, // fallback: R=0 → no desaturation
+      saturation: 0.0,
+      applyVision: 0.0,
+    });
+  }
+
+  // Called automatically by PIXI every frame before the filter renders.
+  apply(filterManager, input, output, clear, currentState) {
+    // Sync screen dimensions (required for vMaskTextureCoord to be correct).
+    this.uniforms.screenDimensions = canvas.screenDimensions ?? [
+      canvas?.app?.renderer?.width ?? 1,
+      canvas?.app?.renderer?.height ?? 1,
+    ];
+
+    // Read vision state for the currently controlled token.
+    const visionTex = canvas?.masks?.vision?.renderTexture ?? null;
+    const darknessLevelTex = canvas?.effects?.illumination?.renderTexture ?? null;
+    const sat = _getControlledTokenVisionSaturation();
+    const hasVision = sat !== null && visionTex !== null;
+
+    this.uniforms.visionTex = visionTex ?? PIXI.Texture.WHITE;
+    this.uniforms.darknessLevelTex = darknessLevelTex ?? PIXI.Texture.EMPTY;
+    this.uniforms.saturation = hasVision ? sat : 0.0;
+    this.uniforms.applyVision = hasVision ? 1.0 : 0.0;
+
+    filterManager.applyFilter(this, input, output, clear);
+  }
+}
+
+function _getControlledTokenVisionSaturation() {
+  try {
+    const controlled = canvas?.tokens?.controlled ?? [];
+    if (!controlled.length) return null;
+    const token = controlled[0];
+    const visionSource = token?.vision;
+    // visionModeOverrides.saturation is the effective value used by lighting shaders
+    const sat = visionSource?.visionModeOverrides?.saturation
+      ?? visionSource?.data?.saturation
+      ?? 0;
+    return Math.max(-1, Math.min(0, Number(sat) || 0));
+  } catch (_err) {
+    return null;
+  }
+}
+
+/**
+ * Create an OutputVisionCorrectionFilter that can be added to a shader mesh's
+ * filters array. It post-processes the rendered shader effect to match the
+ * controlled token's vision: B&W where darkvision applies, invisible where
+ * outside the vision range.
+ * @returns {OutputVisionCorrectionFilter}
+ */
+export function createOutputVisionFilter() {
+  return new OutputVisionCorrectionFilter();
+}
+
 function formatDebugTimestamp() {
   const now = new Date();
   const hh = String(now.getHours()).padStart(2, "0");
@@ -53,9 +178,12 @@ export class SceneAreaChannel {
     this._lastRenderErrorLogAt = 0;
     this._renderErrorCount = 0;
     this._renderRetryAfterMs = 0;
-    this.captureMode = String(options?.captureMode ?? "sceneCapture").trim() === "sceneCaptureRaw"
+    const captureModeRaw = String(options?.captureMode ?? "sceneCapture").trim();
+    this.captureMode = captureModeRaw === "sceneCaptureRaw"
       ? "sceneCaptureRaw"
-      : "sceneCapture";
+      : captureModeRaw === "sceneCaptureVision"
+        ? "sceneCaptureVision"
+        : "sceneCapture";
     this.sourceContainer = options?.sourceContainer ?? null;
     this._rawSourceSprite = null;
     this.texture = PIXI.RenderTexture.create({
@@ -122,7 +250,10 @@ export class SceneAreaChannel {
       ty
     );
 
-    if (this.captureMode === "sceneCaptureRaw") {
+    // sceneCaptureRaw and sceneCaptureVision both capture from the primary render
+    // texture in full colour. The vision-correction post-process for sceneCaptureVision
+    // is applied to the shader mesh output via OutputVisionCorrectionFilter — not here.
+    if (this.captureMode === "sceneCaptureRaw" || this.captureMode === "sceneCaptureVision") {
       const primaryTexture = canvas?.primary?.renderTexture ?? null;
       const primarySprite = canvas?.primary?.sprite ?? null;
       const primaryBase = primaryTexture?.baseTexture ?? null;
@@ -252,5 +383,3 @@ export class SceneAreaChannel {
     });
   }
 }
-
-

@@ -5,7 +5,8 @@
       "Bash(node -e \"const fs = require\\(''fs''\\); const src = fs.readFileSync\\(''scripts/shaders/shadertoy-adapter.js'',''utf8''\\); try { new Function\\(src.replace\\(/^export /gm,''''\\).replace\\(/^import .*/gm,''''\\)\\); console.log\\(''Syntax OK''\\); } catch\\(e\\) { console.error\\(e.message\\); }\")",
       "Bash(node -e \":*)",
       "Bash(python3 -c \":*)",
-      "Bash(node scripts/examples/_fix_normals.js)"
+      "Bash(node scripts/examples/_fix_normals.js)",
+      "Bash(xargs grep -l \"CanvasIlluminationEffects\")"
     ]
   }
 }
