@@ -5896,7 +5896,9 @@ function shaderOn(tokenId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+        if (capture?.captureMode === "sceneCaptureRaw" && container?.parent === canvas?.primary) {
+          capture._pendingParams = params;
+        } else if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -6271,7 +6273,9 @@ function shaderOnTemplate(templateId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+        if (capture?.captureMode === "sceneCaptureRaw" && container?.parent === canvas?.primary) {
+          capture._pendingParams = params;
+        } else if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -6666,7 +6670,9 @@ function shaderOnTile(tileId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+        if (capture?.captureMode === "sceneCaptureRaw" && container?.parent === canvas?.primary) {
+          capture._pendingParams = params;
+        } else if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -7387,7 +7393,9 @@ function shaderOnRegion(regionId, opts = {}) {
             rotationDeg: captureRotationDeg,
             excludeDisplayObject: rootContainer
           };
-          if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+          if (capture?.captureMode === "sceneCaptureRaw" && rootContainer?.parent === canvas?.primary) {
+            capture._pendingParams = params;
+          } else if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
             deferredRawUpdates.push({ capture, params });
           } else {
             capture.update(params);

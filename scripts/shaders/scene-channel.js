@@ -320,10 +320,12 @@ export class SceneAreaChannel {
 
   // Called from the shader container's overridden render() method, which fires
   // inside canvas.primary's render loop (LOW-priority) right before the shader
-  // container draws.  At that moment canvas.primary.renderTexture holds a
-  // feedback-free clean scene (all siblings have already rendered; our container
-  // has not).  We blit a screen-space crop of it into this.texture with a
-  // single draw call — no extra full-scene re-render needed.
+  // container draws.  At that moment renderer.renderTexture.current is the live
+  // full-screen texture that canvas.primary's children render into (NOT
+  // canvas.primary.renderTexture, which is populated separately after the main
+  // render).  All siblings before our container have already drawn into it —
+  // a feedback-free clean scene.  We blit a screen-space crop into this.texture
+  // with a single draw call — no extra full-scene re-render needed.
   //
   // The params were stored by the ticker (captureMode === "sceneCaptureRaw" &&
   // container.parent === canvas.primary → capture._pendingParams = params).
@@ -332,6 +334,13 @@ export class SceneAreaChannel {
     this._pendingParams = null;
     if (!params || !this.texture) return;
 
+    // Save the active render texture FIRST — this is the actual live scene content.
+    // canvas.primary's children render into this texture, not canvas.primary.renderTexture.
+    const rtMgr = renderer.renderTexture;
+    const savedRt = rtMgr.current;
+    const savedSourceFrame = new PIXI.Rectangle().copyFrom(rtMgr.sourceFrame);
+    if (!savedRt?.baseTexture?.valid) return;
+
     const { centerWorld, radiusWorld, radiusWorldX, radiusWorldY,
             flipX = false, flipY = false, rotationDeg = 0 } = params;
     if (!centerWorld || !canvas?.stage) return;
@@ -339,10 +348,6 @@ export class SceneAreaChannel {
     const radiusX = Number.isFinite(radiusWorldX) ? radiusWorldX : radiusWorld;
     const radiusY = Number.isFinite(radiusWorldY) ? radiusWorldY : radiusWorld;
     if (!Number.isFinite(radiusX) || !Number.isFinite(radiusY) || radiusX <= 0 || radiusY <= 0) return;
-
-    const primaryTexture = canvas?.primary?.renderTexture ?? null;
-    const primarySprite = canvas?.primary?.sprite ?? null;
-    if (!primaryTexture?.baseTexture?.valid || !primarySprite) return;
 
     // Build the screen-space crop matrix (same logic as update()).
     const stage = canvas.stage;
@@ -362,28 +367,26 @@ export class SceneAreaChannel {
     this._matrix.set(a, b, c, d,
       halfW - (a * center.x + c * center.y),
       halfH - (b * center.x + d * center.y));
-    const parentWorld = primarySprite.parent?.worldTransform ?? PIXI.Matrix.IDENTITY;
-    multiplyMatrices(this._matrix, parentWorld, this._renderMatrix);
+    // savedRt uses screen-space pixel coordinates directly — no parentWorld needed.
+    this._renderMatrix.copyFrom(this._matrix);
 
-    // Set up the source sprite (reads from canvas.primary.renderTexture).
+    // Set up the source sprite: identity geometry since savedRt is a full-screen texture.
     if (!this._rawSourceSprite) {
-      this._rawSourceSprite = new PIXI.Sprite(primaryTexture);
-    } else if (this._rawSourceSprite.texture !== primaryTexture) {
-      this._rawSourceSprite.texture = primaryTexture;
+      this._rawSourceSprite = new PIXI.Sprite(savedRt);
+    } else {
+      this._rawSourceSprite.texture = savedRt;
     }
     const raw = this._rawSourceSprite;
-    raw.position.copyFrom?.(primarySprite.position) ?? raw.position.set(primarySprite.x ?? 0, primarySprite.y ?? 0);
-    raw.scale.copyFrom?.(primarySprite.scale) ?? raw.scale.set(primarySprite.scale?.x ?? 1, primarySprite.scale?.y ?? 1);
-    raw.pivot.copyFrom?.(primarySprite.pivot) ?? raw.pivot.set(primarySprite.pivot?.x ?? 0, primarySprite.pivot?.y ?? 0);
-    raw.skew.copyFrom?.(primarySprite.skew) ?? raw.skew.set(primarySprite.skew?.x ?? 0, primarySprite.skew?.y ?? 0);
-    if (raw.anchor && primarySprite.anchor) {
-      raw.anchor.copyFrom?.(primarySprite.anchor) ?? raw.anchor.set(primarySprite.anchor.x ?? 0, primarySprite.anchor.y ?? 0);
-    }
-    raw.rotation = Number(primarySprite.rotation ?? 0);
-    raw.alpha = Number(primarySprite.alpha ?? 1);
+    raw.position.set(0, 0);
+    raw.scale.set(1, 1);
+    raw.pivot.set(0, 0);
+    if (raw.skew) raw.skew.set(0, 0);
+    if (raw.anchor) raw.anchor.set(0, 0);
+    raw.rotation = 0;
+    raw.alpha = 1;
     raw.visible = true;
     raw.renderable = true;
-    raw.blendMode = primarySprite.blendMode ?? PIXI.BLEND_MODES.NORMAL;
+    raw.blendMode = PIXI.BLEND_MODES.NORMAL;
 
     // Make the sprite render using its local transform (as if tempParent = identity).
     // renderer.render() does this via enableTempParent; here we do it directly.
@@ -394,9 +397,6 @@ export class SceneAreaChannel {
     // Mid-render blit: save GL state, switch to our capture texture, blit, restore.
     // renderer.projection.transform set BEFORE bind() so it's folded into the
     // projection matrix recalculation that bind() triggers.
-    const rtMgr = renderer.renderTexture;
-    const savedRt = rtMgr.current;
-    const savedSourceFrame = new PIXI.Rectangle().copyFrom(rtMgr.sourceFrame);
     const proj = renderer.projection;
     const savedProjTransform = proj.transform;
     try {
