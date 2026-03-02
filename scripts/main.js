@@ -2361,7 +2361,7 @@ function normalizeShaderLayerName(value, fallback = "interfacePrimary") {
   const raw = String(value ?? "").trim();
   if (!raw) return fallback;
   if (raw === "token") return "interfacePrimary";
-  if (raw === "sceneCaptureRaw" || raw === "sceneCaptureVision" || raw === "primary") return "sceneRaw";
+  if (raw === "sceneCaptureRaw" || raw === "primary") return "sceneRaw";
   if (raw === "sceneRaw") return "sceneRaw";
   if (raw === "belowTiles") return "belowTiles";
   if (raw === "baseEffects") return "belowTokens";
@@ -2473,10 +2473,7 @@ function removeShaderFrameHandler(handler, frameHook = "ticker") {
 
 function hasRawSceneCaptureChannels(channels = []) {
   return Array.isArray(channels) &&
-    channels.some((capture) =>
-      capture?.captureMode === "sceneCaptureRaw" ||
-      capture?.captureMode === "sceneCaptureVision"
-    );
+    channels.some((capture) => capture?.captureMode === "sceneCaptureRaw");
 }
 
 function addRawSceneCaptureTicker(handler) {
@@ -5824,7 +5821,7 @@ function shaderOn(tokenId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if ((capture?.captureMode === "sceneCaptureRaw" || capture?.captureMode === "sceneCaptureVision") && deferredRawUpdates) {
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -6200,7 +6197,7 @@ function shaderOnTemplate(templateId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if ((capture?.captureMode === "sceneCaptureRaw" || capture?.captureMode === "sceneCaptureVision") && deferredRawUpdates) {
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -6596,7 +6593,7 @@ function shaderOnTile(tileId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if ((capture?.captureMode === "sceneCaptureRaw" || capture?.captureMode === "sceneCaptureVision") && deferredRawUpdates) {
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -7316,7 +7313,7 @@ function shaderOnRegion(regionId, opts = {}) {
             rotationDeg: captureRotationDeg,
             excludeDisplayObject: rootContainer
           };
-          if ((capture?.captureMode === "sceneCaptureRaw" || capture?.captureMode === "sceneCaptureVision") && deferredRawUpdates) {
+          if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
             deferredRawUpdates.push({ capture, params });
           } else {
             capture.update(params);

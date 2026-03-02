@@ -30,29 +30,24 @@ const OUTPUT_VISION_VERT = `
 
 // Fragment shader: post-processes the shader mesh output with vision correction.
 // vTextureCoord samples the rendered effect; vMaskTextureCoord samples
-// screen-aligned vision/darkness textures.
+// screen-aligned vision textures.
 const OUTPUT_VISION_FRAG = `
   precision mediump float;
   varying vec2 vTextureCoord;
   varying vec2 vMaskTextureCoord;  // screen-space UV
-  uniform sampler2D uSampler;          // the rendered shader effect
-  uniform sampler2D visionTex;         // vision mask  (R = visibility 0..1)
-  uniform sampler2D darknessLevelTex;  // darkness map (R = darkness  0=lit, 1=dark)
-  uniform float saturation;            // token darkvision saturation (-1..0)
-  uniform float applyVision;           // 1.0 = apply, 0.0 = passthrough
+  uniform sampler2D uSampler;    // the rendered shader effect
+  uniform sampler2D visionTex;   // vision mask (R = visibility 0..1)
+  uniform float saturation;      // vision mode saturation (-1..0); -1 = full B&W
+  uniform float applyVision;     // 1.0 = apply, 0.0 = passthrough
 
   void main() {
     vec4 color = texture2D(uSampler, vTextureCoord);
     if (applyVision > 0.5) {
       float visibility = texture2D(visionTex, vMaskTextureCoord).r;
+      // Apply desaturation uniformly across visible pixels (matches darkvision canvas behaviour)
       if (saturation < -0.001) {
-        // darknessLevel 0=lit (no desaturation), 1=dark (full desaturation)
-        float darkness = texture2D(darknessLevelTex, vMaskTextureCoord).r;
-        float effectiveSat = saturation * darkness;
-        if (effectiveSat < -0.001) {
-          float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-          color.rgb = mix(vec3(luma), color.rgb, 1.0 + effectiveSat);
-        }
+        float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+        color.rgb = mix(vec3(luma), color.rgb, 1.0 + saturation);
       }
       // Black out areas outside the token's vision
       color.rgb *= visibility;
@@ -66,8 +61,7 @@ class OutputVisionCorrectionFilter extends PIXI.Filter {
   constructor() {
     super(OUTPUT_VISION_VERT, OUTPUT_VISION_FRAG, {
       screenDimensions: [1, 1],
-      visionTex: PIXI.Texture.WHITE,        // fallback: fully visible
-      darknessLevelTex: PIXI.Texture.EMPTY, // fallback: R=0 → no desaturation
+      visionTex: PIXI.Texture.WHITE, // fallback: fully visible
       saturation: 0.0,
       applyVision: 0.0,
     });
@@ -83,12 +77,10 @@ class OutputVisionCorrectionFilter extends PIXI.Filter {
 
     // Read vision state for the currently controlled token.
     const visionTex = canvas?.masks?.vision?.renderTexture ?? null;
-    const darknessLevelTex = canvas?.effects?.illumination?.renderTexture ?? null;
     const sat = _getControlledTokenVisionSaturation();
     const hasVision = sat !== null && visionTex !== null;
 
     this.uniforms.visionTex = visionTex ?? PIXI.Texture.WHITE;
-    this.uniforms.darknessLevelTex = darknessLevelTex ?? PIXI.Texture.EMPTY;
     this.uniforms.saturation = hasVision ? sat : 0.0;
     this.uniforms.applyVision = hasVision ? 1.0 : 0.0;
 
@@ -102,10 +94,21 @@ function _getControlledTokenVisionSaturation() {
     if (!controlled.length) return null;
     const token = controlled[0];
     const visionSource = token?.vision;
-    // visionModeOverrides.saturation is the effective value used by lighting shaders
-    const sat = visionSource?.visionModeOverrides?.saturation
-      ?? visionSource?.data?.saturation
-      ?? 0;
+    if (!visionSource) return null;
+    // In Foundry V12, darkvision B&W comes from visionMode.canvas.uniforms.saturation = -1.
+    // visionModeOverrides.saturation is only overridden for the "blindness" mode.
+    const visionMode = visionSource.visionMode;
+    const canvasSat = visionMode?.canvas?.uniforms?.saturation;
+    if (typeof canvasSat === "number" && Number.isFinite(canvasSat)) {
+      return Math.max(-1, Math.min(0, canvasSat));
+    }
+    // Fallback: vision mode vision defaults (e.g. -1 for darkvision)
+    const defaultSat = visionMode?.vision?.defaults?.saturation;
+    if (typeof defaultSat === "number" && Number.isFinite(defaultSat)) {
+      return Math.max(-1, Math.min(0, defaultSat));
+    }
+    // Final fallback: token-level overrides / sight data
+    const sat = visionSource?.visionModeOverrides?.saturation ?? visionSource?.data?.saturation ?? 0;
     return Math.max(-1, Math.min(0, Number(sat) || 0));
   } catch (_err) {
     return null;
@@ -181,9 +184,7 @@ export class SceneAreaChannel {
     const captureModeRaw = String(options?.captureMode ?? "sceneCapture").trim();
     this.captureMode = captureModeRaw === "sceneCaptureRaw"
       ? "sceneCaptureRaw"
-      : captureModeRaw === "sceneCaptureVision"
-        ? "sceneCaptureVision"
-        : "sceneCapture";
+      : "sceneCapture";
     this.sourceContainer = options?.sourceContainer ?? null;
     this._rawSourceSprite = null;
     this.texture = PIXI.RenderTexture.create({
@@ -250,10 +251,8 @@ export class SceneAreaChannel {
       ty
     );
 
-    // sceneCaptureRaw and sceneCaptureVision both capture from the primary render
-    // texture in full colour. The vision-correction post-process for sceneCaptureVision
-    // is applied to the shader mesh output via OutputVisionCorrectionFilter — not here.
-    if (this.captureMode === "sceneCaptureRaw" || this.captureMode === "sceneCaptureVision") {
+    // sceneCaptureRaw captures from the primary render texture in full colour.
+    if (this.captureMode === "sceneCaptureRaw") {
       const primaryTexture = canvas?.primary?.renderTexture ?? null;
       const primarySprite = canvas?.primary?.sprite ?? null;
       const primaryBase = primaryTexture?.baseTexture ?? null;

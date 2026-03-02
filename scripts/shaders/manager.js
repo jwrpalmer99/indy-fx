@@ -39,7 +39,6 @@ const CHANNEL_MODES = new Set([
   "noiseRgb",
   "sceneCapture",
   "sceneCaptureRaw",
-  "sceneCaptureVision",
   "tokenTileImage",
   "tokenImage",
   "tileImage",
@@ -803,7 +802,6 @@ function getChannelSamplerDefaults(mode) {
   if (
     normalized === "sceneCapture" ||
     normalized === "sceneCaptureRaw" ||
-    normalized === "sceneCaptureVision" ||
     normalized === "tokenTileImage" ||
     normalized === "tokenImage" ||
     normalized === "tileImage" ||
@@ -1141,7 +1139,7 @@ function channelConfigNeedsLivePreview(config, depth = 0) {
     const entry = config[key] ?? config[index];
     if (!entry || typeof entry !== "object") continue;
     const mode = normalizeChannelMode(entry.mode ?? "auto");
-    if (mode === "sceneCapture" || mode === "sceneCaptureRaw" || mode === "sceneCaptureVision" || mode === "tokenTileImage") return true;
+    if (mode === "sceneCapture" || mode === "sceneCaptureRaw" || mode === "tokenTileImage") return true;
     if (mode === "buffer" && channelConfigNeedsLivePreview(entry.channels, depth + 1)) {
       return true;
     }
@@ -2202,7 +2200,7 @@ export class ShaderManager {
     const layerRaw = String(source.layer ?? base.layer ?? "inherit").trim();
     const layerNormalized = layerRaw === "drawingsLayer"
       ? "drawings"
-      : (layerRaw === "sceneCaptureRaw" || layerRaw === "sceneCaptureVision" || layerRaw === "primary")
+      : (layerRaw === "sceneCaptureRaw" || layerRaw === "primary")
         ? "sceneRaw"
       : (layerRaw === "effects" || layerRaw === "effectsLayer")
         ? "belowTokens"
@@ -2726,7 +2724,7 @@ export class ShaderManager {
     const previewPlaceableTexture = this._getPreviewPlaceableCaptureTexturePath();
     const previewHasSceneCapture = channelConfigHasMode(
       previewDefinition.channelConfig,
-      ["sceneCapture", "sceneCaptureRaw", "sceneCaptureVision"],
+      ["sceneCapture", "sceneCaptureRaw"],
     );
     const previewHasTokenTileCapture = channelConfigHasMode(
       previewDefinition.channelConfig,
@@ -3727,7 +3725,6 @@ export class ShaderManager {
       auto: "Auto",
       sceneCapture: "Scene capture (clipped)",
       sceneCaptureRaw: "Scene capture (raw)",
-      sceneCaptureVision: "Scene capture (vision-aware)",
       tokenTileImage: "Token/Tile image (captured)",
       noiseBw: "Black/White noise",
       noiseRgb: "RGB noise",
@@ -4809,7 +4806,7 @@ export class ShaderManager {
       runtimeImageChannels: [],
     };
 
-    if (mode === "sceneCapture" || mode === "sceneCaptureRaw" || mode === "sceneCaptureVision") {
+    if (mode === "sceneCapture" || mode === "sceneCaptureRaw") {
       const captureRotationDeg = toFiniteNumber(options?.captureRotationDeg, 0);
       const captureFlipHorizontal = parseBooleanLike(
         options?.captureFlipHorizontal,
@@ -6042,9 +6039,6 @@ export class ShaderManager {
       if (explicitMode === "sceneCaptureRaw") {
         return { mode: "sceneCaptureRaw", ...samplerCfg };
       }
-      if (explicitMode === "sceneCaptureVision") {
-        return { mode: "sceneCaptureVision", ...samplerCfg };
-      }
       if (explicitMode === "tokenTileImage") {
         return { mode: "tokenTileImage", ...samplerCfg };
       }
@@ -6077,16 +6071,6 @@ export class ShaderManager {
       ctype === "raw-scene-capture"
     ) {
       return { mode: "sceneCaptureRaw", ...samplerCfg };
-    }
-    if (
-      ctype === "scenecapturevision" ||
-      ctype === "scene_capture_vision" ||
-      ctype === "scene-capture-vision" ||
-      ctype === "visionscenecapture" ||
-      ctype === "vision_scene_capture" ||
-      ctype === "vision-scene-capture"
-    ) {
-      return { mode: "sceneCaptureVision", ...samplerCfg };
     }
     if (
       ctype === "tokentileimage" ||
