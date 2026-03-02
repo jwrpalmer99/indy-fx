@@ -28,30 +28,24 @@ const OUTPUT_VISION_VERT = `
   }
 `;
 
-// Fragment shader: post-processes the shader mesh output with vision correction.
-// vTextureCoord samples the rendered effect; vMaskTextureCoord samples
-// screen-aligned vision textures.
+// Fragment shader: masks the shader mesh output to the controlled token's vision
+// range. Foundry's own rendering pipeline (canvas.primary.sprite ColorAdjustments-
+// SamplerShader and the vision effect layers) handles all colour/wave adjustments
+// for the scene — we only need to black out pixels the token cannot see.
 const OUTPUT_VISION_FRAG = `
   precision mediump float;
   varying vec2 vTextureCoord;
-  varying vec2 vMaskTextureCoord;  // screen-space UV
-  uniform sampler2D uSampler;    // the rendered shader effect
-  uniform sampler2D visionTex;   // vision mask (R = visibility 0..1)
-  uniform float saturation;      // vision mode saturation (-1..0); -1 = full B&W
-  uniform float applyVision;     // 1.0 = apply, 0.0 = passthrough
+  varying vec2 vMaskTextureCoord;
+  uniform sampler2D uSampler;   // the rendered shader effect
+  uniform sampler2D visionTex;  // vision mask (R = visibility 0..1)
+  uniform float applyVision;    // 1.0 = apply mask, 0.0 = passthrough
 
   void main() {
     vec4 color = texture2D(uSampler, vTextureCoord);
     if (applyVision > 0.5) {
       float visibility = texture2D(visionTex, vMaskTextureCoord).r;
-      // Apply desaturation uniformly across visible pixels (matches darkvision canvas behaviour)
-      if (saturation < -0.001) {
-        float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-        color.rgb = mix(vec3(luma), color.rgb, 1.0 + saturation);
-      }
-      // Black out areas outside the token's vision
       color.rgb *= visibility;
-      color.a *= visibility;
+      color.a   *= visibility;
     }
     gl_FragColor = color;
   }
@@ -61,8 +55,7 @@ class OutputVisionCorrectionFilter extends PIXI.Filter {
   constructor() {
     super(OUTPUT_VISION_VERT, OUTPUT_VISION_FRAG, {
       screenDimensions: [1, 1],
-      visionTex: PIXI.Texture.WHITE, // fallback: fully visible
-      saturation: 0.0,
+      visionTex: PIXI.Texture.WHITE,
       applyVision: 0.0,
     });
   }
@@ -75,43 +68,26 @@ class OutputVisionCorrectionFilter extends PIXI.Filter {
       canvas?.app?.renderer?.height ?? 1,
     ];
 
-    // Read vision state for the currently controlled token.
     const visionTex = canvas?.masks?.vision?.renderTexture ?? null;
-    const sat = _getControlledTokenVisionSaturation();
-    const hasVision = sat !== null && visionTex !== null;
+    const hasVision = _hasControlledTokenWithVision() && visionTex !== null;
 
     this.uniforms.visionTex = visionTex ?? PIXI.Texture.WHITE;
-    this.uniforms.saturation = hasVision ? sat : 0.0;
     this.uniforms.applyVision = hasVision ? 1.0 : 0.0;
 
     filterManager.applyFilter(this, input, output, clear);
   }
 }
 
-function _getControlledTokenVisionSaturation() {
+// Returns true when there is a controlled token that has an active vision source.
+// Foundry's pipeline applies all colour/wave vision mode effects itself — we only
+// need to know whether to apply the visibility mask.
+function _hasControlledTokenWithVision() {
   try {
     const controlled = canvas?.tokens?.controlled ?? [];
-    if (!controlled.length) return null;
-    const token = controlled[0];
-    const visionSource = token?.vision;
-    if (!visionSource) return null;
-    // In Foundry V12, darkvision B&W comes from visionMode.canvas.uniforms.saturation = -1.
-    // visionModeOverrides.saturation is only overridden for the "blindness" mode.
-    const visionMode = visionSource.visionMode;
-    const canvasSat = visionMode?.canvas?.uniforms?.saturation;
-    if (typeof canvasSat === "number" && Number.isFinite(canvasSat)) {
-      return Math.max(-1, Math.min(0, canvasSat));
-    }
-    // Fallback: vision mode vision defaults (e.g. -1 for darkvision)
-    const defaultSat = visionMode?.vision?.defaults?.saturation;
-    if (typeof defaultSat === "number" && Number.isFinite(defaultSat)) {
-      return Math.max(-1, Math.min(0, defaultSat));
-    }
-    // Final fallback: token-level overrides / sight data
-    const sat = visionSource?.visionModeOverrides?.saturation ?? visionSource?.data?.saturation ?? 0;
-    return Math.max(-1, Math.min(0, Number(sat) || 0));
+    if (!controlled.length) return false;
+    return !!controlled[0]?.vision;
   } catch (_err) {
-    return null;
+    return false;
   }
 }
 
@@ -181,6 +157,7 @@ export class SceneAreaChannel {
     this._lastRenderErrorLogAt = 0;
     this._renderErrorCount = 0;
     this._renderRetryAfterMs = 0;
+    this._dummyRt = null;
     const captureModeRaw = String(options?.captureMode ?? "sceneCapture").trim();
     this.captureMode = captureModeRaw === "sceneCaptureRaw"
       ? "sceneCaptureRaw"
@@ -261,6 +238,16 @@ export class SceneAreaChannel {
         !!primarySprite &&
         (primaryBase?.valid !== false);
       if (primaryValid) {
+        // If the excluded container lives inside canvas.primary, that container's
+        // output is already composited into canvas.primary.renderTexture, so reading
+        // from it would create a feedback loop (the shader sees its own output as
+        // input and blurs across frames).  Fix: re-render canvas.primary *without*
+        // the container so the renderTexture holds a clean scene before we sample it.
+        // canvas.primary (a CachedContainer) will re-render again during PIXI's normal
+        // LOW-priority pass with the container visible, so nothing is lost on-screen.
+        if (excludeDisplayObject?.parent === canvas?.primary) {
+          this._prerenderPrimaryClean(excludeDisplayObject, canvas.primary, canvas.app.renderer);
+        }
         if (!this._rawSourceSprite) {
           this._rawSourceSprite = new PIXI.Sprite(primaryTexture);
         } else if (this._rawSourceSprite.texture !== primaryTexture) {
@@ -340,7 +327,28 @@ export class SceneAreaChannel {
     }
   }
 
+  // Re-render canvas.primary (a CachedContainer) while hiding `excl` so that
+  // canvas.primary.renderTexture ends up with a clean scene that excludes the
+  // shader container.  A tiny 1×1 dummy RT absorbs the sprite blit that
+  // CachedContainer performs at the end of its render() — it's otherwise harmless.
+  _prerenderPrimaryClean(excl, primary, renderer) {
+    if (!excl || !primary || !renderer) return;
+    if (!this._dummyRt || !this._dummyRt.baseTexture?.valid) {
+      this._dummyRt?.destroy(true);
+      this._dummyRt = PIXI.RenderTexture.create({ width: 1, height: 1 });
+    }
+    const wasRenderable = excl.renderable;
+    excl.renderable = false;
+    try {
+      renderer.render(primary, { renderTexture: this._dummyRt, clear: false, skipUpdateTransform: true });
+    } finally {
+      excl.renderable = wasRenderable;
+    }
+  }
+
   destroy() {
+    this._dummyRt?.destroy(true);
+    this._dummyRt = null;
     this._rawSourceSprite?.destroy?.({ texture: false, baseTexture: false });
     this._rawSourceSprite = null;
     this.texture?.destroy(true);

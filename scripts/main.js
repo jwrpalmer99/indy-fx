@@ -2400,8 +2400,6 @@ function resolveShaderExplicitElevation(cfg) {
 function resolveShaderContainerElevation(cfg) {
   const explicitElevation = resolveShaderExplicitElevation(cfg);
   if (Number.isFinite(explicitElevation)) return explicitElevation;
-  const layerName = resolveConfiguredShaderLayerName(cfg);
-  if (layerName === "belowTiles") return -1;
   return null;
 }
 
@@ -2431,6 +2429,18 @@ function resolveShaderTickerPriority(cfg) {
   return resolveConfiguredShaderLayerName(cfg) === "sceneRaw"
     ? SHADER_TICKER_PRIORITY_SCENE_RAW
     : SHADER_TICKER_PRIORITY_DEFAULT;
+}
+
+// Returns true when the OutputVisionCorrectionFilter should be attached to the
+// shader mesh. Primary-group layers (belowTiles, sceneRaw) live inside
+// canvas.primary and are processed by Foundry's own vision pipeline (vision mask,
+// darkvision B&W, tremorsense waves, etc.) automatically — so no manual filter is
+// needed or wanted. Interface layers (interfacePrimary, belowTokens, drawings) are
+// outside that pipeline and need the filter to at least apply the visibility mask.
+function shouldApplyVisionFilter(cfg) {
+  if (!cfg.respectTokenVision) return false;
+  const layerName = resolveConfiguredShaderLayerName(cfg);
+  return layerName !== "belowTiles" && layerName !== "sceneRaw";
 }
 
 function shouldUseShaderPrerenderHook(cfg) {
@@ -2496,11 +2506,14 @@ function addShaderContainerToWorldLayer(worldLayer, container, cfg) {
   if (Number.isFinite(resolvedElevation)) {
     container.elevation = Number(resolvedElevation);
   }
-  if (!Number.isFinite(explicitZ) && layerName === "belowTiles") {
-    const currentSort = Number(container?.sort);
-    if (!Number.isFinite(currentSort) || currentSort > -1) {
-      container.sort = -1;
-    }
+  // For primary-group layers (belowTiles, sceneRaw), set sortLayer so
+  // PrimaryCanvasGroup._compareObjects places them at the right depth:
+  //   SCENE=0 < belowTiles(250) < TILES=500 < TOKENS=700 < sceneRaw(750) < WEATHER=1000
+  // This replaces the old elevation=-1 / sort=-1 approach for belowTiles which
+  // accidentally placed the container behind the opaque scene background.
+  if (!Number.isFinite(explicitZ)) {
+    if (layerName === "belowTiles") container.sortLayer = 250;
+    else if (layerName === "sceneRaw") container.sortLayer = 750;
   }
   const isBelowLayer = !Number.isFinite(explicitZ) &&
     (layerName === "belowTokens" || layerName === "belowTiles");
@@ -5685,7 +5698,7 @@ function shaderOn(tokenId, opts = {}) {
     bloom.padding = effectExtent * 2.5;
     mesh.filters = [bloom];
   }
-  if (cfg.respectTokenVision) {
+  if (shouldApplyVisionFilter(cfg)) {
     mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
   }
   const debugEnabled = game.settings.get(MODULE_ID, "shaderDebug");
@@ -5821,7 +5834,7 @@ function shaderOn(tokenId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates && container?.parent !== canvas?.primary) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -6062,7 +6075,7 @@ function shaderOnTemplate(templateId, opts = {}) {
     bloom.padding = effectExtent * 2.5;
     mesh.filters = [bloom];
   }
-  if (cfg.respectTokenVision) {
+  if (shouldApplyVisionFilter(cfg)) {
     mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
   }
 
@@ -6197,7 +6210,7 @@ function shaderOnTemplate(templateId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates && container?.parent !== canvas?.primary) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -6444,7 +6457,7 @@ function shaderOnTile(tileId, opts = {}) {
     bloom.padding = Math.max(halfW, halfH) * 2.0;
     mesh.filters = [bloom];
   }
-  if (cfg.respectTokenVision) {
+  if (shouldApplyVisionFilter(cfg)) {
     mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
   }
 
@@ -6593,7 +6606,7 @@ function shaderOnTile(tileId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates && container?.parent !== canvas?.primary) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -7132,7 +7145,7 @@ function shaderOnRegion(regionId, opts = {}) {
       bloom.padding = Math.max(halfW, halfH) * 2.0;
       mesh.filters = [bloom];
     }
-    if (cfg.respectTokenVision) {
+    if (shouldApplyVisionFilter(cfg)) {
       mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
     }
 
@@ -7313,7 +7326,7 @@ function shaderOnRegion(regionId, opts = {}) {
             rotationDeg: captureRotationDeg,
             excludeDisplayObject: rootContainer
           };
-          if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
+          if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates && rootContainer?.parent !== canvas?.primary) {
             deferredRawUpdates.push({ capture, params });
           } else {
             capture.update(params);

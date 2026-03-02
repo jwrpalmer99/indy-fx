@@ -644,12 +644,18 @@ export function resolveShaderWorldLayer(moduleId, cfg, { allowTokenLayer = false
 
   const interfaceLayer = canvas?.interface?.primary ?? canvas?.interface;
   const primaryGroup = canvas?.primary ?? canvas?.tiles?.parent ?? interfaceLayer;
-  const sceneRawLayer = canvas?.primary?.sprite ?? primaryGroup;
 
+  // Both belowTiles and sceneRaw live inside canvas.primary (the CachedContainer).
+  // Their content is rendered into canvas.primary.renderTexture, which means:
+  //  - Foundry's vision mode shader on canvas.primary.sprite applies colour effects
+  //    (darkvision B&W, tremorsense waves, etc.) automatically.
+  //  - canvas.visibility shows them through fog/vision in visible areas.
+  // Previously sceneRaw was mapped to canvas.primary.sprite (the display sprite), which
+  // is covered by the canvas.visibility overlay when a token is selected.
   const worldLayer = (layerName === "belowTiles")
     ? primaryGroup
     : (layerName === "sceneRaw")
-    ? sceneRawLayer
+    ? primaryGroup
     : (layerName === "belowTokens")
     ? interfaceLayer
     : (layerName === "drawings")

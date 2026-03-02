@@ -8,7 +8,9 @@
       "Bash(node scripts/examples/_fix_normals.js)",
       "Bash(xargs grep -l \"CanvasIlluminationEffects\")",
       "Bash(grep -n \"bloom\" /c/Users/Jeremy/indy-fx/templates/*.html)",
-      "Bash(xargs grep -l \"VisualEffectsMaskingFilter\\\\|updatePostprocessModes\")"
+      "Bash(xargs grep -l \"VisualEffectsMaskingFilter\\\\|updatePostprocessModes\")",
+      "Bash(grep -n \"canvas\\\\.primary\" /c/Users/Jeremy/indy-fx/scripts/*.js)",
+      "Bash(ls \"C:\\\\Users\\\\Jeremy\\\\.claude\\\\projects\\\\c--Users-Jeremy-indy-fx\\\\memory\"\" 2>/dev/null || echo \"no memory dir \")"
     ]
   }
 }
