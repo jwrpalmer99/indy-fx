@@ -2497,6 +2497,67 @@ function removeRawSceneCaptureTicker(handler) {
   canvas.app.ticker.remove(handler);
 }
 
+function setupPrimaryGroupMidRenderCapture(container, rawCaptureChannels) {
+  if (!rawCaptureChannels.length || container?.parent !== canvas?.primary) return;
+  const origRender = container.render.bind(container);
+  container.render = function(renderer) {
+    for (const ch of rawCaptureChannels) {
+      if (ch._pendingParams !== null && ch._pendingParams !== undefined) {
+        ch.captureFromBoundRenderTexture(renderer);
+      }
+    }
+    origRender(renderer);
+  };
+}
+
+// Re-render canvas.primary without the listed shader containers so that
+// canvas.primary.renderTexture holds a feedback-free scene snapshot.
+// Called at UTILITY priority (after the main render), so worldTransforms are
+// already current — no skipUpdateTransform / enableTempParent issues.
+function doCleanPrimaryRender(primaryGroupEntries) {
+  if (!primaryGroupEntries.length || !canvas?.primary) return;
+  const savedRenderables = primaryGroupEntries.map(e => {
+    const c = e?.params?.excludeDisplayObject;
+    const saved = c?.renderable ?? true;
+    if (c) c.renderable = false;
+    return saved;
+  });
+  const sprite = canvas.primary.sprite ?? null;
+  const savedSpriteRenderable = sprite?.renderable ?? true;
+  if (sprite) sprite.renderable = false;
+  try {
+    canvas.primary.render(canvas.app.renderer);
+  } finally {
+    if (sprite) sprite.renderable = savedSpriteRenderable;
+    primaryGroupEntries.forEach((e, i) => {
+      const c = e?.params?.excludeDisplayObject;
+      if (c) c.renderable = savedRenderables[i];
+    });
+  }
+}
+
+// Process a batch of deferred sceneCaptureRaw updates, routing primary-group
+// containers (parent === canvas.primary) through a clean re-render first so
+// their captures don't contain the shader's own output.
+function processDeferredRawUpdates(updates) {
+  const primaryGroupUpdates = [];
+  const otherUpdates = [];
+  for (const entry of updates) {
+    if (entry?.params?.excludeDisplayObject?.parent === canvas?.primary) {
+      primaryGroupUpdates.push(entry);
+    } else {
+      otherUpdates.push(entry);
+    }
+  }
+  doCleanPrimaryRender(primaryGroupUpdates);
+  for (const entry of primaryGroupUpdates) {
+    entry?.capture?.update?.(entry?.params);
+  }
+  for (const entry of otherUpdates) {
+    entry?.capture?.update?.(entry?.params);
+  }
+}
+
 function addShaderContainerToWorldLayer(worldLayer, container, cfg) {
   if (!worldLayer || !container) return;
 
@@ -5666,6 +5727,7 @@ function shaderOn(tokenId, opts = {}) {
       shaderId: selectedShaderId,
     },
   });
+  setupPrimaryGroupMidRenderCapture(container, sceneAreaChannels.filter(c => c?.captureMode === "sceneCaptureRaw"));
   const syncTokenRuntimeImageRotationMode = (liveTok) => {
     if (!Array.isArray(runtimeImageChannels) || !runtimeImageChannels.length) return;
     const desiredIncludePlaceableRotation = false;
@@ -5834,7 +5896,7 @@ function shaderOn(tokenId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates && container?.parent !== canvas?.primary) {
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -5860,9 +5922,7 @@ function shaderOn(tokenId, opts = {}) {
         : [];
       lateRawCaptureState.pending = false;
       lateRawCaptureState.updates = [];
-      for (const entry of updates) {
-        entry?.capture?.update?.(entry?.params);
-      }
+      processDeferredRawUpdates(updates);
     })
     : null;
 
@@ -6065,6 +6125,7 @@ function shaderOnTemplate(templateId, opts = {}) {
       shaderId: selectedShaderId,
     },
   });
+  setupPrimaryGroupMidRenderCapture(container, sceneAreaChannels.filter(c => c?.captureMode === "sceneCaptureRaw"));
   const mesh = new PIXI.Mesh(geom, shader);
   mesh.alpha = 1.0;
   mesh.blendMode = PIXI.BLEND_MODES.NORMAL;
@@ -6210,7 +6271,7 @@ function shaderOnTemplate(templateId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates && container?.parent !== canvas?.primary) {
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -6237,9 +6298,7 @@ function shaderOnTemplate(templateId, opts = {}) {
         : [];
       lateRawCaptureState.pending = false;
       lateRawCaptureState.updates = [];
-      for (const entry of updates) {
-        entry?.capture?.update?.(entry?.params);
-      }
+      processDeferredRawUpdates(updates);
     })
     : null;
 
@@ -6424,6 +6483,7 @@ function shaderOnTile(tileId, opts = {}) {
       shaderId: selectedShaderId,
     },
   });
+  setupPrimaryGroupMidRenderCapture(container, sceneAreaChannels.filter(c => c?.captureMode === "sceneCaptureRaw"));
   const syncTileRuntimeImageRotationMode = (liveTile) => {
     if (!Array.isArray(runtimeImageChannels) || !runtimeImageChannels.length) return;
     const desiredIncludePlaceableRotation = false;
@@ -6606,7 +6666,7 @@ function shaderOnTile(tileId, opts = {}) {
           rotationDeg: captureRotationDeg,
           excludeDisplayObject: container
         };
-        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates && container?.parent !== canvas?.primary) {
+        if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
           deferredRawUpdates.push({ capture, params });
         } else {
           capture.update(params);
@@ -6633,9 +6693,7 @@ function shaderOnTile(tileId, opts = {}) {
         : [];
       lateRawCaptureState.pending = false;
       lateRawCaptureState.updates = [];
-      for (const entry of updates) {
-        entry?.capture?.update?.(entry?.params);
-      }
+      processDeferredRawUpdates(updates);
     })
     : null;
 
@@ -7168,6 +7226,9 @@ function shaderOnRegion(regionId, opts = {}) {
     return ui.notifications.warn("Region clusters could not be rendered.");
   }
 
+  const allPrimaryRawChannels = clusterStates.flatMap(cs => (cs.sceneAreaChannels ?? []).filter(c => c?.captureMode === "sceneCaptureRaw"));
+  setupPrimaryGroupMidRenderCapture(rootContainer, allPrimaryRawChannels);
+
   const effectKey = createRegionEffectKey(resolvedRegionId, fromBehavior ? behaviorId : null);
   let t = 0;
   let elapsedMs = 0;
@@ -7326,7 +7387,7 @@ function shaderOnRegion(regionId, opts = {}) {
             rotationDeg: captureRotationDeg,
             excludeDisplayObject: rootContainer
           };
-          if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates && rootContainer?.parent !== canvas?.primary) {
+          if (capture?.captureMode === "sceneCaptureRaw" && deferredRawUpdates) {
             deferredRawUpdates.push({ capture, params });
           } else {
             capture.update(params);
@@ -7357,9 +7418,7 @@ function shaderOnRegion(regionId, opts = {}) {
         : [];
       lateRawCaptureState.pending = false;
       lateRawCaptureState.updates = [];
-      for (const entry of updates) {
-        entry?.capture?.update?.(entry?.params);
-      }
+      processDeferredRawUpdates(updates);
     })
     : null;
   const frameHook = addShaderFrameHandler(tickerFn, cfg);
