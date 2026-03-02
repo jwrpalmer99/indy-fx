@@ -6,7 +6,8 @@
       "Bash(node -e \":*)",
       "Bash(python3 -c \":*)",
       "Bash(node scripts/examples/_fix_normals.js)",
-      "Bash(xargs grep -l \"CanvasIlluminationEffects\")"
+      "Bash(xargs grep -l \"CanvasIlluminationEffects\")",
+      "Bash(grep -n \"bloom\" /c/Users/Jeremy/indy-fx/templates/*.html)"
     ]
   }
 }

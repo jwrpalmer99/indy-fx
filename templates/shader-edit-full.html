@@ -100,6 +100,13 @@
       </details>
 
       <div class="form-group">
+        <label>Respect Token Vision</label>
+        <div class="form-fields">
+          <input type="checkbox" name="default_respectTokenVision" {{#if shader.defaults.respectTokenVision}}checked{{/if}} />
+        </div>
+      </div>
+
+      <div class="form-group">
         <label>Scale</label>
         <div class="form-fields">
           <input type="number" name="default_scale" min="0.1" max="10" step="0.05" value="{{shader.defaults.scale}}" />

@@ -177,6 +177,7 @@ const IMPORTED_SHADER_DEFAULT_KEYS = [
   "backgroundGlow",
   "preloadShader",
   "customUniforms",
+  "respectTokenVision",
 ];
 
 function isDebugLoggingEnabled(moduleId = "indy-fx") {
@@ -2110,6 +2111,7 @@ export class ShaderManager {
       bloomStrength: 1.0,
       bloomBlur: 7.0,
       bloomQuality: 2.0,
+      respectTokenVision: true,
       scale: toFiniteNumber(
         game.settings.get(this.moduleId, "shaderScale"),
         1.0,
@@ -2269,6 +2271,14 @@ export class ShaderManager {
         0,
         Math.min(8, toFiniteNumber(source.bloomQuality, base.bloomQuality)),
       ),
+      respectTokenVision:
+        source.respectTokenVision === false ||
+        source.respectTokenVision === "false" ||
+        source.respectTokenVision === "off" ||
+        source.respectTokenVision === 0 ||
+        source.respectTokenVision === "0"
+          ? false
+          : true,
       scale: Math.max(
         0.1,
         Math.min(10, toFiniteNumber(source.scale, base.scale)),

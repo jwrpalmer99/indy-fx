@@ -5505,7 +5505,8 @@ function shaderOn(tokenId, opts = {}) {
     bloom: true,
     bloomStrength: 1.0,
     bloomBlur: 7,
-    bloomQuality: 2
+    bloomQuality: 2,
+    respectTokenVision: true
   }, importedDefaults, { inplace: false }), macroOpts, { inplace: false });
 
 
@@ -5687,7 +5688,7 @@ function shaderOn(tokenId, opts = {}) {
     bloom.padding = effectExtent * 2.5;
     mesh.filters = [bloom];
   }
-  if (sceneAreaChannels.some(c => c.captureMode === "sceneCaptureVision")) {
+  if (cfg.respectTokenVision) {
     mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
   }
   const debugEnabled = game.settings.get(MODULE_ID, "shaderDebug");
@@ -5963,7 +5964,8 @@ function shaderOnTemplate(templateId, opts = {}) {
     bloom: true,
     bloomStrength: 1.0,
     bloomBlur: 7,
-    bloomQuality: 2
+    bloomQuality: 2,
+    respectTokenVision: true
   }, importedDefaults, { inplace: false }), macroOpts, { inplace: false }), templateGeometry, { inplace: false });
 
   const worldLayer = resolveShaderWorldLayer(MODULE_ID, cfg);
@@ -6063,7 +6065,7 @@ function shaderOnTemplate(templateId, opts = {}) {
     bloom.padding = effectExtent * 2.5;
     mesh.filters = [bloom];
   }
-  if (sceneAreaChannels.some(c => c.captureMode === "sceneCaptureVision")) {
+  if (cfg.respectTokenVision) {
     mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
   }
 
@@ -6330,7 +6332,8 @@ function shaderOnTile(tileId, opts = {}) {
     bloom: true,
     bloomStrength: 1.0,
     bloomBlur: 7,
-    bloomQuality: 2
+    bloomQuality: 2,
+    respectTokenVision: true
   }, importedDefaults, { inplace: false }), macroOpts, { inplace: false });
 
   const worldLayer = resolveShaderWorldLayer(MODULE_ID, cfg);
@@ -6444,7 +6447,7 @@ function shaderOnTile(tileId, opts = {}) {
     bloom.padding = Math.max(halfW, halfH) * 2.0;
     mesh.filters = [bloom];
   }
-  if (sceneAreaChannels.some(c => c.captureMode === "sceneCaptureVision")) {
+  if (cfg.respectTokenVision) {
     mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
   }
 
@@ -6978,7 +6981,8 @@ function shaderOnRegion(regionId, opts = {}) {
     bloom: true,
     bloomStrength: 1.0,
     bloomBlur: 7,
-    bloomQuality: 2
+    bloomQuality: 2,
+    respectTokenVision: true
   }, importedDefaults, { inplace: false }), macroOpts, { inplace: false });
 
   const worldLayer = resolveShaderWorldLayer(MODULE_ID, cfg);
@@ -7131,7 +7135,7 @@ function shaderOnRegion(regionId, opts = {}) {
       bloom.padding = Math.max(halfW, halfH) * 2.0;
       mesh.filters = [bloom];
     }
-    if (sceneAreaChannels.some(c => c.captureMode === "sceneCaptureVision")) {
+    if (cfg.respectTokenVision) {
       mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
     }
 
