@@ -1898,6 +1898,14 @@ function findTopTileAtDropPoint(globalPoint, worldPoint) {
   for (let i = tiles.length - 1; i >= 0; i -= 1) {
     const tile = tiles[i];
     if (!tile || tile.destroyed || tile.visible === false) continue;
+    // In v14, doc.shape.testPoint() is Foundry's own rotation-aware OBB hit test.
+    // Prefer it over isGlobalPointInsidePlaceable which falls back to AABB getBounds().
+    // The tile is stationary at drop time so doc.shape is guaranteed fresh.
+    const doc = tile.document ?? tile;
+    if (worldPoint && typeof doc?.shape?.testPoint === "function") {
+      if (doc.shape.testPoint({ x: worldPoint.x, y: worldPoint.y })) return tile;
+      continue;
+    }
     if (globalPoint && isGlobalPointInsidePlaceable(tile, globalPoint)) return tile;
     if (isWorldPointInsideTile(tile, worldPoint)) return tile;
   }
