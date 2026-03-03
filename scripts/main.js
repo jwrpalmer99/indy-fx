@@ -1797,8 +1797,13 @@ function isWorldPointInsideTile(tile, worldPoint) {
   if (![x, y, w, h, rotDeg].every((n) => Number.isFinite(n))) return false;
   if (w <= 0 || h <= 0) return false;
 
-  const cx = x + w * 0.5;
-  const cy = y + h * 0.5;
+  // In v14, doc.x/y is the anchor point (not top-left); use anchorX/Y to find the true center.
+  // doc.shape exists only in v14 — use it as the version discriminator, same as getTileMetrics.
+  const isV14 = doc?.shape !== undefined;
+  const anchorX = isV14 ? Number(doc?.texture?.anchorX ?? 0.5) : 0;
+  const anchorY = isV14 ? Number(doc?.texture?.anchorY ?? 0.5) : 0;
+  const cx = x + (0.5 - anchorX) * w;
+  const cy = y + (0.5 - anchorY) * h;
   const dx = worldPoint.x - cx;
   const dy = worldPoint.y - cy;
   const r = (-rotDeg * Math.PI) / 180;
@@ -4146,6 +4151,16 @@ function getTileMetrics(tile) {
   const height = Math.max(1, Number(doc?.height ?? live?.height ?? live?.h ?? 1));
   const rotationDeg = Number(doc?.rotation ?? live?.rotation ?? 0);
   const rotationRad = (Number.isFinite(rotationDeg) ? rotationDeg : 0) * (Math.PI / 180);
+  // In Foundry v14, doc.x/y is the anchor point position; doc.texture.anchorX/Y says where the
+  // anchor sits (default 0.5 = center; migrated non-rotated v13 tiles get 0 = top-left).
+  // doc.shape exists only in v14 (set in prepareDerivedData) — use it as the v14 discriminator.
+  // doc.shape.center is STALE during drag (prepareDerivedData not re-called by updateSource),
+  // so always compute center from the live doc.x/y + constant anchorX/Y instead.
+  // In v13, doc.shape is undefined → use classic top-left + half-size formula.
+  const isV14 = doc?.shape !== undefined;
+  const anchorX = isV14 ? Number(doc?.texture?.anchorX ?? 0.5) : 0;
+  const anchorY = isV14 ? Number(doc?.texture?.anchorY ?? 0.5) : 0;
+  const center = { x: x + (0.5 - anchorX) * width, y: y + (0.5 - anchorY) * height };
   return {
     x,
     y,
@@ -4153,10 +4168,7 @@ function getTileMetrics(tile) {
     height,
     rotationDeg: Number.isFinite(rotationDeg) ? rotationDeg : 0,
     rotationRad,
-    center: {
-      x: x + (width * 0.5),
-      y: y + (height * 0.5)
-    }
+    center
   };
 }
 
