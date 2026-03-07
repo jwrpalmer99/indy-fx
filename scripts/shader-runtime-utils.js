@@ -947,7 +947,20 @@ export function destroyShaderRuntimeEntry(entry, { preserveWhiteMask = false } =
   for (const runtimeImageChannel of (entry.runtimeImageChannels ?? [])) {
     runtimeImageChannel.destroy?.();
   }
-  if (entry.customMaskTexture && entry.customMaskTexture !== PIXI.Texture.WHITE) {
+  if (
+    entry.suppressionMaskTexture &&
+    entry.suppressionMaskTexture !== PIXI.Texture.WHITE &&
+    entry.suppressionMaskTexture !== entry.maskBaseTexture
+  ) {
+    entry.suppressionMaskTexture.destroy(true);
+  }
+  if (
+    entry.maskBaseTextureOwned === true &&
+    entry.maskBaseTexture &&
+    (!preserveWhiteMask || entry.maskBaseTexture !== PIXI.Texture.WHITE)
+  ) {
+    entry.maskBaseTexture.destroy(true);
+  } else if (entry.customMaskTexture && entry.customMaskTexture !== PIXI.Texture.WHITE) {
     entry.customMaskTexture.destroy(true);
   }
   entry.spriteDebugGfx?.destroy({ children: true });
@@ -965,9 +978,19 @@ export function destroyRegionClusterRuntime(cluster) {
   for (const runtimeImageChannel of (cluster?.runtimeImageChannels ?? [])) {
     runtimeImageChannel.destroy?.();
   }
-  cluster?.customMaskTexture?.destroy(true);
+  if (
+    cluster?.suppressionMaskTexture &&
+    cluster.suppressionMaskTexture !== PIXI.Texture.WHITE &&
+    cluster.suppressionMaskTexture !== cluster.maskBaseTexture
+  ) {
+    cluster.suppressionMaskTexture.destroy(true);
+  }
+  if (cluster?.maskBaseTextureOwned === true && cluster?.maskBaseTexture) {
+    cluster.maskBaseTexture.destroy(true);
+  } else {
+    cluster?.customMaskTexture?.destroy(true);
+  }
 }
-
 
 
 

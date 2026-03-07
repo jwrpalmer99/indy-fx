@@ -202,7 +202,7 @@ function _extractRegionShape(rawShape, index) {
   return null;
 }
 
-function _extractRegionShapesFromPolygonTree(region) {
+export function extractRegionShapesFromPolygonTree(region) {
   const tree = region?.document?.polygonTree ?? region?.polygonTree ?? null;
   if (!tree) return [];
   const extracted = [];
@@ -329,7 +329,7 @@ export function extractRegionShapes(region) {
   const shouldUseTreeFallback = hasUnsupportedTypes || partialExtraction || extracted.length === 0;
 
   if (shouldUseTreeFallback) {
-    const fromTree = _extractRegionShapesFromPolygonTree(region)
+    const fromTree = extractRegionShapesFromPolygonTree(region)
       .filter((shape) => !!shape && Number.isFinite(shape.width) && Number.isFinite(shape.height));
     if (fromTree.length > 0) return fromTree;
   }
@@ -628,6 +628,142 @@ export function createRegionCompositeMaskTexture(shapes, regionBounds, { useGrad
   for (const shape of holes) drawShape(shape, "destination-out");
   _applyRegionRadialMask(ctx, width, height, { useGradientMask, radiusPx, gradientMaskFadeStart });
   ctx.globalCompositeOperation = "source-over";
+
+  const texture = PIXI.Texture.from(canvasEl);
+  if (texture.baseTexture) {
+    texture.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    texture.baseTexture.update();
+  }
+  return texture;
+}
+
+function _getTextureCanvasSource(texture) {
+  if (!texture || texture === PIXI.Texture.WHITE) return null;
+  return (
+    texture?.baseTexture?.resource?.source ??
+    texture?.resource?.source ??
+    null
+  );
+}
+
+function _drawTextureToCanvas(ctx, texture, width, height) {
+  if (!ctx || !texture || texture === PIXI.Texture.WHITE) {
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    ctx.fillRect(0, 0, width, height);
+    return;
+  }
+  const source = _getTextureCanvasSource(texture);
+  if (!source) {
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    ctx.fillRect(0, 0, width, height);
+    return;
+  }
+  const frame = texture.frame ?? { x: 0, y: 0, width: source.width, height: source.height };
+  const sx = Number(frame?.x ?? 0);
+  const sy = Number(frame?.y ?? 0);
+  const sw = Math.max(1, Number(frame?.width ?? source.width ?? width));
+  const sh = Math.max(1, Number(frame?.height ?? source.height ?? height));
+  try {
+    ctx.drawImage(source, sx, sy, sw, sh, 0, 0, width, height);
+  } catch (_err) {
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    ctx.fillRect(0, 0, width, height);
+  }
+}
+
+function _drawShapeIntoBounds(ctx, shape, targetBounds, composite = "source-over") {
+  if (!ctx || !shape || !targetBounds) return;
+  const localMask = shape?.localMask ?? { type: "polygon", points: [] };
+  const offsetX = Number(shape?.bounds?.minX ?? 0) - Number(targetBounds?.minX ?? 0);
+  const offsetY = Number(shape?.bounds?.minY ?? 0) - Number(targetBounds?.minY ?? 0);
+  ctx.globalCompositeOperation = composite;
+
+  if (localMask.type === "ellipse") {
+    ctx.beginPath();
+    ctx.ellipse(
+      offsetX + Number(localMask.cx ?? 0),
+      offsetY + Number(localMask.cy ?? 0),
+      Math.max(1, Number(localMask.rx ?? 1)),
+      Math.max(1, Number(localMask.ry ?? 1)),
+      Number(localMask.rotation ?? 0),
+      0,
+      Math.PI * 2,
+    );
+    ctx.closePath();
+    ctx.fill();
+    return;
+  }
+
+  const pts = Array.isArray(localMask.points) ? localMask.points : [];
+  if (pts.length < 3) return;
+  ctx.beginPath();
+  ctx.moveTo(offsetX + pts[0].x, offsetY + pts[0].y);
+  for (let i = 1; i < pts.length; i += 1) {
+    ctx.lineTo(offsetX + pts[i].x, offsetY + pts[i].y);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+function _boundsOverlap(a, b) {
+  if (!a || !b) return false;
+  return !(
+    Number(a.maxX ?? 0) <= Number(b.minX ?? 0) ||
+    Number(a.minX ?? 0) >= Number(b.maxX ?? 0) ||
+    Number(a.maxY ?? 0) <= Number(b.minY ?? 0) ||
+    Number(a.minY ?? 0) >= Number(b.maxY ?? 0)
+  );
+}
+
+export function createRegionSuppressionMaskTexture(
+  targetBounds,
+  suppressionEntries = [],
+  { baseTexture = null } = {},
+) {
+  const width = Math.max(2, Math.ceil(targetBounds?.width ?? 2));
+  const height = Math.max(2, Math.ceil(targetBounds?.height ?? 2));
+  const canvasEl = document.createElement("canvas");
+  canvasEl.width = width;
+  canvasEl.height = height;
+  const ctx = canvasEl.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+  _drawTextureToCanvas(ctx, baseTexture, width, height);
+
+  const relevantEntries = Array.isArray(suppressionEntries)
+    ? suppressionEntries.filter((entry) => _boundsOverlap(targetBounds, entry?.bounds))
+    : [];
+  if (!relevantEntries.length) {
+    const passthrough = PIXI.Texture.from(canvasEl);
+    if (passthrough.baseTexture) {
+      passthrough.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+      passthrough.baseTexture.update();
+    }
+    return passthrough;
+  }
+
+  const tmpCanvas = document.createElement("canvas");
+  tmpCanvas.width = width;
+  tmpCanvas.height = height;
+  const tmpCtx = tmpCanvas.getContext("2d");
+
+  for (const entry of relevantEntries) {
+    const shapes = Array.isArray(entry?.shapes) ? entry.shapes : [];
+    if (!shapes.length) continue;
+    tmpCtx.clearRect(0, 0, width, height);
+    tmpCtx.fillStyle = "rgba(255,255,255,1)";
+    for (const shape of shapes) {
+      if (!_boundsOverlap(targetBounds, shape?.bounds)) continue;
+      _drawShapeIntoBounds(
+        tmpCtx,
+        shape,
+        targetBounds,
+        shape?.isHole === true ? "destination-out" : "source-over",
+      );
+    }
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.drawImage(tmpCanvas, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+  }
 
   const texture = PIXI.Texture.from(canvasEl);
   if (texture.baseTexture) {

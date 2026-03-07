@@ -21,7 +21,8 @@
   ],
   "documentTypes": {
     "RegionBehavior": {
-      "indyFX": {}
+      "indyFX": {},
+      "indyFXSuppress": {}
     }
   },
   "esmodules": ["scripts/main.js"], 

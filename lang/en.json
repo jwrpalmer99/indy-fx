@@ -1,5 +1,6 @@
 ﻿{
   "INDYFX": {
-    "RegionBehaviorLabel": "indyFX"
+    "RegionBehaviorLabel": "indyFX",
+    "RegionSuppressBehaviorLabel": "indyFX Suppress"
   }
 }

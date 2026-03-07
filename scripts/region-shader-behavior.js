@@ -2,6 +2,12 @@ import { openShaderVariableEditorDialog } from "./shader-variable-editor-dialog.
 
 const REGION_SHADER_BEHAVIOR_SUBTYPE = "indyFX";
 const REGION_SHADER_BEHAVIOR_TYPE = "indy-fx.indyFX";
+const REGION_SHADER_SUPPRESS_BEHAVIOR_SUBTYPE = "indyFXSuppress";
+const REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE = "indy-fx.indyFXSuppress";
+const REGION_SHADER_SUPPRESS_SCOPE_CHOICES = {
+  all: "All indyFX shaders",
+  region: "Region shaders only",
+};
 const REGION_SHADER_LAYER_CHOICES = {
   inherit: "inherit from FX layer",
   interfacePrimary: "interfacePrimary (above tokens, world space)",
@@ -523,6 +529,36 @@ function isRegionShaderBehaviorType(type) {
   const value = String(type ?? "");
   return value === REGION_SHADER_BEHAVIOR_TYPE;
 }
+function isRegionSuppressBehaviorType(type) {
+  const value = String(type ?? "");
+  return value === REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE;
+}
+function normalizeRegionSuppressBehaviorScope(value, fallback = "all") {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (raw === "region" || raw === "regions" || raw === "regiononly") {
+    return "region";
+  }
+  if (raw === "all") return "all";
+  return fallback;
+}
+function getDefaultRegionSuppressBehaviorSystem() {
+  return {
+    suppressScope: "all",
+  };
+}
+function getRegionSuppressBehaviorSystemData(behavior) {
+  const defaults = getDefaultRegionSuppressBehaviorSystem();
+  const source =
+    behavior?.system?.toObject?.() ??
+    foundry.utils.deepClone(behavior?.system ?? {});
+  if (!source || typeof source !== "object") return defaults;
+  return {
+    suppressScope: normalizeRegionSuppressBehaviorScope(
+      source.suppressScope,
+      defaults.suppressScope,
+    ),
+  };
+}
 function registerRegionShaderBehavior({
   moduleId,
   getShaderChoices,
@@ -548,21 +584,24 @@ function registerRegionShaderBehavior({
 
   try {
     const modelTypes = game?.model?.RegionBehavior;
-    if (
-      modelTypes &&
-      !Object.prototype.hasOwnProperty.call(
-        modelTypes,
+    if (modelTypes) {
+      for (const behaviorType of [
         REGION_SHADER_BEHAVIOR_TYPE,
-      )
-    ) {
-      modelTypes[REGION_SHADER_BEHAVIOR_TYPE] = {};
+        REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE,
+      ]) {
+        if (!Object.prototype.hasOwnProperty.call(modelTypes, behaviorType)) {
+          modelTypes[behaviorType] = {};
+        }
+      }
     }
     const docTypes = game?.documentTypes?.RegionBehavior;
-    if (
-      Array.isArray(docTypes) &&
-      !docTypes.includes(REGION_SHADER_BEHAVIOR_TYPE)
-    ) {
-      docTypes.push(REGION_SHADER_BEHAVIOR_TYPE);
+    if (Array.isArray(docTypes)) {
+      for (const behaviorType of [
+        REGION_SHADER_BEHAVIOR_TYPE,
+        REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE,
+      ]) {
+        if (!docTypes.includes(behaviorType)) docTypes.push(behaviorType);
+      }
     }
   } catch (_err) {
     // Non-fatal.
@@ -1327,6 +1366,76 @@ function registerRegionShaderBehavior({
     );
   }
 
+  if (!cfg.dataModels[REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE]) {
+    class IndyFXSuppressRegionBehaviorType extends RegionBehaviorTypeBase {
+      static defineSchema() {
+        return {
+          suppressScope: new F.StringField({
+            required: true,
+            initial: "all",
+            choices: REGION_SHADER_SUPPRESS_SCOPE_CHOICES,
+            label: "Apply To",
+            hint: "Choose whether this region suppresses all indyFX shaders or only region-owned ones.",
+          }),
+        };
+      }
+    }
+
+    class IndyFXSuppressRegionBehaviorConfig extends RegionBehaviorConfigBase {
+      static DEFAULT_OPTIONS = foundry.utils.mergeObject(
+        super.DEFAULT_OPTIONS,
+        {
+          id: `${moduleId}-region-suppress-behavior-config`,
+          window: {
+            title: "Region indyFX Suppression",
+            icon: "fas fa-eye-slash",
+          },
+        },
+        { inplace: false },
+      );
+
+      _onRender(context, options) {
+        super._onRender?.(context, options);
+        const root = _resolveElementRoot(this.element);
+        if (!(root instanceof Element)) return;
+        const form = root.querySelector("form") ?? root;
+        if (!(form instanceof Element)) return;
+        if (form.querySelector('[data-indyfx-region-suppress-note="1"]')) return;
+
+        const group = document.createElement("div");
+        group.className = "form-group";
+        group.dataset.indyfxRegionSuppressNote = "1";
+        group.innerHTML = `
+          <label>Suppression</label>
+          <div class="form-fields">
+            <span>Enabled while this behavior exists.</span>
+          </div>
+          <p class="notes">Use <strong>Apply To</strong> to suppress either every indyFX shader anchored in this region or only region-owned indyFX shaders.</p>
+        `;
+        form.insertAdjacentElement("afterbegin", group);
+      }
+    }
+
+    cfg.dataModels[REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE] =
+      IndyFXSuppressRegionBehaviorType;
+    cfg.typeLabels[REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE] =
+      "INDYFX.RegionSuppressBehaviorLabel";
+    cfg.typeIcons[REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE] =
+      "fas fa-eye-slash";
+
+    DocumentSheetConfig.registerSheet(
+      cfg.documentClass,
+      moduleId,
+      IndyFXSuppressRegionBehaviorConfig,
+      {
+        types: [REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE],
+        makeDefault: true,
+        canBeDefault: false,
+        label: "indyFX Suppress",
+      },
+    );
+  }
+
   return {
     type: REGION_SHADER_BEHAVIOR_TYPE,
   };
@@ -1336,15 +1445,18 @@ export {
   REGION_SHADER_BEHAVIOR_SUBTYPE,
   REGION_SHADER_BEHAVIOR_SYSTEM_KEYS,
   REGION_SHADER_BEHAVIOR_TYPE,
+  REGION_SHADER_SUPPRESS_BEHAVIOR_SUBTYPE,
+  REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE,
   buildRegionShaderBehaviorSystemData,
   getDefaultRegionShaderBehaviorSystem,
+  getDefaultRegionSuppressBehaviorSystem,
   getRegionShaderBehaviorSystemData,
+  getRegionSuppressBehaviorSystemData,
+  isRegionSuppressBehaviorType,
   isRegionShaderBehaviorType,
+  normalizeRegionSuppressBehaviorScope,
   registerRegionShaderBehavior,
 };
-
-
-
 
 
 

@@ -1,8 +1,11 @@
 import { ShaderManager } from "./shaders/manager.js";
 import {
   REGION_SHADER_BEHAVIOR_TYPE,
+  REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE,
   buildRegionShaderBehaviorSystemData,
   getRegionShaderBehaviorSystemData,
+  getRegionSuppressBehaviorSystemData,
+  isRegionSuppressBehaviorType,
   isRegionShaderBehaviorType,
   registerRegionShaderBehavior
 } from "./region-shader-behavior.js";
@@ -23,9 +26,11 @@ import {
 import {
   getRegionShapeSignature,
   extractRegionShapes,
+  extractRegionShapesFromPolygonTree,
   computeRegionBounds,
   groupContiguousRegionShapes,
   createRegionCompositeMaskTexture,
+  createRegionSuppressionMaskTexture,
   getRegionSolidComponents,
   getRegionComponentBounds,
   createRegionComponentMaskTexture
@@ -732,9 +737,22 @@ function destroyImportedLightLayerRuntimeChannels(layer) {
       // Non-fatal.
     }
   }
+  if (
+    layer._indyFxSuppressionMaskTexture &&
+    layer._indyFxSuppressionMaskTexture !== layer._indyFxMaskBaseTexture
+  ) {
+    try {
+      layer._indyFxSuppressionMaskTexture.destroy(true);
+    } catch (_err) {
+      // Non-fatal.
+    }
+  }
   delete layer._indyFxRuntimeBuffers;
   delete layer._indyFxRuntimeImageChannels;
   delete layer._indyFxLightChannelsInitialized;
+  delete layer._indyFxSuppressionMaskTexture;
+  delete layer._indyFxSuppressionMaskSignature;
+  delete layer._indyFxMaskBaseTexture;
 }
 
 function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
@@ -927,7 +945,10 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     );
     if (foundryIntensity > 0 && baseIntensity <= 0) baseIntensity = 1;
     layer._indyFxBaseIntensity = baseIntensity;
-    uniforms.intensity = Math.max(0, baseIntensity * intensityScale);
+    uniforms.intensity = Math.max(
+      0,
+      baseIntensity * intensityScale,
+    );
     const classLayerType = String(
       layer?.shader?.constructor?.indyFxLayerType ?? "",
     )
@@ -975,7 +996,9 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     );
     layer._indyFxLightBackgroundIntensity = baseBackgroundIntensity;
     uniforms.cpfxBackgroundIntensity =
-      classLayerType === "background" ? baseBackgroundIntensity : 1;
+      classLayerType === "background"
+        ? baseBackgroundIntensity
+        : 1;
     const classFalloffMode = normalizeImportedLightFalloffMode(
       layer?.shader?.constructor?.indyFxLightFalloffMode,
     );
@@ -2326,6 +2349,12 @@ const _activeRegionShader = new Map();
 const _activeRegionShaderByRegion = new Map();
 const _activeTileShader = new Map();
 const _muteRegionBehaviorSync = new Set();
+const _indyFxSuppressRegionCache = {
+  dirty: true,
+  sceneId: "",
+  entries: [],
+  version: 0,
+};
 let _persistentRestoreGeneration = 0;
 let _clientPerformanceRefreshHandle = null;
 const _tmpPoint = new PIXI.Point();
@@ -4405,6 +4434,219 @@ function getRegionShaderBehaviorDocuments(regionOrId, { includeDisabled = false 
   });
 }
 
+function getRegionSuppressBehaviorDocuments(regionOrId, { includeDisabled = false } = {}) {
+  return getRegionBehaviorDocuments(regionOrId).filter((behavior) => {
+    if (!isRegionSuppressBehaviorType(behavior?.type)) return false;
+    if (!includeDisabled && behavior?.disabled) return false;
+    return true;
+  });
+}
+
+function invalidateIndyFxSuppressRegionCache(_reason = "unspecified") {
+  _indyFxSuppressRegionCache.dirty = true;
+  _indyFxSuppressRegionCache.entries = [];
+  _indyFxSuppressRegionCache.version = Math.max(
+    0,
+    Number(_indyFxSuppressRegionCache.version ?? 0) + 1,
+  );
+}
+
+function getIndyFxSuppressRegionEntries() {
+  const sceneId = String(canvas?.scene?.id ?? "");
+  if (
+    _indyFxSuppressRegionCache.dirty !== true &&
+    _indyFxSuppressRegionCache.sceneId === sceneId
+  ) {
+    return _indyFxSuppressRegionCache.entries;
+  }
+
+  const entries = [];
+  const regions = getLayerPlaceablesSafe(canvas?.regions);
+  for (const region of regions) {
+    if (!region || region.destroyed === true) continue;
+    const regionId = String(region?.document?.id ?? region?.id ?? "").trim();
+    if (!regionId) continue;
+    if (region?.document?.hidden === true || region?.document?.disabled === true) {
+      continue;
+    }
+    const behaviors = getRegionSuppressBehaviorDocuments(region);
+    if (!behaviors.length) continue;
+    const shapesFromTree = extractRegionShapesFromPolygonTree(region);
+    const shapes = shapesFromTree.length > 0
+      ? shapesFromTree
+      : extractRegionShapes(region);
+    const bounds = computeRegionBounds(shapes);
+    if (!shapes.length || !bounds) continue;
+    let appliesAll = false;
+    let appliesRegion = false;
+    for (const behavior of behaviors) {
+      const systemData = getRegionSuppressBehaviorSystemData(behavior);
+      const scope = String(systemData?.suppressScope ?? "all").trim().toLowerCase();
+      if (scope === "region") {
+        appliesRegion = true;
+        continue;
+      }
+      appliesAll = true;
+      appliesRegion = true;
+    }
+    entries.push({ regionId, region, shapes, bounds, appliesAll, appliesRegion });
+  }
+
+  _indyFxSuppressRegionCache.dirty = false;
+  _indyFxSuppressRegionCache.sceneId = sceneId;
+  _indyFxSuppressRegionCache.entries = entries;
+  return entries;
+}
+
+function normalizeIndyFxTargetBounds(bounds) {
+  if (!bounds || typeof bounds !== "object") return null;
+  const minX = Number(bounds?.minX ?? bounds?.x);
+  const minY = Number(bounds?.minY ?? bounds?.y);
+  const widthValue = Number(bounds?.width);
+  const heightValue = Number(bounds?.height);
+  const maxX = Number.isFinite(Number(bounds?.maxX))
+    ? Number(bounds.maxX)
+    : (Number.isFinite(minX) && Number.isFinite(widthValue) ? (minX + widthValue) : Number.NaN);
+  const maxY = Number.isFinite(Number(bounds?.maxY))
+    ? Number(bounds.maxY)
+    : (Number.isFinite(minY) && Number.isFinite(heightValue) ? (minY + heightValue) : Number.NaN);
+  if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
+  const width = Math.max(2, maxX - minX);
+  const height = Math.max(2, maxY - minY);
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width,
+    height,
+    center: {
+      x: Number.isFinite(Number(bounds?.center?.x))
+        ? Number(bounds.center.x)
+        : ((minX + maxX) * 0.5),
+      y: Number.isFinite(Number(bounds?.center?.y))
+        ? Number(bounds.center.y)
+        : ((minY + maxY) * 0.5),
+    },
+  };
+}
+
+function createIndyFxTargetBoundsFromCenter(center, width, height = width) {
+  const cx = Number(center?.x);
+  const cy = Number(center?.y);
+  const w = Math.max(2, Number(width ?? 0));
+  const h = Math.max(2, Number(height ?? w));
+  if (![cx, cy, w, h].every(Number.isFinite)) return null;
+  return {
+    minX: cx - (w * 0.5),
+    minY: cy - (h * 0.5),
+    maxX: cx + (w * 0.5),
+    maxY: cy + (h * 0.5),
+    width: w,
+    height: h,
+    center: { x: cx, y: cy },
+  };
+}
+
+function doIndyFxBoundsOverlap(a, b) {
+  if (!a || !b) return false;
+  return !(
+    Number(a.maxX ?? 0) <= Number(b.minX ?? 0) ||
+    Number(a.minX ?? 0) >= Number(b.maxX ?? 0) ||
+    Number(a.maxY ?? 0) <= Number(b.minY ?? 0) ||
+    Number(a.minY ?? 0) >= Number(b.maxY ?? 0)
+  );
+}
+
+function destroyIndyFxGeneratedMaskTexture(texture, { except = null } = {}) {
+  if (!texture || texture === PIXI.Texture.WHITE || texture === except) return;
+  try {
+    texture.destroy(true);
+  } catch (_err) {
+    // Non-fatal.
+  }
+}
+
+function getIndyFxSuppressionEntriesForBounds(
+  targetBounds,
+  { targetKind = "all" } = {},
+) {
+  const normalizedBounds = normalizeIndyFxTargetBounds(targetBounds);
+  if (!normalizedBounds) return { bounds: null, entries: [] };
+
+  const entries = getIndyFxSuppressRegionEntries().filter((entry) => {
+    const appliesToTarget =
+      targetKind === "region"
+        ? entry?.appliesRegion === true
+        : entry?.appliesAll === true;
+    return appliesToTarget && doIndyFxBoundsOverlap(normalizedBounds, entry?.bounds);
+  });
+  return { bounds: normalizedBounds, entries };
+}
+
+function updateIndyFxSuppressionMask(
+  targetState,
+  shader,
+  targetBounds,
+  { targetKind = "all" } = {},
+) {
+  const uniforms = shader?.uniforms;
+  if (!targetState || !uniforms || !("uSampler" in uniforms)) return;
+
+  if (!targetState.maskBaseTexture) {
+    targetState.maskBaseTexture = uniforms.uSampler ?? PIXI.Texture.WHITE;
+  }
+
+  const baseTexture = targetState.maskBaseTexture ?? PIXI.Texture.WHITE;
+  const { bounds, entries } = getIndyFxSuppressionEntriesForBounds(targetBounds, { targetKind });
+  if (!bounds || !entries.length) {
+    if (uniforms.uSampler !== baseTexture) uniforms.uSampler = baseTexture;
+    destroyIndyFxGeneratedMaskTexture(targetState.suppressionMaskTexture, { except: baseTexture });
+    targetState.suppressionMaskTexture = null;
+    targetState.suppressionMaskSignature = "";
+    return;
+  }
+
+  const roundedBounds = {
+    minX: Math.round(bounds.minX),
+    minY: Math.round(bounds.minY),
+    maxX: Math.round(bounds.maxX),
+    maxY: Math.round(bounds.maxY),
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height),
+  };
+  const signature = [
+    String(canvas?.scene?.id ?? ""),
+    Number(_indyFxSuppressRegionCache.version ?? 0),
+    targetKind,
+    roundedBounds.minX,
+    roundedBounds.minY,
+    roundedBounds.maxX,
+    roundedBounds.maxY,
+    ...entries.map((entry) => String(entry?.regionId ?? "")),
+  ].join("|");
+
+  if (
+    targetState.suppressionMaskTexture &&
+    targetState.suppressionMaskSignature === signature
+  ) {
+    if (uniforms.uSampler !== targetState.suppressionMaskTexture) {
+      uniforms.uSampler = targetState.suppressionMaskTexture;
+    }
+    return;
+  }
+
+  const suppressionMaskTexture = createRegionSuppressionMaskTexture(bounds, entries, {
+    baseTexture,
+  });
+  destroyIndyFxGeneratedMaskTexture(targetState.suppressionMaskTexture, {
+    except: baseTexture,
+  });
+  targetState.suppressionMaskTexture = suppressionMaskTexture;
+  targetState.suppressionMaskSignature = signature;
+  uniforms.uSampler = suppressionMaskTexture;
+}
+
 function getPrimaryRegionShaderBehavior(regionOrId) {
   const behaviors = getRegionShaderBehaviorDocuments(regionOrId);
   if (!behaviors.length) return null;
@@ -5971,6 +6213,20 @@ function shaderOn(tokenId, opts = {}) {
     container.addChild(spriteDebugGfx);
     updateSpriteDebugGfx(spriteDebugGfx, effectExtent);
   }
+  const tokenMaskBaseTexture = shader.uniforms?.uSampler ?? customMaskTexture ?? PIXI.Texture.WHITE;
+  const tokenMaskBaseTextureOwned =
+    tokenMaskBaseTexture === customMaskTexture && customMaskTexture !== PIXI.Texture.WHITE;
+  const tokenSuppressionState = {
+    maskBaseTexture: tokenMaskBaseTexture,
+    maskBaseTextureOwned: tokenMaskBaseTextureOwned,
+    suppressionMaskTexture: null,
+    suppressionMaskSignature: "",
+  };
+  updateIndyFxSuppressionMask(
+    tokenSuppressionState,
+    shader,
+    createIndyFxTargetBoundsFromCenter(getTokenCenter(tok), effectExtent * 2),
+  );
   let t = 0;
   let elapsedMs = 0;
   let tokenRotationDebugLastUniform = Number.NaN;
@@ -6017,6 +6273,11 @@ function shaderOn(tokenId, opts = {}) {
 
     setCenter(container, liveTok, worldLayer);
     syncShaderLayerScale(container, worldLayer, cfg);
+    updateIndyFxSuppressionMask(
+      tokenSuppressionState,
+      shader,
+      createIndyFxTargetBoundsFromCenter(getTokenCenter(liveTok), effectExtent * 2),
+    );
     syncTokenRuntimeImageRotationMode(liveTok);
     const tokenRotationRad = getTokenRotationForUniform(liveTok);
     container.rotation = getTokenRotationForContainer(liveTok);
@@ -6126,7 +6387,7 @@ function shaderOn(tokenId, opts = {}) {
     : null;
 
   const frameHook = addShaderFrameHandler(tickerFn, cfg);
-  _activeShader.set(tokenId, {
+  Object.assign(tokenSuppressionState, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
     tickerFn,
@@ -6138,6 +6399,10 @@ function shaderOn(tokenId, opts = {}) {
     runtimeBufferChannels,
     runtimeImageChannels,
     customMaskTexture,
+    maskBaseTexture: tokenSuppressionState.maskBaseTexture,
+    maskBaseTextureOwned: tokenSuppressionState.maskBaseTextureOwned,
+    suppressionMaskTexture: tokenSuppressionState.suppressionMaskTexture,
+    suppressionMaskSignature: tokenSuppressionState.suppressionMaskSignature,
     sourceOpts: foundry.utils.mergeObject(
       foundry.utils.mergeObject({}, macroOpts, { inplace: false }),
       { shaderId: selectedShaderId },
@@ -6152,6 +6417,7 @@ function shaderOn(tokenId, opts = {}) {
       rotateWithToken: cfg.rotateWithToken === true,
     }),
   });
+  _activeShader.set(tokenId, tokenSuppressionState);
 }
 
 function shaderOff(tokenId, { skipPersist = false } = {}) {
@@ -6350,6 +6616,20 @@ function shaderOnTemplate(templateId, opts = {}) {
     container.addChild(spriteDebugGfx);
     updateSpriteDebugGfx(spriteDebugGfx, effectExtent);
   }
+  const templateMaskBaseTexture = shader.uniforms?.uSampler ?? templateMaskTexture ?? PIXI.Texture.WHITE;
+  const templateMaskBaseTextureOwned =
+    templateMaskBaseTexture === customMaskTexture && customMaskTexture !== PIXI.Texture.WHITE;
+  const templateSuppressionState = {
+    maskBaseTexture: templateMaskBaseTexture,
+    maskBaseTextureOwned: templateMaskBaseTextureOwned,
+    suppressionMaskTexture: null,
+    suppressionMaskSignature: "",
+  };
+  updateIndyFxSuppressionMask(
+    templateSuppressionState,
+    shader,
+    createIndyFxTargetBoundsFromCenter(getTemplateOrigin(template), effectExtent * 2),
+  );
 
   let t = 0;
   let elapsedMs = 0;
@@ -6420,6 +6700,11 @@ function shaderOnTemplate(templateId, opts = {}) {
     const liveCenter = getTemplateOrigin(liveTemplate);
     setCenterFromWorld(container, liveCenter, worldLayer);
     syncShaderLayerScale(container, worldLayer, cfg);
+    updateIndyFxSuppressionMask(
+      templateSuppressionState,
+      shader,
+      createIndyFxTargetBoundsFromCenter(liveCenter, effectExtent * 2),
+    );
     if (mesh.filters?.length) {
       const pad = effectExtent * 0.8 + cfg.bloomBlur * 30;
       const bounds = mesh.getBounds(false);
@@ -6504,7 +6789,7 @@ function shaderOnTemplate(templateId, opts = {}) {
     : null;
 
   const frameHook = addShaderFrameHandler(tickerFn, cfg);
-  _activeTemplateShader.set(resolvedTemplateId, {
+  Object.assign(templateSuppressionState, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
     tickerFn,
@@ -6516,12 +6801,17 @@ function shaderOnTemplate(templateId, opts = {}) {
     runtimeBufferChannels,
     runtimeImageChannels,
     customMaskTexture,
+    maskBaseTexture: templateSuppressionState.maskBaseTexture,
+    maskBaseTextureOwned: templateSuppressionState.maskBaseTextureOwned,
+    suppressionMaskTexture: templateSuppressionState.suppressionMaskTexture,
+    suppressionMaskSignature: templateSuppressionState.suppressionMaskSignature,
     sourceOpts: foundry.utils.mergeObject(
       foundry.utils.mergeObject({}, macroOpts, { inplace: false }),
       { shaderId: selectedShaderId },
       { inplace: false },
     )
   });
+  _activeTemplateShader.set(resolvedTemplateId, templateSuppressionState);
 }
 
 function shaderOffTemplate(templateId, { skipPersist = false } = {}) {
@@ -6733,6 +7023,18 @@ function shaderOnTile(tileId, opts = {}) {
     container.addChild(spriteDebugGfx);
     updateSpriteDebugGfx(spriteDebugGfx, Math.max(shaderSize.width, shaderSize.height) * 0.5);
   }
+  const tileMaskBaseTexture = shader.uniforms?.uSampler ?? customMaskTexture ?? PIXI.Texture.WHITE;
+  const tileSuppressionState = {
+    maskBaseTexture: tileMaskBaseTexture,
+    maskBaseTextureOwned: false,
+    suppressionMaskTexture: null,
+    suppressionMaskSignature: "",
+  };
+  updateIndyFxSuppressionMask(
+    tileSuppressionState,
+    shader,
+    createIndyFxTargetBoundsFromCenter(metrics.center, shaderSize.width, shaderSize.height),
+  );
 
   let t = 0;
   let elapsedMs = 0;
@@ -6794,6 +7096,15 @@ function shaderOnTile(tileId, opts = {}) {
     const liveShaderSize = getTileShaderSizeForMetrics(liveMetrics);
     setCenterFromWorld(container, liveMetrics.center, worldLayer);
     syncShaderLayerScale(container, worldLayer, cfg);
+    updateIndyFxSuppressionMask(
+      tileSuppressionState,
+      shader,
+      createIndyFxTargetBoundsFromCenter(
+        liveMetrics.center,
+        liveShaderSize.width,
+        liveShaderSize.height,
+      ),
+    );
     container.rotation = getTileRotationForContainer(liveTile);
     if ("cpfxTokenRotation" in shader.uniforms) {
       shader.uniforms.cpfxTokenRotation = getTileRotationForUniform(liveTile);
@@ -6901,7 +7212,7 @@ function shaderOnTile(tileId, opts = {}) {
     : null;
 
   const frameHook = addShaderFrameHandler(tickerFn, cfg);
-  _activeTileShader.set(resolvedTileId, {
+  Object.assign(tileSuppressionState, {
     sceneId: String(canvas?.scene?.id ?? ""),
     container,
     tickerFn,
@@ -6913,6 +7224,10 @@ function shaderOnTile(tileId, opts = {}) {
     runtimeBufferChannels,
     runtimeImageChannels,
     customMaskTexture,
+    maskBaseTexture: tileSuppressionState.maskBaseTexture,
+    maskBaseTextureOwned: tileSuppressionState.maskBaseTextureOwned,
+    suppressionMaskTexture: tileSuppressionState.suppressionMaskTexture,
+    suppressionMaskSignature: tileSuppressionState.suppressionMaskSignature,
     rotateWithToken: cfg.rotateWithToken === true,
     sourceOpts: foundry.utils.mergeObject(
       foundry.utils.mergeObject({}, macroOpts, { inplace: false }),
@@ -6920,6 +7235,7 @@ function shaderOnTile(tileId, opts = {}) {
       { inplace: false },
     )
   });
+  _activeTileShader.set(resolvedTileId, tileSuppressionState);
 }
 
 function shaderOffTile(tileId, { skipPersist = false } = {}) {
@@ -7410,7 +7726,7 @@ function shaderOnRegion(regionId, opts = {}) {
       mesh.filters = [...(mesh.filters ?? []), createOutputVisionFilter()];
     }
 
-    clusterStates.push({
+    const clusterState = {
       clusterContainer,
       mesh,
       shader,
@@ -7418,11 +7734,19 @@ function shaderOnRegion(regionId, opts = {}) {
       runtimeBufferChannels,
       runtimeImageChannels,
       customMaskTexture,
+      maskBaseTexture: shader.uniforms?.uSampler ?? customMaskTexture ?? PIXI.Texture.WHITE,
+      maskBaseTextureOwned: customMaskTexture !== PIXI.Texture.WHITE,
+      suppressionMaskTexture: null,
+      suppressionMaskSignature: "",
       halfW,
       halfH,
       clusterShapeCount: clusterShapes.length,
       useTreeComponentMask: !!componentNode
+    };
+    updateIndyFxSuppressionMask(clusterState, shader, clusterBounds, {
+      targetKind: "region",
     });
+    clusterStates.push(clusterState);
   }
   if (!clusterStates.length) {
     rootContainer.destroy({ children: true });
@@ -7544,6 +7868,9 @@ function shaderOnRegion(regionId, opts = {}) {
 
       setCenterFromWorld(cluster.clusterContainer, clusterBounds.center, worldLayer);
       syncShaderLayerScale(cluster.clusterContainer, worldLayer, cfg);
+      updateIndyFxSuppressionMask(cluster, cluster.shader, clusterBounds, {
+        targetKind: "region",
+      });
 
       if ("globalAlpha" in cluster.shader.uniforms) {
         cluster.shader.uniforms.globalAlpha = computeFadeAlpha(elapsedMs);
@@ -7939,6 +8266,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
 });
 
 Hooks.on("canvasReady", () => {
+  invalidateIndyFxSuppressRegionCache("canvas-ready");
   bindShaderLibraryDragDropHandlers();
   shaderManager.queuePreloadedShaderCompiles?.({ reason: "module-init" });
   syncImportedShaderLightAnimations({ reason: "canvas-ready" });
@@ -7952,6 +8280,7 @@ Hooks.on("canvasReady", () => {
 });
 
 Hooks.on("canvasTearDown", () => {
+  invalidateIndyFxSuppressRegionCache("canvas-teardown");
   if (_clientPerformanceRefreshHandle !== null) {
     clearTimeout(_clientPerformanceRefreshHandle);
     _clientPerformanceRefreshHandle = null;
@@ -8167,8 +8496,10 @@ Hooks.once("ready", async () => {
   Hooks.on("updateRegion", (doc, changed) => {
     const hasActive = hasActiveRegionShader(doc.id);
     const hasBehavior = getRegionShaderBehaviorDocuments(doc).length > 0;
-    if (!hasActive && !hasBehavior) return;
+    const hasSuppressBehavior = getRegionSuppressBehaviorDocuments(doc).length > 0;
+    if (!hasActive && !hasBehavior && !hasSuppressBehavior) return;
     if (!changed || !Object.keys(changed).length) return;
+    if (hasSuppressBehavior) invalidateIndyFxSuppressRegionCache("update-region");
 
     if (hasBehavior) {
       syncRegionShaderFromBehavior(doc.id, { rebuild: true });
@@ -8184,30 +8515,58 @@ Hooks.once("ready", async () => {
   });
 
   Hooks.on("deleteRegion", (doc) => {
+    invalidateIndyFxSuppressRegionCache("delete-region");
     shaderOffRegion(doc.id, { skipPersist: true, fromBehavior: true });
   });
 
   Hooks.on("createRegionBehavior", (doc) => {
-    if (doc?.type !== REGION_SHADER_BEHAVIOR_TYPE) return;
+    if (
+      doc?.type !== REGION_SHADER_BEHAVIOR_TYPE &&
+      doc?.type !== REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE
+    ) {
+      return;
+    }
     const regionId = doc?.parent?.id ?? doc?.region?.id;
     if (!regionId) return;
     if (_muteRegionBehaviorSync.has(regionId)) return;
+    if (isRegionSuppressBehaviorType(doc?.type)) {
+      invalidateIndyFxSuppressRegionCache("create-region-behavior");
+    }
+    if (doc?.type !== REGION_SHADER_BEHAVIOR_TYPE) return;
     syncRegionShaderFromBehavior(regionId, { rebuild: true });
   });
 
   Hooks.on("updateRegionBehavior", (doc) => {
-    if (doc?.type !== REGION_SHADER_BEHAVIOR_TYPE) return;
+    if (
+      doc?.type !== REGION_SHADER_BEHAVIOR_TYPE &&
+      doc?.type !== REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE
+    ) {
+      return;
+    }
     const regionId = doc?.parent?.id ?? doc?.region?.id;
     if (!regionId) return;
     if (_muteRegionBehaviorSync.has(regionId)) return;
+    if (isRegionSuppressBehaviorType(doc?.type)) {
+      invalidateIndyFxSuppressRegionCache("update-region-behavior");
+    }
+    if (doc?.type !== REGION_SHADER_BEHAVIOR_TYPE) return;
     syncRegionShaderFromBehavior(regionId, { rebuild: true });
   });
 
   Hooks.on("deleteRegionBehavior", (doc) => {
-    if (doc?.type !== REGION_SHADER_BEHAVIOR_TYPE) return;
+    if (
+      doc?.type !== REGION_SHADER_BEHAVIOR_TYPE &&
+      doc?.type !== REGION_SHADER_SUPPRESS_BEHAVIOR_TYPE
+    ) {
+      return;
+    }
     const regionId = doc?.parent?.id ?? doc?.region?.id;
     if (!regionId) return;
     if (_muteRegionBehaviorSync.has(regionId)) return;
+    if (isRegionSuppressBehaviorType(doc?.type)) {
+      invalidateIndyFxSuppressRegionCache("delete-region-behavior");
+    }
+    if (doc?.type !== REGION_SHADER_BEHAVIOR_TYPE) return;
     syncRegionShaderFromBehavior(regionId, { rebuild: true });
   });
 
