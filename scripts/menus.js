@@ -1071,6 +1071,7 @@ export function createMenus({ moduleId, shaderManager }) {
         "captureFlipHorizontal",
         "captureFlipVertical",
         "convertToLightSource",
+        "convertToDarknessSource",
         "lightUseIlluminationShader",
         "lightUseBackgroundShader",
         "preloadShader",
@@ -3129,24 +3130,39 @@ export function createMenus({ moduleId, shaderManager }) {
         for (const ff of root.querySelectorAll(".form-fields")) {
           if (ff instanceof HTMLElement) ff.style.marginTop = "2px";
         }
-        for (const detailsEl of root.querySelectorAll("details[data-parent-toggle]")) {
+        for (const detailsEl of root.querySelectorAll(
+          "details[data-parent-toggle], details[data-parent-toggle-any]",
+        )) {
           if (!(detailsEl instanceof HTMLDetailsElement)) continue;
-          const parentName = String(
-            detailsEl.getAttribute("data-parent-toggle") ?? "",
-          ).trim();
-          if (!parentName) continue;
-          const parentInput = root.querySelector(`[name="${parentName}"]`);
-          if (!(parentInput instanceof HTMLInputElement)) continue;
+          const parentNamesAny = String(
+            detailsEl.getAttribute("data-parent-toggle-any") ?? "",
+          )
+            .split(",")
+            .map((name) => String(name ?? "").trim())
+            .filter((name) => !!name);
+          const parentNames = parentNamesAny.length > 0
+            ? parentNamesAny
+            : [String(detailsEl.getAttribute("data-parent-toggle") ?? "").trim()]
+                .filter((name) => !!name);
+          if (!parentNames.length) continue;
+          const parentInputs = parentNames
+            .map((name) => root.querySelector(`[name="${name}"]`))
+            .filter((input) => input instanceof HTMLInputElement);
+          if (!parentInputs.length) continue;
           const syncOpen = () => {
-            if (parentInput.type === "checkbox") {
-              detailsEl.open = parentInput.checked === true;
-            }
+            detailsEl.open = parentInputs.some((input) => {
+              if (!(input instanceof HTMLInputElement)) return false;
+              if (input.type === "checkbox") return input.checked === true;
+              return String(input.value ?? "").trim().length > 0;
+            });
           };
           syncOpen();
-          if (parentInput.dataset.indyFxDependentDetailsBound !== "1") {
-            parentInput.dataset.indyFxDependentDetailsBound = "1";
-            parentInput.addEventListener("change", syncOpen);
-            parentInput.addEventListener("input", syncOpen);
+          for (const parentInput of parentInputs) {
+            if (parentInput.dataset.indyFxDependentDetailsBound !== "1") {
+              parentInput.dataset.indyFxDependentDetailsBound = "1";
+              parentInput.addEventListener("change", syncOpen);
+              parentInput.addEventListener("input", syncOpen);
+            }
           }
         }
         const windowApp = root?.matches?.(".window-app, .application")

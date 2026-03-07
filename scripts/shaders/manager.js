@@ -167,6 +167,7 @@ const IMPORTED_SHADER_DEFAULT_KEYS = [
   "easeInMs",
   "easeOutMs",
   "convertToLightSource",
+  "convertToDarknessSource",
   "lightUseIlluminationShader",
   "lightUseBackgroundShader",
   "lightFalloffMode",
@@ -2178,6 +2179,7 @@ export class ShaderManager {
         250,
       ),
       convertToLightSource: false,
+      convertToDarknessSource: false,
       lightUseIlluminationShader: true,
       lightUseBackgroundShader: false,
       lightFalloffMode: "brightDim",
@@ -2406,6 +2408,12 @@ export class ShaderManager {
         source.convertToLightSource === "1" ||
         source.convertToLightSource === "true" ||
         source.convertToLightSource === "on",
+      convertToDarknessSource:
+        source.convertToDarknessSource === true ||
+        source.convertToDarknessSource === 1 ||
+        source.convertToDarknessSource === "1" ||
+        source.convertToDarknessSource === "true" ||
+        source.convertToDarknessSource === "on",
       lightUseIlluminationShader:
         source.lightUseIlluminationShader === true ||
         source.lightUseIlluminationShader === 1 ||

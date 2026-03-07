@@ -37,6 +37,8 @@ const TOOLTIP_BY_KEY = Object.freeze({
   preloadShader: "Compile and warm this shader early to reduce first-use hitching.",
   convertToLightSource:
     "Expose this imported shader as a Foundry light animation.",
+  convertToDarknessSource:
+    "Expose this imported shader as a Foundry darkness animation.",
   lightUseIlluminationShader: "Apply shader to light illumination pass.",
   lightUseBackgroundShader: "Apply shader to light background/coloration pass.",
   lightFalloffMode: "Controls how bright/dim light radii influence shader intensity.",

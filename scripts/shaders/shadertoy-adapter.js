@@ -4502,7 +4502,7 @@ ${sanitizeColorStage}
   );
 }
 
-const LIGHT_LAYER_TYPES = new Set(["coloration", "illumination", "background"]);
+const LIGHT_LAYER_TYPES = new Set(["coloration", "illumination", "background", "darkness"]);
 
 function normalizeLightLayerType(value) {
   const layer = String(value ?? "coloration").trim().toLowerCase();
@@ -4512,6 +4512,8 @@ function normalizeLightLayerType(value) {
 function getLightLayerColorExpression(layerType) {
   if (layerType === "illumination")
     return "cpfxShaderRgb * max(cpfxIlluminationIntensity, 0.0)";
+  if (layerType === "darkness")
+    return "shaderColor.rgb * max(cpfxIlluminationIntensity, 0.0)";
   if (layerType === "background") {
     return "(mix(baseColor.rgb, shaderColor.rgb, clamp(backgroundAlpha, 0.0, 1.0)) + (shaderColor.rgb * max(backgroundGlow, 0.0))) * max(cpfxBackgroundIntensity, 0.0)";
   }
@@ -4527,6 +4529,8 @@ export function adaptShaderToyLightFragment(
   const layerOpacityExpression =
     resolvedLayer === "illumination"
       ? "1.0"
+      : resolvedLayer === "darkness"
+      ? "clamp(srcAlpha, 0.0, 1.0)"
       : resolvedLayer === "coloration"
       ? "clamp(srcAlpha, 0.0, 1.0)"
       : "clamp(srcAlpha, 0.0, 1.0)";

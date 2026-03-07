@@ -247,8 +247,14 @@
           <input type="checkbox" name="default_convertToLightSource" {{#if shader.defaults.convertToLightSource}}checked{{/if}} />
         </div>
       </div>
-      <details style="margin:0.2rem 0 0.3rem 0;" data-parent-toggle="default_convertToLightSource" {{#if shader.defaults.convertToLightSource}}open{{/if}}>
-        <summary style="cursor:pointer;user-select:none;">Light source options</summary>
+      <div class="form-group">
+        <label>Convert to Darkness Source</label>
+        <div class="form-fields">
+          <input type="checkbox" name="default_convertToDarknessSource" {{#if shader.defaults.convertToDarknessSource}}checked{{/if}} />
+        </div>
+      </div>
+      <details style="margin:0.2rem 0 0.3rem 0;" data-parent-toggle-any="default_convertToLightSource, default_convertToDarknessSource" {{#if shader.defaults.convertToLightSource}}open{{else}}{{#if shader.defaults.convertToDarknessSource}}open{{/if}}{{/if}}>
+        <summary style="cursor:pointer;user-select:none;">Light/darkness source options</summary>
         <p class="notes" style="font-size: x-small;margin:0.3rem 0 0.2rem 0;">
           Note: Background shader used for Legacy Coloration.
         </p>

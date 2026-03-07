@@ -166,21 +166,46 @@ const INDYFX_LIGHT_FALLOFF_MODE_CODE = Object.freeze({
 });
 const _registeredImportedLightAnimationKeys = new Set();
 
-function getLightAnimationConfigRegistries() {
-  const registries = [];
+function getSourceAnimationConfigRegistries() {
+  const lightRegistries = [];
+  const darknessRegistries = [];
   const canvasAnimations = CONFIG?.Canvas?.lightAnimations;
   if (canvasAnimations && typeof canvasAnimations === "object") {
-    registries.push(canvasAnimations);
+    lightRegistries.push(canvasAnimations);
+  }
+  const canvasDarknessAnimations = CONFIG?.Canvas?.darknessAnimations;
+  if (
+    canvasDarknessAnimations &&
+    typeof canvasDarknessAnimations === "object" &&
+    !darknessRegistries.includes(canvasDarknessAnimations)
+  ) {
+    darknessRegistries.push(canvasDarknessAnimations);
   }
   const legacyAnimations = CONFIG?.canvas?.lightAnimations;
   if (
     legacyAnimations &&
     typeof legacyAnimations === "object" &&
-    !registries.includes(legacyAnimations)
+    !lightRegistries.includes(legacyAnimations)
   ) {
-    registries.push(legacyAnimations);
+    lightRegistries.push(legacyAnimations);
   }
-  return registries;
+  const legacyDarknessAnimations = CONFIG?.canvas?.darknessAnimations;
+  if (
+    legacyDarknessAnimations &&
+    typeof legacyDarknessAnimations === "object" &&
+    !darknessRegistries.includes(legacyDarknessAnimations)
+  ) {
+    darknessRegistries.push(legacyDarknessAnimations);
+  }
+  return { lightRegistries, darknessRegistries };
+}
+
+function getLightAnimationConfigRegistries() {
+  const { lightRegistries, darknessRegistries } = getSourceAnimationConfigRegistries();
+  return [
+    ...lightRegistries,
+    ...darknessRegistries.filter((registry) => !lightRegistries.includes(registry)),
+  ];
 }
 
 function resolveFallbackLightAnimationType(currentType = "") {
@@ -225,6 +250,7 @@ function normalizeImportedLightAnimationKey(shaderId) {
 
 function normalizeImportedLightLayerType(value) {
   const layer = String(value ?? "coloration").trim().toLowerCase();
+  if (layer === "darkness") return "darkness";
   if (layer === "illumination") return "illumination";
   if (layer === "background") return "background";
   return "coloration";
@@ -382,6 +408,9 @@ function resolveAdaptiveLightShaderClass(layerType = "coloration") {
     foundry?.canvas?.rendering?.shaders ??
     canvas?.rendering?.shaders ??
     {};
+  if (layerType === "darkness") {
+    return shaders.AdaptiveDarknessShader ?? shaders.AdaptiveIlluminationShader ?? null;
+  }
   if (layerType === "illumination") return shaders.AdaptiveIlluminationShader ?? null;
   if (layerType === "background") return shaders.AdaptiveBackgroundShader ?? null;
   return shaders.AdaptiveColorationShader ?? null;
@@ -390,6 +419,7 @@ function resolveAdaptiveLightShaderClass(layerType = "coloration") {
 function resolvePointLightAnimateTimeFunction() {
   const animateTime =
     foundry?.canvas?.sources?.PointLightSource?.prototype?.animateTime ??
+    foundry?.canvas?.sources?.PointDarknessSource?.prototype?.animateTime ??
     canvas?.sources?.PointLightSource?.prototype?.animateTime;
   if (typeof animateTime === "function") return animateTime;
   return function fallbackAnimateTime(dt, { speed = 5, intensity = 5, reverse = false } = {}) {
@@ -929,7 +959,9 @@ function syncImportedLightShaderToyUniforms(source, dt = 0, options = {}) {
     );
     layer._indyFxLightIlluminationIntensity = baseIlluminationIntensity;
     uniforms.cpfxIlluminationIntensity =
-      classLayerType === "illumination" ? baseIlluminationIntensity : 1;
+      classLayerType === "illumination" || classLayerType === "darkness"
+        ? baseIlluminationIntensity
+        : 1;
     const classBackgroundIntensity = toFiniteLightNumber(
       layer?.shader?.constructor?.indyFxBackgroundIntensity,
       toFiniteLightNumber(
@@ -1128,17 +1160,50 @@ function createImportedLightShaderClass({
   return shaderClass;
 }
 
-function buildImportedLightAnimationConfig(record, defaults = {}) {
+function buildImportedLightAnimationConfig(
+  record,
+  defaults = {},
+  { sourceType = "light" } = {},
+) {
   const id = String(record?.id ?? "").trim();
   if (!id) return null;
   const source = String(record?.source ?? "").trim();
   if (!source) return null;
   const labelText = String(record?.label ?? record?.name ?? id).trim() || id;
+  const resolvedSourceType = sourceType === "darkness" ? "darkness" : "light";
 
   const key = normalizeImportedLightAnimationKey(id);
   if (!key) return null;
 
   const channelConfig = shaderManager.getRecordChannelConfig?.(record) ?? {};
+
+  const config = {
+    label: `Indy FX: ${labelText}`,
+    animation: createImportedLightAnimationFunction(),
+  };
+
+  if (resolvedSourceType === "darkness") {
+    const darknessShader = createImportedLightShaderClass({
+      source,
+      layerType: "darkness",
+      shaderId: id,
+      shaderLabel: labelText,
+      channelConfig,
+      defaultIntensity: defaults?.intensity,
+      defaultSpeed: defaults?.speed,
+      defaultFlipHorizontal: defaults?.flipHorizontal === true,
+      defaultFlipVertical: defaults?.flipVertical === true,
+      defaultLightFalloffMode: defaults?.lightFalloffMode,
+      defaultLightColorationIntensity: defaults?.lightColorationIntensity,
+      defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
+      defaultLightBackgroundIntensity: defaults?.lightBackgroundIntensity,
+      defaultBackgroundGlow: defaults?.backgroundGlow,
+    });
+    if (!darknessShader) return null;
+    config.darknessShader = darknessShader;
+    return { key, config };
+  }
+
   const colorationShader = createImportedLightShaderClass({
     source,
     layerType: "coloration",
@@ -1156,12 +1221,7 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
     defaultBackgroundGlow: defaults?.backgroundGlow,
   });
   if (!colorationShader) return null;
-
-  const config = {
-    label: `Indy FX: ${labelText}`,
-    animation: createImportedLightAnimationFunction(),
-    colorationShader,
-  };
+  config.colorationShader = colorationShader;
 
   if (defaults?.lightUseIlluminationShader === true) {
     const illuminationShader = createImportedLightShaderClass({
@@ -1214,61 +1274,132 @@ function buildImportedLightAnimationConfig(record, defaults = {}) {
 }
 
 function syncImportedShaderLightAnimations({ reason = "unspecified" } = {}) {
-  const registries = getLightAnimationConfigRegistries();
-  if (!registries.length) return;
+  const { lightRegistries, darknessRegistries } = getSourceAnimationConfigRegistries();
+  if (!lightRegistries.length && !darknessRegistries.length) return;
 
-  const desired = new Map();
+  const desiredLight = new Map();
+  const desiredDarkness = new Map();
   const importedRecords = shaderManager.getImportedRecords?.() ?? [];
   for (const record of importedRecords) {
     if (!record || typeof record !== "object") continue;
     const defaults = shaderManager.getRecordShaderDefaults?.(record, {
       runtime: false,
     }) ?? {};
-    if (defaults?.convertToLightSource !== true) continue;
-    const built = buildImportedLightAnimationConfig(record, defaults);
-    if (!built?.key || !built?.config) continue;
-    desired.set(built.key, built.config);
+    const convertToLightSource = defaults?.convertToLightSource === true;
+    const convertToDarknessSource = defaults?.convertToDarknessSource === true;
+    if (!convertToLightSource && !convertToDarknessSource) continue;
+    if (convertToLightSource) {
+      const builtLight = buildImportedLightAnimationConfig(record, defaults, {
+        sourceType: "light",
+      });
+      if (builtLight?.key && builtLight?.config) {
+        desiredLight.set(builtLight.key, builtLight.config);
+      }
+    }
+    if (convertToDarknessSource) {
+      const builtDarkness = buildImportedLightAnimationConfig(record, defaults, {
+        sourceType: "darkness",
+      });
+      if (builtDarkness?.key && builtDarkness?.config) {
+        desiredDarkness.set(builtDarkness.key, builtDarkness.config);
+      }
+    }
   }
 
-  let removedCount = 0;
-  let upsertCount = 0;
-  let desiredBackgroundShaderCount = 0;
-  for (const registry of registries) {
+  const syncRegistries = (registries, desired) => {
+    let removedCount = 0;
+    let upsertCount = 0;
+    for (const registry of registries) {
+      for (const key of Object.keys(registry)) {
+        if (!key.startsWith(INDYFX_LIGHT_ANIMATION_PREFIX)) continue;
+        if (desired.has(key)) continue;
+        delete registry[key];
+        removedCount += 1;
+      }
+    }
+    for (const [key, config] of desired.entries()) {
+      for (const registry of registries) {
+        registry[key] = config;
+      }
+      upsertCount += 1;
+    }
+    return { removedCount, upsertCount };
+  };
+
+  const lightSync = syncRegistries(lightRegistries, desiredLight);
+  const darknessSync = syncRegistries(darknessRegistries, desiredDarkness);
+
+  _registeredImportedLightAnimationKeys.clear();
+  for (const registry of getLightAnimationConfigRegistries()) {
     for (const key of Object.keys(registry)) {
       if (!key.startsWith(INDYFX_LIGHT_ANIMATION_PREFIX)) continue;
-      if (desired.has(key)) continue;
-      delete registry[key];
-      _registeredImportedLightAnimationKeys.delete(key);
-      removedCount += 1;
+      _registeredImportedLightAnimationKeys.add(key);
     }
   }
 
-  for (const [key, config] of desired.entries()) {
-    if (config?.backgroundShader) desiredBackgroundShaderCount += 1;
-    for (const registry of registries) {
-      registry[key] = config;
-    }
-    _registeredImportedLightAnimationKeys.add(key);
-    upsertCount += 1;
-  }
-
+  const desiredBackgroundShaderCount = [...desiredLight.values()].filter(
+    (config) => config?.backgroundShader,
+  ).length;
   debugLog("imported light animation sync", {
     reason: String(reason ?? "unspecified"),
-    desiredCount: desired.size,
+    desiredLightCount: desiredLight.size,
+    desiredDarknessCount: desiredDarkness.size,
     desiredBackgroundShaderCount,
-    registryCount: registries.length,
-    upsertCount,
-    removedCount,
+    lightRegistryCount: lightRegistries.length,
+    darknessRegistryCount: darknessRegistries.length,
+    upsertLightCount: lightSync.upsertCount,
+    upsertDarknessCount: darknessSync.upsertCount,
+    removedLightCount: lightSync.removedCount,
+    removedDarknessCount: darknessSync.removedCount,
   });
 }
 
 function getImportedLightAnimationTypeForSource(source) {
+  const doc = source?.object?.document ?? null;
+  const docAnimationType = resolveImportedAnimationTypeFromDocument(doc);
   return String(
     source?.data?.animation?.type ??
       source?.animation?.type ??
       source?.object?.document?.config?.animation?.type ??
+      source?.object?.document?.config?.darkness?.animation?.type ??
+      docAnimationType ??
       "",
   ).trim();
+}
+
+function getImportedAnimationTypePathsForDocument(doc) {
+  const docName = String(doc?.documentName ?? "").trim();
+  if (docName === "AmbientLight") {
+    return ["config.animation.type", "config.darkness.animation.type"];
+  }
+  if (docName === "Token") {
+    return ["light.animation.type"];
+  }
+  return [];
+}
+
+function resolveImportedAnimationTypeFromDocument(doc) {
+  if (!doc || typeof doc !== "object") return "";
+  for (const path of getImportedAnimationTypePathsForDocument(doc)) {
+    const value = String(foundry.utils.getProperty(doc, path) ?? "").trim();
+    if (!value) continue;
+    if (value.startsWith(INDYFX_LIGHT_ANIMATION_PREFIX)) return value;
+  }
+  return "";
+}
+
+function resolveImportedAnimationTypePathForDocument(doc, preferredType = "") {
+  if (!doc || typeof doc !== "object") return "";
+  const preferred = String(preferredType ?? "").trim();
+  const paths = getImportedAnimationTypePathsForDocument(doc);
+  if (!paths.length) return "";
+  for (const path of paths) {
+    const value = String(foundry.utils.getProperty(doc, path) ?? "").trim();
+    if (!value) continue;
+    if (preferred && value === preferred) return path;
+    if (value.startsWith(INDYFX_LIGHT_ANIMATION_PREFIX)) return path;
+  }
+  return paths[0] ?? "";
 }
 
 function collectActiveLightSources() {
@@ -1291,12 +1422,17 @@ function collectActiveLightSources() {
   if (lightSources && typeof lightSources.forEach === "function") {
     lightSources.forEach((source) => pushSource(source));
   }
+  const darknessSources = canvas?.effects?.darknessSources;
+  if (darknessSources && typeof darknessSources.forEach === "function") {
+    darknessSources.forEach((source) => pushSource(source));
+  }
 
   const ambientLights = Array.isArray(canvas?.lighting?.placeables)
     ? canvas.lighting.placeables
     : [];
   for (const ambient of ambientLights) {
     pushSource(ambient?.lightSource);
+    pushSource(ambient?.darknessSource);
   }
 
   return out;
@@ -1323,18 +1459,19 @@ async function refreshImportedLightSources({
     ? canvas.lighting.placeables
     : [];
   for (const ambient of ambientLights) {
-    const ambientSource = ambient?.lightSource ?? null;
     const rawId = String(ambient?.id ?? ambient?.document?.id ?? "").trim();
-    const sidCandidates = [
-      String(ambientSource?.sourceId ?? "").trim(),
-      String(ambient?.sourceId ?? "").trim(),
-      rawId ? `AmbientLight.${rawId}` : "",
-      rawId,
-      String(ambient?.document?.id ?? "").trim(),
-    ].filter((value) => !!value);
-    const sid = sidCandidates[0] ?? "";
-    if (sid) {
-      if (!ambientBySourceId.has(sid)) ambientBySourceId.set(sid, ambient);
+    for (const ambientSource of [ambient?.lightSource ?? null, ambient?.darknessSource ?? null]) {
+      const sidCandidates = [
+        String(ambientSource?.sourceId ?? "").trim(),
+        String(ambient?.sourceId ?? "").trim(),
+        rawId ? `AmbientLight.${rawId}` : "",
+        rawId,
+        String(ambient?.document?.id ?? "").trim(),
+      ].filter((value) => !!value);
+      const sid = sidCandidates[0] ?? "";
+      if (sid) {
+        if (!ambientBySourceId.has(sid)) ambientBySourceId.set(sid, ambient);
+      }
     }
     if (rawId) {
       if (!ambientBySourceId.has(rawId)) ambientBySourceId.set(rawId, ambient);
@@ -1365,18 +1502,27 @@ async function refreshImportedLightSources({
         ambientBySourceId.get(sourceId) ??
         source?.object ??
         null;
+      const isDarknessSource =
+        lightObject?.darknessSource === source &&
+        lightObject?.lightSource !== source;
       let activeSource =
-        lightObject?.lightSource ??
+        (isDarknessSource ? lightObject?.darknessSource : lightObject?.lightSource) ??
         source;
       const sourceMethods = [];
-      if (typeof lightObject?.initializeLightSource === "function") {
+      if (isDarknessSource && typeof lightObject?.initializeDarknessSource === "function") {
+        sourceMethods.push("object.initializeDarknessSource");
+        lightObject.initializeDarknessSource({ deleted: false });
+        activeSource = lightObject?.darknessSource ?? activeSource;
+      } else if (typeof lightObject?.initializeLightSource === "function") {
         sourceMethods.push("object.initializeLightSource");
         lightObject.initializeLightSource({ deleted: false });
         activeSource = lightObject?.lightSource ?? activeSource;
       } else if (typeof lightObject?.updateSource === "function") {
         sourceMethods.push("object.updateSource");
         lightObject.updateSource({ defer: true, deleted: false });
-        activeSource = lightObject?.lightSource ?? activeSource;
+        activeSource =
+          (isDarknessSource ? lightObject?.darknessSource : lightObject?.lightSource) ??
+          activeSource;
       }
 
       for (const layer of Object.values(activeSource?.layers ?? {})) {
@@ -1391,9 +1537,16 @@ async function refreshImportedLightSources({
       }
 
       const sourceData =
-        (typeof lightObject?._getLightSourceData === "function"
-          ? lightObject._getLightSourceData()
-          : null) ??
+        ((
+          isDarknessSource &&
+          typeof lightObject?._getDarknessSourceData === "function"
+        )
+          ? lightObject._getDarknessSourceData()
+          : (
+            typeof lightObject?._getLightSourceData === "function"
+              ? lightObject._getLightSourceData()
+              : null
+          )) ??
         activeSource?.data ??
         source?.data ??
         {};
@@ -1455,9 +1608,10 @@ async function refreshImportedLightSources({
         if (!docKey || forceRefreshSeen.has(docKey)) continue;
         forceRefreshSeen.add(docKey);
         const docName = String(doc?.documentName ?? "").trim();
-        let path = "";
-        if (docName === "AmbientLight") path = "config.animation.type";
-        else if (docName === "Token") path = "light.animation.type";
+        const path = resolveImportedAnimationTypePathForDocument(
+          doc,
+          entry?.animationType,
+        );
         if (!path) continue;
         const isAllowed =
           typeof doc.canUserModify === "function"
@@ -1492,6 +1646,11 @@ async function refreshImportedLightSources({
     }
     try {
       canvas?.effects?.initializeLightSources?.();
+    } catch (_err) {
+      // Non-fatal.
+    }
+    try {
+      canvas?.effects?.initializeDarknessSources?.();
     } catch (_err) {
       // Non-fatal.
     }

@@ -84,9 +84,9 @@ Token/Tile convenience:
 - Configure shader/options in behavior config.
 - Multiple region effects are supported on the same region.
 
-### Use Imported Shaders as Light Animations
+### Use Imported Shaders as Light/Darkness Animations
 1. Open an imported shader in the full editor.
-2. Enable **Convert to Light Source**.
+2. Enable **Convert to Light Source** and/or **Convert to Darkness Source**.
 3. Configure light options:
 - **Use Illumination Shader**
 - **Use Background Shader**
@@ -98,7 +98,7 @@ Token/Tile convenience:
 5. In Ambient Light config, choose the animation `Indy FX: <Shader Label>`.
 
 Notes:
-- Light animation registrations are synced at startup and when the shader library changes.
+- Light/darkness animation registrations are synced at startup and when the shader library changes.
 - For light usage, placeable capture channel modes are remapped to scene capture where needed.
 
 ### Using the Indy FX River Colour Shader
@@ -177,7 +177,7 @@ Notes:
 - Check `alpha`, `intensity`, `layer`, and mask settings.
 - Confirm selected channel modes are valid for that target type.
 - Confirm that shader doesnt have 0 alpha explicitly set on output (try adding "fragColor.a = 1.;" at end) 
-- If using light conversion, confirm **Convert to Light Source** is enabled and the light animation is selected on the light.
+- If using light/darkness conversion, confirm the matching conversion toggle is enabled and the animation is selected on the source.
 - For converted lights, verify `Light Coloration Intensity` / `Light Illumination Intensity` are non-zero.
 
 ### Wrong preview output

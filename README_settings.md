@@ -78,6 +78,7 @@ These match most per-document settings and act as starting defaults when you app
 ### Loading & Light Conversion
 - `Preload Shader`: Compiles early to reduce first-use stutter.
 - `Convert to Light Source`: Uses the shader as a light animation source.
+- `Convert to Darkness Source`: Uses the shader as a darkness animation source.
 - `Use Illumination Shader`: Feed shader into illumination pass.
 - `Use Background Shader`: Feed shader into background/coloration flow.
 - `Light Falloff`: How bright/dim falloff is interpreted.
