@@ -7963,6 +7963,21 @@ Hooks.once("ready", async () => {
     }
     scheduleActiveShaderPerformanceRefresh(`setting:${key}`);
   });
+  Hooks.on(`${MODULE_ID}.clientImportedLightAdapterSettingChanged`, (payload = {}) => {
+    const key = String(payload?.key ?? "").trim();
+    if (
+      key !== "importedLightIlluminationUsesAlpha" &&
+      key !== "importedDarknessInvert" &&
+      key !== "importedDarknessInvertAlpha"
+    ) {
+      return;
+    }
+    syncImportedShaderLightAnimations({ reason: `client-setting:${key}` });
+    refreshImportedLightSources({ reason: `client-setting:${key}` });
+    setTimeout(() => {
+      refreshImportedLightSources({ reason: `client-setting-delayed-80ms:${key}` });
+    }, 80);
+  });
   Hooks.on("drawMeasuredTemplate", (template) => {
     const doc = template?.document ?? null;
     const currentSceneId = String(canvas?.scene?.id ?? "");

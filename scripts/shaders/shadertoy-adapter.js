@@ -82,6 +82,48 @@ function resolveSanitizeColorEnabled(override) {
   return isSanitizeColorEnabled();
 }
 
+function isImportedLightIlluminationAlphaEnabled() {
+  try {
+    return game?.settings?.get?.(
+      ADAPTER_MODULE_ID,
+      "importedLightIlluminationUsesAlpha",
+    ) !== false;
+  } catch (_err) {
+    return true;
+  }
+}
+
+function resolveImportedLightIlluminationAlphaEnabled(override) {
+  if (typeof override === "boolean") return override;
+  return isImportedLightIlluminationAlphaEnabled();
+}
+
+function isImportedDarknessInvertEnabled() {
+  try {
+    return game?.settings?.get?.(ADAPTER_MODULE_ID, "importedDarknessInvert") === true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function resolveImportedDarknessInvertEnabled(override) {
+  if (typeof override === "boolean") return override;
+  return isImportedDarknessInvertEnabled();
+}
+
+function isImportedDarknessInvertAlphaEnabled() {
+  try {
+    return game?.settings?.get?.(ADAPTER_MODULE_ID, "importedDarknessInvertAlpha") === true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function resolveImportedDarknessInvertAlphaEnabled(override) {
+  if (typeof override === "boolean") return override;
+  return isImportedDarknessInvertAlphaEnabled();
+}
+
 function getAdapterVariantKey({ sanitizeColor } = {}) {
   const sc = resolveSanitizeColorEnabled(sanitizeColor) ? "sc1" : "sc0";
   // Bump when adapter code generation changes to avoid stale in-session cache.
@@ -4509,11 +4551,13 @@ function normalizeLightLayerType(value) {
   return LIGHT_LAYER_TYPES.has(layer) ? layer : "coloration";
 }
 
-function getLightLayerColorExpression(layerType) {
+function getLightLayerColorExpression(layerType, { invertDarkness = false } = {}) {
   if (layerType === "illumination")
     return "cpfxShaderRgb * max(cpfxIlluminationIntensity, 0.0)";
   if (layerType === "darkness")
-    return "shaderColor.rgb * max(cpfxIlluminationIntensity, 0.0)";
+    return `${
+      invertDarkness ? "(vec3(1.0) - cpfxShaderRgb)" : "shaderColor.rgb"
+    } * max(cpfxIlluminationIntensity, 0.0)`;
   if (layerType === "background") {
     return "(mix(baseColor.rgb, shaderColor.rgb, clamp(backgroundAlpha, 0.0, 1.0)) + (shaderColor.rgb * max(backgroundGlow, 0.0))) * max(cpfxBackgroundIntensity, 0.0)";
   }
@@ -4522,15 +4566,36 @@ function getLightLayerColorExpression(layerType) {
 
 export function adaptShaderToyLightFragment(
   source,
-  { layerType = "coloration" } = {},
+  {
+    layerType = "coloration",
+    illuminationUsesAlpha,
+    invertDarkness,
+    invertDarknessAlpha,
+  } = {},
 ) {
   const resolvedLayer = normalizeLightLayerType(layerType);
-  const colorExpression = getLightLayerColorExpression(resolvedLayer);
+  const resolvedIlluminationUsesAlpha =
+    resolveImportedLightIlluminationAlphaEnabled(illuminationUsesAlpha);
+  const resolvedInvertDarkness =
+    resolveImportedDarknessInvertEnabled(invertDarkness);
+  const resolvedInvertDarknessAlpha =
+    resolveImportedDarknessInvertAlphaEnabled(invertDarknessAlpha);
+  const colorExpression = getLightLayerColorExpression(resolvedLayer, {
+    invertDarkness: resolvedLayer === "darkness" && resolvedInvertDarkness,
+  });
   const layerOpacityExpression =
     resolvedLayer === "illumination"
-      ? "1.0"
+      ? (
+          resolvedIlluminationUsesAlpha
+            ? "clamp(srcAlpha, 0.0, 1.0)"
+            : "1.0"
+        )
       : resolvedLayer === "darkness"
-      ? "clamp(srcAlpha, 0.0, 1.0)"
+      ? (
+          resolvedInvertDarknessAlpha
+            ? "(1.0 - clamp(srcAlpha, 0.0, 1.0))"
+            : "clamp(srcAlpha, 0.0, 1.0)"
+        )
       : resolvedLayer === "coloration"
       ? "clamp(srcAlpha, 0.0, 1.0)"
       : "clamp(srcAlpha, 0.0, 1.0)";

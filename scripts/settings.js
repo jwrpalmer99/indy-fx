@@ -32,6 +32,9 @@ export const DEBUG_SETTINGS_KEYS = [
   "shaderDebug",
   "shaderDebugMode",
   "shaderSanitizeColor",
+  "importedLightIlluminationUsesAlpha",
+  "importedDarknessInvert",
+  "importedDarknessInvertAlpha",
 ];
 
 export function registerModuleSettings({ moduleId, shaderManager, menus }) {
@@ -40,6 +43,13 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
   const notifyClientPerformanceSettingChanged = (key, value) => {
     try {
       Hooks.callAll(`${moduleId}.clientPerformanceSettingsChanged`, { key, value });
+    } catch (_err) {
+      // Non-fatal.
+    }
+  };
+  const notifyClientImportedLightAdapterSettingChanged = (key, value) => {
+    try {
+      Hooks.callAll(`${moduleId}.clientImportedLightAdapterSettingChanged`, { key, value });
     } catch (_err) {
       // Non-fatal.
     }
@@ -205,6 +215,48 @@ export function registerModuleSettings({ moduleId, shaderManager, menus }) {
     config: false,
     type: Boolean,
     default: true,
+  });
+
+  game.settings.register(moduleId, "importedLightIlluminationUsesAlpha", {
+    name: "Imported light illumination uses alpha",
+    hint: "Client preference. If enabled, converted imported-light illumination shaders respect shader output alpha instead of treating illumination as fully opaque.",
+    scope: "client",
+    config: false,
+    type: Boolean,
+    default: true,
+    onChange: (value) =>
+      notifyClientImportedLightAdapterSettingChanged(
+        "importedLightIlluminationUsesAlpha",
+        value,
+      ),
+  });
+
+  game.settings.register(moduleId, "importedDarknessInvert", {
+    name: "Invert imported darkness shaders",
+    hint: "Client preference. Inverts converted imported darkness-source shader colors while preserving their alpha/mask shape.",
+    scope: "client",
+    config: false,
+    type: Boolean,
+    default: false,
+    onChange: (value) =>
+      notifyClientImportedLightAdapterSettingChanged(
+        "importedDarknessInvert",
+        value,
+      ),
+  });
+
+  game.settings.register(moduleId, "importedDarknessInvertAlpha", {
+    name: "Invert imported darkness alpha",
+    hint: "Client preference. Inverts converted imported darkness-source shader alpha/mask while leaving the shader color logic unchanged.",
+    scope: "client",
+    config: false,
+    type: Boolean,
+    default: false,
+    onChange: (value) =>
+      notifyClientImportedLightAdapterSettingChanged(
+        "importedDarknessInvertAlpha",
+        value,
+      ),
   });
 
   game.settings.register(moduleId, "shaderLibraryViewMode", {
