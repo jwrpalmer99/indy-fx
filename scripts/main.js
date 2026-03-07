@@ -4567,6 +4567,134 @@ function destroyIndyFxGeneratedMaskTexture(texture, { except = null } = {}) {
   }
 }
 
+function getIndyFxTextureCanvasSource(texture) {
+  if (!texture || texture === PIXI.Texture.WHITE) return null;
+  return (
+    texture?.baseTexture?.resource?.source ??
+    texture?.resource?.source ??
+    null
+  );
+}
+
+function drawIndyFxTextureToCanvas(ctx, texture, width, height) {
+  if (!ctx || !texture || texture === PIXI.Texture.WHITE) {
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    ctx.fillRect(0, 0, width, height);
+    return;
+  }
+  const source = getIndyFxTextureCanvasSource(texture);
+  if (!source) {
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    ctx.fillRect(0, 0, width, height);
+    return;
+  }
+  const frame = texture.frame ?? { x: 0, y: 0, width: source.width, height: source.height };
+  const sx = Number(frame?.x ?? 0);
+  const sy = Number(frame?.y ?? 0);
+  const sw = Math.max(1, Number(frame?.width ?? source.width ?? width));
+  const sh = Math.max(1, Number(frame?.height ?? source.height ?? height));
+  try {
+    ctx.drawImage(source, sx, sy, sw, sh, 0, 0, width, height);
+  } catch (_err) {
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    ctx.fillRect(0, 0, width, height);
+  }
+}
+
+function isWorldPointInsideSuppressEntry(entry, worldPoint) {
+  if (!entry || !worldPoint) return false;
+  const bounds = entry?.bounds ?? null;
+  if (
+    bounds &&
+    (
+      Number(worldPoint.x) < Number(bounds.minX ?? 0) ||
+      Number(worldPoint.x) > Number(bounds.maxX ?? 0) ||
+      Number(worldPoint.y) < Number(bounds.minY ?? 0) ||
+      Number(worldPoint.y) > Number(bounds.maxY ?? 0)
+    )
+  ) {
+    return false;
+  }
+
+  try {
+    const tree = entry?.region?.document?.polygonTree ?? entry?.region?.polygonTree ?? null;
+    if (typeof tree?.testPoint === "function" && tree.testPoint(worldPoint)) return true;
+  } catch (_err) {
+    // Fall through.
+  }
+
+  return isWorldPointInsideRegion(entry?.region, worldPoint);
+}
+
+function createIndyFxSampledSuppressionMaskTexture({
+  width = 2,
+  height = 2,
+  suppressionEntries = [],
+  baseTexture = null,
+  sampleWorldPoint = null,
+} = {}) {
+  const safeWidth = Math.max(2, Math.ceil(Number(width) || 2));
+  const safeHeight = Math.max(2, Math.ceil(Number(height) || 2));
+  const canvasEl = document.createElement("canvas");
+  canvasEl.width = safeWidth;
+  canvasEl.height = safeHeight;
+  const ctx = canvasEl.getContext("2d");
+  ctx.clearRect(0, 0, safeWidth, safeHeight);
+  drawIndyFxTextureToCanvas(ctx, baseTexture, safeWidth, safeHeight);
+
+  if (typeof sampleWorldPoint === "function" && Array.isArray(suppressionEntries) && suppressionEntries.length) {
+    const image = ctx.getImageData(0, 0, safeWidth, safeHeight);
+    const data = image.data;
+    for (let py = 0; py < safeHeight; py += 1) {
+      for (let px = 0; px < safeWidth; px += 1) {
+        const worldPoint = sampleWorldPoint(px + 0.5, py + 0.5, safeWidth, safeHeight);
+        if (!worldPoint) continue;
+        const suppressed = suppressionEntries.some((entry) =>
+          isWorldPointInsideSuppressEntry(entry, worldPoint),
+        );
+        if (!suppressed) continue;
+        const idx = (py * safeWidth + px) * 4;
+        data[idx] = 0;
+        data[idx + 1] = 0;
+        data[idx + 2] = 0;
+        data[idx + 3] = 0;
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+  }
+
+  const texture = PIXI.Texture.from(canvasEl);
+  if (texture.baseTexture) {
+    texture.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    texture.baseTexture.update();
+  }
+  return texture;
+}
+
+function createIndyFxRotatedWorldPointSampler(
+  center,
+  width,
+  height,
+  rotationRad = 0,
+) {
+  const cx = Number(center?.x);
+  const cy = Number(center?.y);
+  const w = Math.max(2, Number(width ?? 0));
+  const h = Math.max(2, Number(height ?? 0));
+  const rotation = Number(rotationRad ?? 0);
+  if (![cx, cy, w, h, rotation].every(Number.isFinite)) return null;
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  return (pixelX, pixelY, textureWidth, textureHeight) => {
+    const localX = Number(pixelX) - (Number(textureWidth ?? w) * 0.5);
+    const localY = Number(pixelY) - (Number(textureHeight ?? h) * 0.5);
+    return {
+      x: cx + (localX * cos - localY * sin),
+      y: cy + (localX * sin + localY * cos),
+    };
+  };
+}
+
 function getIndyFxSuppressionEntriesForBounds(
   targetBounds,
   { targetKind = "all" } = {},
@@ -4588,7 +4716,11 @@ function updateIndyFxSuppressionMask(
   targetState,
   shader,
   targetBounds,
-  { targetKind = "all" } = {},
+  {
+    targetKind = "all",
+    signatureParts = [],
+    sampledMask = null,
+  } = {},
 ) {
   const uniforms = shader?.uniforms;
   if (!targetState || !uniforms || !("uSampler" in uniforms)) return;
@@ -4624,6 +4756,7 @@ function updateIndyFxSuppressionMask(
     roundedBounds.maxX,
     roundedBounds.maxY,
     ...entries.map((entry) => String(entry?.regionId ?? "")),
+    ...signatureParts.map((part) => String(part ?? "")),
   ].join("|");
 
   if (
@@ -4636,9 +4769,17 @@ function updateIndyFxSuppressionMask(
     return;
   }
 
-  const suppressionMaskTexture = createRegionSuppressionMaskTexture(bounds, entries, {
-    baseTexture,
-  });
+  const suppressionMaskTexture = sampledMask?.enabled === true
+    ? createIndyFxSampledSuppressionMaskTexture({
+      width: sampledMask.width,
+      height: sampledMask.height,
+      suppressionEntries: entries,
+      baseTexture,
+      sampleWorldPoint: sampledMask.sampleWorldPoint,
+    })
+    : createRegionSuppressionMaskTexture(bounds, entries, {
+      baseTexture,
+    });
   destroyIndyFxGeneratedMaskTexture(targetState.suppressionMaskTexture, {
     except: baseTexture,
   });
@@ -6222,10 +6363,33 @@ function shaderOn(tokenId, opts = {}) {
     suppressionMaskTexture: null,
     suppressionMaskSignature: "",
   };
+  const tokenSuppressionSampleWorldPoint = cfg.rotateWithToken === true
+    ? createIndyFxRotatedWorldPointSampler(
+      getTokenCenter(tok),
+      effectExtent * 2,
+      effectExtent * 2,
+      getTokenRotationForContainer(tok),
+    )
+    : null;
   updateIndyFxSuppressionMask(
     tokenSuppressionState,
     shader,
     createIndyFxTargetBoundsFromCenter(getTokenCenter(tok), effectExtent * 2),
+    tokenSuppressionSampleWorldPoint
+      ? {
+        signatureParts: [
+          Number(getTokenRotationForContainer(tok)).toFixed(6),
+          effectExtent * 2,
+          effectExtent * 2,
+        ],
+        sampledMask: {
+          enabled: true,
+          width: effectExtent * 2,
+          height: effectExtent * 2,
+          sampleWorldPoint: tokenSuppressionSampleWorldPoint,
+        },
+      }
+      : {},
   );
   let t = 0;
   let elapsedMs = 0;
@@ -6273,14 +6437,38 @@ function shaderOn(tokenId, opts = {}) {
 
     setCenter(container, liveTok, worldLayer);
     syncShaderLayerScale(container, worldLayer, cfg);
+    const liveTokenRotationForContainer = getTokenRotationForContainer(liveTok);
+    const liveTokenSuppressionSampleWorldPoint = cfg.rotateWithToken === true
+      ? createIndyFxRotatedWorldPointSampler(
+        getTokenCenter(liveTok),
+        effectExtent * 2,
+        effectExtent * 2,
+        liveTokenRotationForContainer,
+      )
+      : null;
     updateIndyFxSuppressionMask(
       tokenSuppressionState,
       shader,
       createIndyFxTargetBoundsFromCenter(getTokenCenter(liveTok), effectExtent * 2),
+      liveTokenSuppressionSampleWorldPoint
+        ? {
+          signatureParts: [
+            Number(liveTokenRotationForContainer).toFixed(6),
+            effectExtent * 2,
+            effectExtent * 2,
+          ],
+          sampledMask: {
+            enabled: true,
+            width: effectExtent * 2,
+            height: effectExtent * 2,
+            sampleWorldPoint: liveTokenSuppressionSampleWorldPoint,
+          },
+        }
+        : {},
     );
     syncTokenRuntimeImageRotationMode(liveTok);
     const tokenRotationRad = getTokenRotationForUniform(liveTok);
-    container.rotation = getTokenRotationForContainer(liveTok);
+    container.rotation = liveTokenRotationForContainer;
     if ("cpfxTokenRotation" in shader.uniforms) {
       shader.uniforms.cpfxTokenRotation = tokenRotationRad;
     }
@@ -7030,10 +7218,40 @@ function shaderOnTile(tileId, opts = {}) {
     suppressionMaskTexture: null,
     suppressionMaskSignature: "",
   };
+  const tileSuppressionWorldSize = cfg.rotateWithToken === true
+    ? getTileAxisAlignedSize(metrics)
+    : shaderSize;
+  const tileSuppressionSampleWorldPoint = cfg.rotateWithToken === true
+    ? createIndyFxRotatedWorldPointSampler(
+      metrics.center,
+      shaderSize.width,
+      shaderSize.height,
+      getTileRotationForContainer(tile),
+    )
+    : null;
   updateIndyFxSuppressionMask(
     tileSuppressionState,
     shader,
-    createIndyFxTargetBoundsFromCenter(metrics.center, shaderSize.width, shaderSize.height),
+    createIndyFxTargetBoundsFromCenter(
+      metrics.center,
+      tileSuppressionWorldSize.width,
+      tileSuppressionWorldSize.height,
+    ),
+    tileSuppressionSampleWorldPoint
+      ? {
+        signatureParts: [
+          Number(getTileRotationForContainer(tile)).toFixed(6),
+          shaderSize.width,
+          shaderSize.height,
+        ],
+        sampledMask: {
+          enabled: true,
+          width: shaderSize.width,
+          height: shaderSize.height,
+          sampleWorldPoint: tileSuppressionSampleWorldPoint,
+        },
+      }
+      : {},
   );
 
   let t = 0;
@@ -7094,6 +7312,18 @@ function shaderOnTile(tileId, opts = {}) {
 
     const liveMetrics = getTileMetrics(liveTile);
     const liveShaderSize = getTileShaderSizeForMetrics(liveMetrics);
+    const liveSuppressionWorldSize = cfg.rotateWithToken === true
+      ? getTileAxisAlignedSize(liveMetrics)
+      : liveShaderSize;
+    const liveTileRotationForContainer = getTileRotationForContainer(liveTile);
+    const liveTileSuppressionSampleWorldPoint = cfg.rotateWithToken === true
+      ? createIndyFxRotatedWorldPointSampler(
+        liveMetrics.center,
+        liveShaderSize.width,
+        liveShaderSize.height,
+        liveTileRotationForContainer,
+      )
+      : null;
     setCenterFromWorld(container, liveMetrics.center, worldLayer);
     syncShaderLayerScale(container, worldLayer, cfg);
     updateIndyFxSuppressionMask(
@@ -7101,11 +7331,26 @@ function shaderOnTile(tileId, opts = {}) {
       shader,
       createIndyFxTargetBoundsFromCenter(
         liveMetrics.center,
-        liveShaderSize.width,
-        liveShaderSize.height,
+        liveSuppressionWorldSize.width,
+        liveSuppressionWorldSize.height,
       ),
+      liveTileSuppressionSampleWorldPoint
+        ? {
+          signatureParts: [
+            Number(liveTileRotationForContainer).toFixed(6),
+            liveShaderSize.width,
+            liveShaderSize.height,
+          ],
+          sampledMask: {
+            enabled: true,
+            width: liveShaderSize.width,
+            height: liveShaderSize.height,
+            sampleWorldPoint: liveTileSuppressionSampleWorldPoint,
+          },
+        }
+        : {},
     );
-    container.rotation = getTileRotationForContainer(liveTile);
+    container.rotation = liveTileRotationForContainer;
     if ("cpfxTokenRotation" in shader.uniforms) {
       shader.uniforms.cpfxTokenRotation = getTileRotationForUniform(liveTile);
     }
