@@ -1074,6 +1074,9 @@ export function createMenus({ moduleId, shaderManager }) {
         "convertToDarknessSource",
         "lightUseIlluminationShader",
         "lightUseBackgroundShader",
+        "lightIlluminationUsesAlpha",
+        "darknessInvert",
+        "darknessInvertAlpha",
         "preloadShader",
       ]);
       for (const key of shaderManager.getImportedShaderDefaultKeys()) {

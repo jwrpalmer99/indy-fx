@@ -42,7 +42,13 @@ const TOOLTIP_BY_KEY = Object.freeze({
   lightUseIlluminationShader: "Apply shader to light illumination pass.",
   lightUseBackgroundShader: "Apply shader to light background/coloration pass.",
   lightFalloffMode: "Controls how bright/dim light radii influence shader intensity.",
+  lightIlluminationUsesAlpha:
+    "For converted light illumination, use shader output alpha as the illumination mask instead of treating the pass as fully opaque.",
   lightBackgroundIntensity: "Intensity multiplier for converted light background pass.",
+  darknessInvert:
+    "For converted darkness sources, invert the shader color while preserving the darkness mask shape.",
+  darknessInvertAlpha:
+    "For converted darkness sources, invert the shader alpha or mask shape.",
   backgroundGlow: "Additional background glow for converted light shaders.",
   lightColorationIntensity: "Intensity multiplier for light coloration pass.",
   lightIlluminationIntensity: "Intensity multiplier for light illumination pass.",

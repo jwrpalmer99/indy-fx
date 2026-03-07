@@ -174,6 +174,9 @@ const IMPORTED_SHADER_DEFAULT_KEYS = [
   "lightColorationIntensity",
   "lightIlluminationIntensity",
   "lightBackgroundIntensity",
+  "lightIlluminationUsesAlpha",
+  "darknessInvert",
+  "darknessInvertAlpha",
   "backgroundGlow",
   "preloadShader",
   "customUniforms",
@@ -2186,6 +2189,9 @@ export class ShaderManager {
       lightColorationIntensity: 1.0,
       lightIlluminationIntensity: 1.0,
       lightBackgroundIntensity: 1.0,
+      lightIlluminationUsesAlpha: true,
+      darknessInvert: false,
+      darknessInvertAlpha: false,
       backgroundGlow: 0.0,
       preloadShader: false,
       customUniforms: {},
@@ -2466,6 +2472,15 @@ export class ShaderManager {
             toFiniteNumber(base.lightBackgroundIntensity, 1),
           ),
         ),
+      ),
+      lightIlluminationUsesAlpha: parseBooleanLike(
+        source.lightIlluminationUsesAlpha ?? base.lightIlluminationUsesAlpha,
+      ),
+      darknessInvert: parseBooleanLike(
+        source.darknessInvert ?? base.darknessInvert,
+      ),
+      darknessInvertAlpha: parseBooleanLike(
+        source.darknessInvertAlpha ?? base.darknessInvertAlpha,
       ),
       backgroundGlow: Math.max(
         0,

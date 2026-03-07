@@ -82,48 +82,6 @@ function resolveSanitizeColorEnabled(override) {
   return isSanitizeColorEnabled();
 }
 
-function isImportedLightIlluminationAlphaEnabled() {
-  try {
-    return game?.settings?.get?.(
-      ADAPTER_MODULE_ID,
-      "importedLightIlluminationUsesAlpha",
-    ) !== false;
-  } catch (_err) {
-    return true;
-  }
-}
-
-function resolveImportedLightIlluminationAlphaEnabled(override) {
-  if (typeof override === "boolean") return override;
-  return isImportedLightIlluminationAlphaEnabled();
-}
-
-function isImportedDarknessInvertEnabled() {
-  try {
-    return game?.settings?.get?.(ADAPTER_MODULE_ID, "importedDarknessInvert") === true;
-  } catch (_err) {
-    return false;
-  }
-}
-
-function resolveImportedDarknessInvertEnabled(override) {
-  if (typeof override === "boolean") return override;
-  return isImportedDarknessInvertEnabled();
-}
-
-function isImportedDarknessInvertAlphaEnabled() {
-  try {
-    return game?.settings?.get?.(ADAPTER_MODULE_ID, "importedDarknessInvertAlpha") === true;
-  } catch (_err) {
-    return false;
-  }
-}
-
-function resolveImportedDarknessInvertAlphaEnabled(override) {
-  if (typeof override === "boolean") return override;
-  return isImportedDarknessInvertAlphaEnabled();
-}
-
 function getAdapterVariantKey({ sanitizeColor } = {}) {
   const sc = resolveSanitizeColorEnabled(sanitizeColor) ? "sc1" : "sc0";
   // Bump when adapter code generation changes to avoid stale in-session cache.
@@ -4568,31 +4526,25 @@ export function adaptShaderToyLightFragment(
   source,
   {
     layerType = "coloration",
-    illuminationUsesAlpha,
-    invertDarkness,
-    invertDarknessAlpha,
+    illuminationUsesAlpha = true,
+    invertDarkness = false,
+    invertDarknessAlpha = false,
   } = {},
 ) {
   const resolvedLayer = normalizeLightLayerType(layerType);
-  const resolvedIlluminationUsesAlpha =
-    resolveImportedLightIlluminationAlphaEnabled(illuminationUsesAlpha);
-  const resolvedInvertDarkness =
-    resolveImportedDarknessInvertEnabled(invertDarkness);
-  const resolvedInvertDarknessAlpha =
-    resolveImportedDarknessInvertAlphaEnabled(invertDarknessAlpha);
   const colorExpression = getLightLayerColorExpression(resolvedLayer, {
-    invertDarkness: resolvedLayer === "darkness" && resolvedInvertDarkness,
+    invertDarkness: resolvedLayer === "darkness" && invertDarkness === true,
   });
   const layerOpacityExpression =
     resolvedLayer === "illumination"
       ? (
-          resolvedIlluminationUsesAlpha
+          illuminationUsesAlpha === true
             ? "clamp(srcAlpha, 0.0, 1.0)"
             : "1.0"
         )
       : resolvedLayer === "darkness"
       ? (
-          resolvedInvertDarknessAlpha
+          invertDarknessAlpha === true
             ? "(1.0 - clamp(srcAlpha, 0.0, 1.0))"
             : "clamp(srcAlpha, 0.0, 1.0)"
         )
@@ -4652,9 +4604,12 @@ uniform vec3 color;`,
   if (cpfxLightFalloffMode < 0.5) {
     falloff = 1.0;
   } else if (cpfxLightFalloffMode < 1.5) {
-    float start = clamp(cpfxLightBrightDimRatio, 0.0, 1.0);
-    float t = clamp((d - start) / max(0.0001, 1.0 - start), 0.0, 1.0);
-    falloff = 1.0 - t;
+    float attenuationClamped = clamp(attenuation, 0.0, 1.0);
+    if (attenuationClamped > 0.0001) {
+      falloff = smoothstep(1.0, max(0.0, 1.0 - attenuationClamped), d);
+    } else {
+      falloff = 1.0;
+    }
   } else if (cpfxLightFalloffMode < 2.5) {
     falloff = clamp(1.0 - d, 0.0, 1.0);
   } else {

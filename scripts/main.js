@@ -1017,6 +1017,9 @@ function createImportedLightShaderClass({
   defaultLightColorationIntensity = 1,
   defaultLightIlluminationIntensity = 1,
   defaultLightBackgroundIntensity = 1,
+  defaultLightIlluminationUsesAlpha = true,
+  defaultDarknessInvert = false,
+  defaultDarknessInvertAlpha = false,
   defaultBackgroundGlow = 0,
 } = {}) {
   const timingEnabled = isDebugLoggingEnabled();
@@ -1033,6 +1036,9 @@ function createImportedLightShaderClass({
   try {
     fragmentShader = adaptShaderToyLightFragment(sourceText, {
       layerType: normalizedLayerType,
+      illuminationUsesAlpha: defaultLightIlluminationUsesAlpha === true,
+      invertDarkness: defaultDarknessInvert === true,
+      invertDarknessAlpha: defaultDarknessInvertAlpha === true,
     });
   } catch (err) {
     console.warn(`${MODULE_ID} | Failed to adapt imported shader for light`, {
@@ -1197,6 +1203,9 @@ function buildImportedLightAnimationConfig(
       defaultLightColorationIntensity: defaults?.lightColorationIntensity,
       defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
       defaultLightBackgroundIntensity: defaults?.lightBackgroundIntensity,
+      defaultLightIlluminationUsesAlpha: defaults?.lightIlluminationUsesAlpha,
+      defaultDarknessInvert: defaults?.darknessInvert,
+      defaultDarknessInvertAlpha: defaults?.darknessInvertAlpha,
       defaultBackgroundGlow: defaults?.backgroundGlow,
     });
     if (!darknessShader) return null;
@@ -1218,6 +1227,9 @@ function buildImportedLightAnimationConfig(
     defaultLightColorationIntensity: defaults?.lightColorationIntensity,
     defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
     defaultLightBackgroundIntensity: defaults?.lightBackgroundIntensity,
+    defaultLightIlluminationUsesAlpha: defaults?.lightIlluminationUsesAlpha,
+    defaultDarknessInvert: defaults?.darknessInvert,
+    defaultDarknessInvertAlpha: defaults?.darknessInvertAlpha,
     defaultBackgroundGlow: defaults?.backgroundGlow,
   });
   if (!colorationShader) return null;
@@ -1238,6 +1250,9 @@ function buildImportedLightAnimationConfig(
       defaultLightColorationIntensity: defaults?.lightColorationIntensity,
       defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
       defaultLightBackgroundIntensity: defaults?.lightBackgroundIntensity,
+      defaultLightIlluminationUsesAlpha: defaults?.lightIlluminationUsesAlpha,
+      defaultDarknessInvert: defaults?.darknessInvert,
+      defaultDarknessInvertAlpha: defaults?.darknessInvertAlpha,
       defaultBackgroundGlow: defaults?.backgroundGlow,
     });
     if (illuminationShader) config.illuminationShader = illuminationShader;
@@ -1258,6 +1273,9 @@ function buildImportedLightAnimationConfig(
       defaultLightColorationIntensity: defaults?.lightColorationIntensity,
       defaultLightIlluminationIntensity: defaults?.lightIlluminationIntensity,
       defaultLightBackgroundIntensity: defaults?.lightBackgroundIntensity,
+      defaultLightIlluminationUsesAlpha: defaults?.lightIlluminationUsesAlpha,
+      defaultDarknessInvert: defaults?.darknessInvert,
+      defaultDarknessInvertAlpha: defaults?.darknessInvertAlpha,
       defaultBackgroundGlow: defaults?.backgroundGlow,
     });
     if (backgroundShader) config.backgroundShader = backgroundShader;
@@ -7962,21 +7980,6 @@ Hooks.once("ready", async () => {
       return;
     }
     scheduleActiveShaderPerformanceRefresh(`setting:${key}`);
-  });
-  Hooks.on(`${MODULE_ID}.clientImportedLightAdapterSettingChanged`, (payload = {}) => {
-    const key = String(payload?.key ?? "").trim();
-    if (
-      key !== "importedLightIlluminationUsesAlpha" &&
-      key !== "importedDarknessInvert" &&
-      key !== "importedDarknessInvertAlpha"
-    ) {
-      return;
-    }
-    syncImportedShaderLightAnimations({ reason: `client-setting:${key}` });
-    refreshImportedLightSources({ reason: `client-setting:${key}` });
-    setTimeout(() => {
-      refreshImportedLightSources({ reason: `client-setting-delayed-80ms:${key}` });
-    }, 80);
   });
   Hooks.on("drawMeasuredTemplate", (template) => {
     const doc = template?.document ?? null;
